@@ -1,11 +1,7 @@
-"""inventory-service FastAPI application (M0 stub: liveness only)."""
+"""inventory-service FastAPI application."""
 
-from fastapi import FastAPI
+from app.config import Settings
+from retail_common.service import create_service_app
 
-app = FastAPI(title="inventory-service")
-
-
-@app.get("/health/live")
-def live() -> dict[str, str]:
-    """Liveness: the process answers. Checks no dependencies."""
-    return {"status": "ok"}
+settings = Settings()
+app = create_service_app(settings)

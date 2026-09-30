@@ -3,7 +3,16 @@ name = "retail-common"
 version = "0.1.0"
 description = "Shared config, logging, metrics, health, errors and event plumbing for all services."
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "boto3",
+    "fastapi",
+    "httpx",
+    "prometheus-client",
+    "pydantic-settings",
+    "python-ulid",
+    "structlog",
+    "tenacity",
+]
 
 [build-system]
 requires = ["uv_build>=0.12,<0.13"]

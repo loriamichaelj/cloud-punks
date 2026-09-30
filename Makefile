@@ -43,6 +43,8 @@ lint: sync
 	done
 
 test: sync
+	@echo "pytest libs/common (coverage gate: 80%)"
+	@$(RUN) pytest libs/common/tests -q --cov=retail_common --cov-report=term-missing:skip-covered --cov-fail-under=80
 	@for s in $(SERVICES); do \
 		echo "pytest $$s"; \
 		PYTHONPATH=services/$$s $(RUN) pytest services/$$s/tests/unit -q || exit 1; \

@@ -8,6 +8,7 @@ dependencies = []
 [dependency-groups]
 dev = [
     "httpx",
+    "moto[events,sqs]",
     "mypy",
     "pytest",
     "pytest-cov",
@@ -39,6 +40,11 @@ check_untyped_defs = true
 no_implicit_optional = true
 warn_redundant_casts = true
 warn_unused_ignores = true
+
+# boto3/botocore/moto ship no type information; adding stub packages would be a new dependency.
+[[tool.mypy.overrides]]
+module = ["boto3", "boto3.*", "botocore", "botocore.*", "moto", "moto.*"]
+ignore_missing_imports = true
 
 # Strict on libs/common and every service's domain/ (DESIGN.md section 9).
 # `strict = true` is not accepted in per-module overrides, so the flags are spelled out.
