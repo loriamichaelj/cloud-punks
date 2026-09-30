@@ -9,7 +9,8 @@
 **/.pytest_cache
 **/tests
 docs
-local
+local/*
+!local/seed
 deploy
 infra
 Makefile

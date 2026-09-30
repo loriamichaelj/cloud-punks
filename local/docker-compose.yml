@@ -1,5 +1,5 @@
-# M0: the four service stubs only. PostgreSQL, Valkey, LocalStack and the gateway arrive in M2.
-# Always run through the Makefile (it sets IMAGE_TAG and --env-file .env).
+# Always run through the Makefile: it sets IMAGE_TAG and passes --env-file .env (without it,
+# ${VAR} interpolation reads local/.env and passwords silently become empty).
 name: retail
 
 x-svc: &svc
@@ -8,8 +8,61 @@ x-svc: &svc
   environment: &env
     ENVIRONMENT: local
     LOG_LEVEL: INFO
+    AWS_REGION: us-east-1
+    AWS_ENDPOINT_URL: http://localstack:4566
+    # LocalStack accepts any credentials; these are not real. In AWS the SDK uses Pod Identity.
+    AWS_ACCESS_KEY_ID: test
+    AWS_SECRET_ACCESS_KEY: test
+    EVENT_BUS_NAME: retail-events
+    CACHE_URL: redis://valkey:6379/0
+    DB_PORT: "5432"
+    DB_SSLMODE: disable
 
 services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set it in .env}
+      # Read by init/01-databases.sh to create the <svc>_owner / <svc>_app roles.
+      PRODUCT_OWNER_PASSWORD: ${PRODUCT_OWNER_PASSWORD:?set it in .env}
+      PRODUCT_APP_PASSWORD: ${PRODUCT_APP_PASSWORD:?set it in .env}
+      ORDER_OWNER_PASSWORD: ${ORDER_OWNER_PASSWORD:?set it in .env}
+      ORDER_APP_PASSWORD: ${ORDER_APP_PASSWORD:?set it in .env}
+    volumes:
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+      - pg-data:/var/lib/postgresql/data
+    ports: ["5432:5432"]
+    healthcheck:
+      # -h 127.0.0.1: during first init the image runs a socket-only temporary server, and a
+      # socket-based pg_isready would report ready before the databases and roles exist.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres"]
+      interval: 5s
+      retries: 20
+
+  valkey:
+    image: valkey/valkey:9.0
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      retries: 10
+
+  localstack:
+    image: localstack/localstack:${LOCALSTACK_TAG:?set it in .env}
+    environment:
+      SERVICES: events,sqs,dynamodb,lambda,logs,iam,sts
+      LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:?set it in .env}
+      LAMBDA_DOCKER_NETWORK: retail_default # Lambda containers join the Compose network
+    volumes:
+      - ./localstack/init/ready.d:/etc/localstack/init/ready.d:ro
+      - ../functions:/opt/functions:ro
+      - /var/run/docker.sock:/var/run/docker.sock # required for Lambda execution
+    ports: ["4566:4566"]
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/bootstrap.done"]
+      interval: 5s
+      retries: 30
+
   product-service:
     <<: *svc
     image: retail/product-service:${IMAGE_TAG:?use make up}
@@ -49,3 +102,32 @@ services:
       <<: *env
       SERVICE_NAME: notification-service
     ports: ["8004:8004"]
+
+  gateway:
+    image: nginx:1.27-alpine
+    volumes: ["../gateway/nginx.conf:/etc/nginx/nginx.conf:ro"]
+    ports: ["8080:8080"]
+    depends_on: [product-service, inventory-service, order-service, notification-service]
+    restart: unless-stopped
+
+  # One-shot dev job (`make seed`): catalog into product_db, stock into DynamoDB.
+  seed:
+    <<: *svc
+    profiles: [tools]
+    image: retail/product-service:${IMAGE_TAG:?use make up}
+    build: { context: .., dockerfile: services/product-service/Dockerfile }
+    command: ["seed"]
+    restart: "no"
+    environment:
+      <<: *env
+      SERVICE_NAME: seed
+      DB_HOST: postgres
+      DB_NAME: product_db
+      DB_USER: product_app
+      DB_PASSWORD: ${PRODUCT_APP_PASSWORD:?set it in .env}
+    depends_on:
+      postgres: { condition: service_healthy }
+      localstack: { condition: service_healthy }
+
+volumes:
+  pg-data: {}

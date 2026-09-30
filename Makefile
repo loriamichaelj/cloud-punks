@@ -6,20 +6,24 @@ SERVICES := product-service inventory-service order-service notification-service
 # and ${VAR} interpolation would silently produce empty passwords (DESIGN.md section 10).
 COMPOSE = docker compose --env-file .env -f local/docker-compose.yml
 
+# down/reset/logs must work even when LOCALSTACK_AUTH_TOKEN is not set yet; Compose
+# interpolates the whole file, and the token guard would otherwise refuse to tear down.
+COMPOSE_NOAUTH = LOCALSTACK_AUTH_TOKEN=unused $(COMPOSE)
+
 # Images are tagged dev-<git sha>, never :latest.
 IMAGE_TAG ?= dev-$(shell git rev-parse --short HEAD 2>/dev/null || echo nogit)
 export IMAGE_TAG
 
 RUN = uv run --frozen --no-sync
 
-.PHONY: help lock sync fmt lint test up down reset logs
+.PHONY: help lock sync fmt lint test up down reset logs seed
 
 help:
-	@echo "Targets: lock sync fmt lint test up down reset logs s=<service>"
+	@echo "Targets: lock sync fmt lint test up down reset logs s=<service> seed"
 
 .env:
 	cp .env.example .env
-	@echo "Created .env from .env.example (git-ignored). Set LOCALSTACK_AUTH_TOKEN before M2."
+	@echo "Created .env from .env.example (git-ignored). Set LOCALSTACK_AUTH_TOKEN before `make up`."
 
 lock:
 	uv lock
@@ -50,15 +54,21 @@ test: sync
 		PYTHONPATH=services/$$s $(RUN) pytest services/$$s/tests/unit -q || exit 1; \
 	done
 
+# --wait blocks until postgres, valkey and localstack (whose healthcheck waits for the bootstrap
+# script) are healthy, and fails if a container exits, e.g. LocalStack without a token.
 up: .env
-	$(COMPOSE) up -d --build
+	$(COMPOSE) up -d --build --wait
 	$(COMPOSE) ps
 
 down: .env
-	$(COMPOSE) down
+	$(COMPOSE_NOAUTH) down
 
 reset: .env
-	$(COMPOSE) down -v
+	$(COMPOSE_NOAUTH) down -v
 
 logs: .env
-	$(COMPOSE) logs -f $(s)
+	$(COMPOSE_NOAUTH) logs -f $(s)
+
+# Catalog into product_db and stock into DynamoDB. Idempotent; needs `make up` first.
+seed: .env
+	$(COMPOSE) --profile tools run --rm --build seed

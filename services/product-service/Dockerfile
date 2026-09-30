@@ -23,6 +23,8 @@ RUN groupadd --gid 10001 app \
  && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin app
 COPY --from=builder /opt/venv /opt/venv
 COPY --chown=10001:10001 services/product-service/app /srv/app
+# Dev-only seed job (`python -m app seed`), per DESIGN.md section 10.
+COPY --chown=10001:10001 local/seed /srv/seed
 ENV PATH=/opt/venv/bin:$PATH \
     PYTHONPATH=/srv \
     PYTHONUNBUFFERED=1 \
