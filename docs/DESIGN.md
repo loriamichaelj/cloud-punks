@@ -1,6 +1,6 @@
 # Retail Microservices Platform — Design Doc
 
-Author: M.L. · 30 Sep 2026 · Status: v1.0, ready for build
+Author: M.L. · 30 Sep 2026 · Status: v1.1, ready for build (v1.1: facts verified 30 Sep 2026; AWS access is GitHub-OIDC-only, so Phases 2–3 are reordered around a bootstrap workflow and in-VPC runners; bootstrap script and spec gaps fixed)
 
 ## 1. Overview
 
@@ -25,8 +25,8 @@ We build a four-service retail order platform that runs end-to-end on localhost 
 | --- | --- | --- | --- |
 | 1a — Local (Compose on OrbStack) | Services, data layer, events, tests | Day 1–2 | Acceptance test passes on `make up` |
 | 1b — Local Kubernetes (OrbStack) | Helm chart, probes, HPA, ingress, rollback on the local cluster | Day 3 (morning) | Same test passes via local ingress; `helm rollback` demonstrated |
-| 2 — Cloud infra | Terraform, ECR, EKS; the 1b chart with dev values | Day 3 | Same test passes against EKS ingress |
-| 3 — CI/CD | GitHub Actions, OIDC, scans, promotion, rollback | Day 4 | PR-to-prod pipeline with a demonstrated rollback |
+| 2 — Cloud infra, built through CI | Manual OIDC provider + `gha-bootstrap` role; `bootstrap.yml` (state bucket); minimal `infra.yml`; Terraform, ECR, EKS, in-VPC runners; the 1b chart with dev values. No AWS access exists outside GitHub Actions (ADR-14) | Day 3 | Same test passes against the EKS ingress, run from a workflow |
+| 3 — CI/CD | Full `pr.yml`/`main.yml`/`promote.yml`, scans, promotion, rollback, `infra-destroy.yml` | Day 4 | PR-to-prod pipeline with a demonstrated rollback |
 | 4 — Reliability | Dashboards, SLOs, alarms, failure drills, runbooks | Day 5 | Each drill in section 11 detected and recovered |
 
 This document is detailed for Phase 1 and gives forward-compatible contracts for Phases 2–4 so nothing built locally has to be rewritten.
@@ -49,7 +49,9 @@ Each decision below is binding for Claude Code; changing one means updating this
 | ADR-10 | AWS SDK endpoint via `AWS_ENDPOINT_URL`, no code branches for local | Identical code path local and cloud; boto3 honours the env var natively | `if ENV == local` branches (untested prod paths) |
 | ADR-11 | Schema migrations run as a separate one-shot process, never at app startup | N replicas racing migrations; later maps to a Helm pre-upgrade Job | Migrate on boot (race, slow readiness) |
 | ADR-12 | Valkey 9.0 locally and on ElastiCache | ElastiCache now offers Valkey at lower cost than Redis OSS; wire-compatible with `redis-py` | Redis OSS 7 (fine, pricier on ElastiCache) |
-| ADR-13 | PostgreSQL 17 locally, Aurora PostgreSQL in cloud (deviates from the plan's Aurora/RDS MySQL) | Transactional DDL (a failed migration rolls back cleanly), `JSONB` for the outbox, partial indexes, `INSERT … ON CONFLICT DO NOTHING` for dedupe, `SKIP LOCKED` | Aurora MySQL 3 (the plan's default; non-transactional DDL, weaker partial-index story) |
+| ADR-13 | PostgreSQL 17 locally, Aurora PostgreSQL in cloud (deviates from the original brief's Aurora/RDS MySQL; that brief is not in this repo) | Transactional DDL (a failed migration rolls back cleanly), `JSONB` for the outbox, partial indexes, `INSERT … ON CONFLICT DO NOTHING` for dedupe, `SKIP LOCKED` | Aurora MySQL 3 (the original brief's default; non-transactional DDL, weaker partial-index story) |
+| ADR-14 | AWS is reached only from GitHub Actions through OIDC role assumption; no IAM users, access keys or local AWS credentials exist. The OIDC provider and the `gha-bootstrap` role are created by hand once; all other roles are Terraform-managed | Removes long-lived credentials entirely; every cloud change is reviewed, logged and reproducible | Local `terraform apply` with SSO or keys (unreviewed changes, credentials on a laptop) |
+| ADR-15 | Jobs that need the EKS API (helm, kubectl, e2e, drills) run on ephemeral self-hosted runners inside the VPC; all other jobs use GitHub-hosted runners | EKS endpoint stays private and the ALB can be internal; Terraform AWS-API calls need no VPC access | Public EKS endpoint with IAM auth (simpler, larger attack surface) |
 
 **Enterprise note:** ADR-04 and ADR-07 are the two that separate a demo from a system you would put your name on. Most event-driven outages in practice are lost or duplicated events, not slow ones.
 
@@ -170,6 +172,8 @@ Rules:
 - Product or Inventory unreachable → 503 with `Retry-After`; no partial order.
 - Money is `NUMERIC(10,2)` in PostgreSQL, `Decimal` in Python and a string in JSON. Never floats.
 - IDs are ULIDs (sortable, safe to expose).
+- `items` holds 1–20 lines with distinct SKUs and `quantity` 1–100; anything else → 422 before any downstream call.
+- Concurrent requests with the same key: the loser hits `uq_orders_customer_idem`. Catch that violation (no bare `except`), roll back, load the winner's row and apply the same-body/different-body rule above.
 
 ### Error shape (all services)
 
@@ -274,6 +278,8 @@ PostgreSQL-specific rules:
 Reservation is one `TransactWriteItems` call: a `Put` on `inventory_reservations` with `attribute_not_exists(order_id)` plus one `Update` per SKU with `ConditionExpression: available >= :qty`, setting `available = available - :qty, reserved = reserved + :qty`. All succeed or none do. Limit: 100 items per transaction, well above the 20-line order cap.
 
 **Gotcha:** On `TransactionCanceledException`, inspect `CancellationReasons`. `ConditionalCheckFailed` on the reservation item means a duplicate (re-emit stored outcome). On an inventory item it means insufficient stock (write a FAILED reservation, emit InventoryFailed). Treating both the same way is the classic oversell/double-fail bug.
+
+**Unknown vs insufficient:** a missing `inventory` item and a stock shortfall both fail `available >= :qty`. Add `attribute_exists(sku)` to the condition and set `ReturnValuesOnConditionCheckFailure: ALL_OLD` on each `Update`; `CancellationReasons[i].Item` is then absent for an unknown SKU (`UNKNOWN_SKU`) and present, with `available`, for a shortfall (`OUT_OF_STOCK`, `failed_items[].available`). Use `ConsistentRead=True` for `GET /inventory/{sku}` and the availability check.
 
 ### Cache design (Valkey)
 
@@ -417,10 +423,10 @@ Every service implements the same config, health, logging, metrics and resilienc
 | `AWS_ENDPOINT_URL` | `http://localstack:4566` | **Unset** in cloud |
 | `DB_HOST` / `DB_PORT` / `DB_NAME` | `postgres` / `5432` / `order_db` | ConfigMap (RDS Proxy or Aurora writer endpoint) |
 | `DB_USER` / `DB_PASSWORD` | from `.env` (`order_app`; migrate job uses `order_owner`) | Secrets Manager → Kubernetes Secret (External Secrets Operator) |
-| `DB_SSLMODE` | `disable` | `verify-full` with the RDS CA bundle |
+| `DB_SSLMODE` | `disable` | `verify-full`; **verify in Phase 2** which CA chain RDS Proxy presents (it may not be the RDS CA bundle) |
 | `CACHE_URL` | `redis://valkey:6379/0` | ConfigMap (`rediss://` with TLS) |
 | `EVENT_BUS_NAME` | `retail-events` | ConfigMap |
-| `QUEUE_``NAME` | `inventory-order-events` | ConfigMap. Consumers call `GetQueueUrl` at startup, so no LocalStack-specific URL format leaks into config |
+| `QUEUE_NAME` | `inventory-order-events` | ConfigMap. Consumers call `GetQueueUrl` at startup, so no LocalStack-specific URL format leaks into config |
 | `PRODUCT_SERVICE_URL` / `INVENTORY_SERVICE_URL` | `http://product-service:8001` | ClusterIP DNS |
 | `HTTP_TIMEOUT_CONNECT_S` / `HTTP_TIMEOUT_READ_S` | `1.0` / `2.0` | ConfigMap |
 
@@ -457,7 +463,7 @@ Use the `route` template (`/api/v1/orders/{order_id}`), never the raw path — r
 
 ### Resilience
 
-- Outbound HTTP: `httpx` with connect 1 s / read 2 s timeouts; retry only idempotent GETs, max 2 retries, exponential backoff with jitter (`tenacity`). The availability pre-check POST is read-only and retry-safe.
+- Outbound HTTP: `httpx` with connect 1 s / read 2 s timeouts; retry only GETs plus the read-only `POST /inventory/availability` (the single allowed POST retry), max 2 retries, exponential backoff with jitter (`tenacity`). Never retry any other POST.
 - DB pool: SQLAlchemy with psycopg 3, `pool_size=5, max_overflow=5, pool_pre_ping=True, pool_recycle=1800`. Each PostgreSQL connection is a backend process, so keep `replicas × (pool_size + max_overflow)` well under the instance `max_connections`; in cloud put RDS Proxy in front so HPA scale-out cannot exhaust connections.
 - Set `statement_timeout = 5s` and `idle_in_transaction_session_timeout = 30s` on the `<svc>_app` roles. A stuck transaction holding the outbox lock is the failure you want killed, not waited on.
 - Stuck-order sweeper (order-service, runs in the relay process every 60 s): orders `PENDING` longer than 5 min are logged and counted in `orders_stuck` gauge. No auto-reject this week; this is the alarm source for the stuck-queue runbook.
@@ -508,7 +514,7 @@ retail-platform/
 ├── tests/e2e/                    # acceptance + failure drills (pytest)
 ├── deploy/helm/                  # M9 (placeholder until then)
 ├── infra/terraform/              # Phase 2 (placeholder)
-├── .github/workflows/            # Phase 3 (placeholder)
+├── .github/workflows/            # Phases 2–3 (placeholder): bootstrap, infra, infra-destroy, pr, main, promote
 ├── Makefile
 ├── .env.example                  # committed; .env is git-ignored
 └── pyproject.toml                # uv workspace root, ruff, mypy, pytest config
@@ -529,7 +535,7 @@ Inside each service: `api/` (FastAPI routers, request/response models) → `doma
 | IDs | `python-ulid` |
 | Logging / metrics | structlog, prometheus-client |
 | Tooling | uv, ruff (lint + format), mypy (strict on `libs/common` and `domain/`), pytest, pytest-cov |
-| Containers | OrbStack (Docker engine + single-node Kubernetes), Docker Compose v2, docker buildx (multi-arch); base image `python:3.1``3``-slim`, non-root user, multi-stage |
+| Containers | OrbStack (Docker engine + single-node Kubernetes), Docker Compose v2, docker buildx (multi-arch); base image `python:3.13-slim`, non-root user, multi-stage |
 
 The Dockerfile is production-shaped from day one: multi-stage, `uv sync --frozen --no-dev`, non-root UID 10001, no shell tools in the final stage beyond what the base provides, `HEALTHCHECK` omitted (Kubernetes probes own that).
 
@@ -542,7 +548,7 @@ The Dockerfile is production-shaped from day one: multi-stage, `uv sync --frozen
 | Compose service | Image | Command | Port | Becomes on EKS |
 | --- | --- | --- | --- | --- |
 | postgres | `postgres:17` | — | 5432 | Aurora PostgreSQL 17 (behind RDS Proxy) |
-| valkey | `valkey/valkey:``9.0` | — | 6379 | ElastiCache for Valkey |
+| valkey | `valkey/valkey:9.0` | — | 6379 | ElastiCache for Valkey |
 | localstack | `localstack/localstack` at a pinned CalVer tag (2026.03.0 or later), auth token required | — | 4566 | EventBridge, SQS, DynamoDB, Lambda |
 | product-migrate / order-migrate | service image | `migrate` | — | Helm pre-install/pre-upgrade Job |
 | seed | product image | `seed` | — | Manual/CI job (dev only) |
@@ -696,7 +702,13 @@ awslocal dynamodb create-table --table-name notifications \
   --key-schema AttributeName=order_id,KeyType=HASH AttributeName=event_id,KeyType=RANGE \
   --billing-mode PAY_PER_REQUEST
 
-# Lambda: package from mounted source without needing `zip` in the image
+for t in inventory_reservations notifications; do
+  awslocal dynamodb update-time-to-live --table-name "$t" \
+    --time-to-live-specification Enabled=true,AttributeName=ttl
+done
+
+# Lambda: package from mounted source without needing `zip` in the image.
+# M2 ships a stub handler (returns None) so this block succeeds before M7 implements it.
 cd /tmp && python3 -m zipfile -c low-stock.zip /opt/functions/low-stock-alert/handler.py
 awslocal lambda create-function --function-name low-stock-alert --runtime python3.13 \
   --handler handler.lambda_handler --zip-file fileb:///tmp/low-stock.zip \
@@ -763,7 +775,7 @@ Unit tests that must exist (these catch the real bugs):
 - Outbox relay: partial `PutEvents` failure marks only successful rows published.
 - Cache: Valkey down → product read still succeeds from PostgreSQL.
 
-### Acceptance test (maps to plan section 13, steps 1–10)
+### Acceptance test (steps 1–10)
 
 1. `GET /api/v1/products` returns seeded products; second call of `GET /api/v1/products/{sku}` is a cache hit (`cache_hits_total` increments).
 2. Record stock for SKU A (`GET /api/v1/inventory/A`).
@@ -795,7 +807,7 @@ Ten milestones, each a separate PR-sized unit that leaves `make up` working. Cla
 
 - [ ] **M0 — Scaffold.** Repo tree from section 9, uv workspace, ruff/mypy/pytest config, Makefile, `.env.example`, `CLAUDE.md`, empty service apps returning `/health/live`. *Done when:* `make lint test` passes; `make up` starts four services with 200 on `/health/live`.
 - [ ] **M1 — `libs/common`.** Settings, structlog + correlation middleware, metrics middleware, health router, error model, httpx client, envelope + v1 schemas, EventBridge publisher, SQS consumer loop. *Done when:* unit tests cover partial `PutEvents` failure, poison vs transient handling, correlation propagation.
-- [ ] **M2 — Local infrastructure.** Compose with PostgreSQL, Valkey, LocalStack (auth token in .env), gateway; PostgreSQL init (two DBs; per service an owner role for migrations and an app role with DML only); LocalStack bootstrap; seed script (5 categories, 20 products, stock 10–50 each). *Done when:* `awslocal events list-rules --event-bus-name retail-events` shows 4 rules; tables and queues exist; seed is idempotent.
+- [ ] **M2 — Local infrastructure.** Compose with PostgreSQL, Valkey, LocalStack (auth token in .env), gateway; PostgreSQL init (two DBs; per service an owner role for migrations and an app role with DML only); LocalStack bootstrap (including DynamoDB TTL and a stub `functions/low-stock-alert/handler.py` that M7 replaces); seed script (5 categories, 20 products, stock 10–50 each). *Done when:* `awslocal events list-rules --event-bus-name retail-events` shows 4 rules; tables and queues exist; seed is idempotent.
 - [ ] **M3 — Product Service.** Alembic migration, CRUD, cache-aside + invalidation, readiness on PostgreSQL. *Done when:* integration tests pass with Valkey up and down.
 - [ ] **M4 — Inventory Service API.** Get stock, batch availability, admin set-stock. *Done when:* strongly consistent reads verified in integration test.
 - [ ] **M5 — Order Service (sync path + outbox).** Migration, create order with price snapshot, idempotency key, pre-check, outbox write in the same transaction, relay process. *Done when:* `POST /orders` → row in `orders` + `outbox`; relay publishes; the "Bus unavailable" drill passes.
@@ -808,11 +820,32 @@ Phase 1 is complete when M9 is done. Only then start Phase 2 (Terraform, ECR, EK
 
 ## 13. Phases 2–4: cloud, CI/CD, reliability
 
-These are contracts Phase 1 must not violate, not a full spec; each phase gets its own design pass before build. Items marked **verify** depend on current AWS versions or pricing.
+These are contracts Phase 1 must not violate, not a full spec; each phase gets its own design pass before build. Items marked **verify** depend on current AWS versions or pricing. **Provisional:** the cloud, pipeline and Terraform strategy is revisited with the owner after M9 and before any Phase 2 work; the remote repo holds the dev environment only.
 
-### Phase 2 — Terraform, ECR, EKS, Helm (Day 3)
+### Phase 2 — Bootstrap, Terraform, ECR, EKS, Helm, all through CI (Day 3)
 
-**Terraform layout:** `infra/terraform/modules/{network,eks,data,events,ecr,github-oidc,observability}` composed by `envs/{dev,prod}`. Remote state in S3 with native locking (`use_lockfile = true`, Terraform ≥ 1.10); DynamoDB state locking is deprecated. Pin provider versions; one state per env.
+**AWS access model (ADR-14, ADR-15).** No AWS credential exists outside GitHub Actions. Every workflow assumes a role by ARN through OIDC (`aws-actions/configure-aws-credentials`, pinned by SHA, `permissions: id-token: write, contents: read`). Role ARNs are GitHub Actions *variables* per Environment (an ARN is not a secret). Claude Code can therefore write and statically check the cloud code (`terraform fmt/validate` with `init -backend=false`, tflint, checkov, `helm lint`, kubeconform) but can never run `plan`, `apply`, `aws` or `kubectl` against AWS; those happen only in workflows, so workflows must print diagnostics on failure (`terraform show`, `helm status`, `kubectl describe`/events).
+
+Bring-up order:
+
+1. **Manual, once, by the owner (console or CloudShell):** create the IAM OIDC provider `token.actions.githubusercontent.com` (audience `sts.amazonaws.com`) and the role `gha-bootstrap`. Trust: `aud = sts.amazonaws.com` and `sub = repo:<org>/<repo>:environment:bootstrap`. Permissions: S3 on the state bucket, and IAM create/update on `role/gha-*` and `policy/gha-*`. Create the GitHub Environment `bootstrap` (required reviewer) and set `AWS_ROLE_ARN_BOOTSTRAP` and `AWS_REGION`. Nothing else is created by hand. Because this role can mint roles it is effectively admin; the pinned `sub`, the reviewer gate, and `workflow_dispatch`-only trigger are its controls.
+2. **`bootstrap.yml` (`workflow_dispatch`, environment `bootstrap`), job 1:** idempotent AWS CLI calls (not Terraform; there is no state to start from) create `retail-tfstate-<account-id>-<region>` with versioning, SSE, all public access blocked, a TLS-only bucket policy and noncurrent-version expiry. **Job 2:** `terraform apply` of `infra/terraform/bootstrap/` (state key `bootstrap/terraform.tfstate`), which uses the `github-oidc` module to create the roles in the table below.
+3. **`infra.yml` on GitHub-hosted runners** applies `envs/<env>/platform` (network, eks, data, events, ecr, runners). The EKS endpoint is private, but creating the cluster only needs the AWS API, so hosted runners suffice.
+4. **`infra.yml` on the in-VPC runners** applies `envs/<env>/cluster-addons` (AWS Load Balancer Controller, External Secrets Operator, namespace, `ExternalSecret`/ingress class). Terraform's `helm`/`kubernetes` providers need the private API, so this stack cannot run on hosted runners.
+5. `main.yml` builds, pushes to ECR, and runs `helm upgrade --install --atomic` and e2e on the in-VPC runners.
+
+| Role | Trust `sub` | Permissions | Used by |
+| --- | --- | --- | --- |
+| `gha-bootstrap` (manual) | `environment:bootstrap` | State bucket S3; IAM on `gha-*` | `bootstrap.yml` |
+| `gha-tf-plan` | `pull_request` | ReadOnlyAccess, state read, write `*.tflock` only | `pr.yml` plan (hosted). Fork PRs get no OIDC token, so they get no role |
+| `gha-tf-apply-<env>` | `environment:<env>` | Broad (accepted least-privilege gap for this week, recorded here) | `infra.yml` apply |
+| `gha-deploy-<env>` | `environment:<env>` | ECR push/pull, `eks:DescribeCluster`; EKS access entry with `AmazonEKSEditPolicy` scoped to namespace `retail` | `main.yml`, `promote.yml`, drills (runners) |
+
+Terraform references the OIDC provider with a `data` source (an account can hold one provider per URL) and never manages `gha-bootstrap`. Tear-down is `infra-destroy.yml` (manual, environment-gated); `bootstrap` resources are never destroyed by it.
+
+**In-VPC runners (`modules/runners`).** Ephemeral EC2 runners (arm64, private-app subnets, one job each via `--ephemeral`), label `retail-vpc`, in a runner group limited to this repo. Their instance profile grants nothing beyond SSM; jobs get AWS access only through OIDC, never the instance role. The runner registration credential is a GitHub App key or fine-grained token held in Secrets Manager (a GitHub credential, not an AWS one). Mechanism (EC2 ASG with JIT registration vs actions-runner-controller on a dedicated node group) is chosen in the Phase 2 design pass — **verify**. **The repo is public, so:** self-hosted jobs run only for `push` to `main`, `workflow_dispatch`, tags, and approved environments — never `pull_request`; enable "Require approval for all outside collaborators"; fork PRs never reach these runners.
+
+**Terraform layout:** `infra/terraform/{bootstrap,modules/{network,eks,data,events,ecr,github-oidc,runners,observability},envs/{dev,prod}/{platform,cluster-addons}}`. Remote state in the bootstrap bucket with native locking (`use_lockfile = true`, Terraform ≥ 1.11, where S3 locking is GA); DynamoDB state locking is deprecated. Pin provider versions; one state per env and stack.
 
 | Area | Decision | Enterprise note |
 | --- | --- | --- |
@@ -820,24 +853,26 @@ These are contracts Phase 1 must not violate, not a full spec; each phase gets i
 | EKS | Managed node group, AL2023 AMIs, 3 × m7g.large Graviton/arm64 (dev: 2), matching Apple Silicon builds and cheaper per vCPU, access entries instead of `aws-auth` ConfigMap | Kubernetes 1.36, the newest EKS version in standard support (until 2 Aug 2027); pin it in Terraform. EKS publishes no Amazon Linux 2 AMIs after 1.32, so AL2023 or Bottlerocket only. EKS Auto Mode is a valid simpler alternative with less learning value |
 | Add-ons | vpc-cni, coredns, kube-proxy, eks-pod-identity-agent, metrics-server; Helm: AWS Load Balancer Controller, External Secrets Operator | Install add-ons via Terraform `aws_eks_addon` / `helm_release`, versions pinned |
 | Workload IAM | EKS Pod Identity, one IAM role per ServiceAccount | Least privilege per process: relay = `events:PutEvents` on the bus only; each consumer = receive/delete on its own queue only |
-| Aurora | Aurora PostgreSQL 17.10 (18.x is GA on Aurora; stay on 17 until RDS Proxy support for 18 is confirmed), dev 1 instance, prod writer + reader in 2 AZs; KMS CMK; 7-day backups; deletion protection; RDS-managed master secret; RDS Proxy in front for connection pooling | App users created by a bootstrap migration, secrets in Secrets Manager, never Terraform outputs |
+| Aurora | Aurora PostgreSQL 17.10 (18.x is GA on Aurora and RDS Proxy supports 18.3+; 17 is kept for consistency with local PostgreSQL 17, revisit after the week), dev 1 instance, prod writer + reader in 2 AZs; KMS CMK; 7-day backups; deletion protection; RDS-managed master secret; RDS Proxy in front for connection pooling | App users created by a bootstrap migration, secrets in Secrets Manager, never Terraform outputs |
 | ElastiCache | Valkey 9.0, TLS in transit, AUTH, prod 1 replica Multi-AZ | ElastiCache Serverless is simpler but has a minimum hourly cost — **verify** pricing |
 | DynamoDB | On-demand, PITR on, SSE with KMS, TTL on `ttl` | — |
 | Events | Same names as bootstrap script; SQS SSE; queue policies scoped by `aws:SourceArn`; EventBridge archive | — |
 | ECR | One repo per service, tag immutability, scan on push (Inspector enhanced), lifecycle keep 30 | Tags `sha-<git sha>`; deploy by digest in prod |
 
-**Helm:** the M9 library chart, reused unchanged with new values files, `deploy/helm/retail-service` + `values-<service>-<env>.yaml`. The chart renders, per process: Deployment (rolling, `maxUnavailable: 0`, `maxSurge: 25%`), ServiceAccount, Service (APIs only), PodDisruptionBudget (`minAvailable: 1`), HPA (APIs: CPU 70%, min 2, max 6), zone `topologySpreadConstraints`, probes on `/health/live` and `/health/ready`, `securityContext` (`runAsNonRoot`, `readOnlyRootFilesystem`, drop ALL), ExternalSecret, and the migration Job as a `pre-install,pre-upgrade` hook. One shared Ingress (ALB, HTTPS via ACM, `group.name: retail`) mirrors `gateway/nginx.conf` paths.
+**Helm:** the M9 library chart, reused unchanged with new values files, `deploy/helm/retail-service` + `values-<service>-<env>.yaml`. The chart renders, per process: Deployment (rolling, `maxUnavailable: 0`, `maxSurge: 25%`), ServiceAccount, Service (APIs only), PodDisruptionBudget (`minAvailable: 1`), HPA (APIs: CPU 70%, min 2, max 6), zone `topologySpreadConstraints`, probes on `/health/live` and `/health/ready`, `securityContext` (`runAsNonRoot`, `readOnlyRootFilesystem`, drop ALL, plus an `emptyDir` mounted at `/tmp`), ExternalSecret, and the migration Job as a `pre-install,pre-upgrade` hook. One shared Ingress (ALB, `scheme: internal` so e2e runs from the in-VPC runners, HTTPS via ACM, `group.name: retail`) mirrors `gateway/nginx.conf` paths. There is no domain yet, so dev serves HTTP on the internal ALB; HTTPS via ACM needs a domain you control plus a Route 53 private zone and is deferred.
 
 ### Phase 3 — GitHub Actions (Day 4)
 
 | Workflow | Trigger | Steps |
 | --- | --- | --- |
-| `pr.yml` | Pull request | Path-filtered matrix: ruff, mypy, pytest (unit + integration via Compose), Docker build, Trivy image + config scan (fail on fixable HIGH/CRITICAL), `terraform fmt -check`, `validate`, tflint, Checkov, `helm lint` + kubeconform, `terraform plan` posted as PR comment |
-| `main.yml` | Merge to `main` | Build once → push `sha-<sha>` to ECR → OIDC assume `gha-deploy-dev` → `helm upgrade --install --atomic --wait --timeout 10m` → e2e acceptance against dev |
-| `promote.yml` | Manual / tag | GitHub Environment `prod` with required reviewers → deploy the **same image digest** (never rebuild) → smoke test → record release |
-| `infra.yml` | Changes under `infra/` | Plan on PR, apply on merge per env with environment approval |
+| `bootstrap.yml` | `workflow_dispatch`, environment `bootstrap` | Phase 2 step 2: state bucket (AWS CLI), then the `bootstrap/` Terraform stack that creates the `gha-*` roles. Hosted runner, `gha-bootstrap` |
+| `pr.yml` | Pull request (hosted runners only) | Path-filtered matrix: ruff, mypy, pytest (unit + integration via Compose), Docker build, Trivy image + config scan (fail on fixable HIGH/CRITICAL), `terraform fmt -check`, `validate`, tflint, Checkov, `helm lint` + kubeconform, `terraform plan` via `gha-tf-plan` posted as PR comment |
+| `main.yml` | Merge to `main` | Build once (hosted) → push `sha-<sha>` to ECR → on `retail-vpc` runners: OIDC assume `gha-deploy-dev` → `helm upgrade --install --atomic --wait --timeout 10m` → e2e acceptance against dev |
+| `promote.yml` | Manual / tag | GitHub Environment `prod` with required reviewers → deploy the **same image digest** (never rebuild) on `retail-vpc` runners → smoke test → record release |
+| `infra.yml` | Changes under `infra/` | Plan on PR (hosted); apply on merge per env with environment approval: `platform` stack on hosted runners, then `cluster-addons` on `retail-vpc` runners |
+| `infra-destroy.yml` | `workflow_dispatch`, environment-gated | Destroys an env (cluster-addons first, then platform); never touches `bootstrap`. Supports the idle-cost rule in §14 |
 
-Non-negotiables: OIDC trust policy pinned to `repo:<org>/<repo>:environment:<env>` (not `ref:*`); third-party actions pinned by commit SHA; branch protection with required checks; no long-lived AWS keys in GitHub. Rollback = `helm rollback <release> <revision>` or redeploy the previous digest; works only because migrations are expand/contract (section 5).
+Non-negotiables: each OIDC trust policy is pinned to an exact `sub` (`environment:<env>` or `pull_request`; never a wildcard or `ref:*`); third-party actions pinned by commit SHA; branch protection with required checks; no long-lived AWS keys in GitHub; self-hosted runners never serve `pull_request` or fork code (public repo). Rollback = `helm rollback <release> <revision>` or redeploy the previous digest; works only because migrations are expand/contract (section 5).
 
 ### Phase 4 — Observability and reliability (Day 5)
 
@@ -849,6 +884,8 @@ Non-negotiables: OIDC trust policy pinned to `repo:<org>/<repo>:environment:<env
 | Order processing: orders reaching a terminal state within 30 s | 99% | `order_time_to_terminal_seconds` |
 
 Alarms (page vs ticket decided in the Phase 4 pass): SQS `ApproximateAgeOfOldestMessage` > 120 s; any DLQ `ApproximateNumberOfMessagesVisible` > 0; `outbox_oldest_unpublished_age_seconds` > 60; ALB 5xx rate and p95 `TargetResponseTime`; Aurora CPU, `DatabaseConnections`, `FreeableMemory`; Aurora MaximumUsedTransactionIDs > 1 billion (wraparound risk) and replica lag; pod restarts > 3 in 10 min; EventBridge rule `FailedInvocations` > 0. Logs via Fluent Bit (Container Insights) to CloudWatch; metrics via kube-prometheus-stack or Amazon Managed Service for Prometheus + Grafana.
+
+The failure drills in section 11 run on EKS as `workflow_dispatch` jobs on the `retail-vpc` runners using `gha-deploy-<env>` (for example `kubectl scale deploy/inventory-consumer --replicas=0`); there is no laptop access to the cluster.
 
 Runbooks to write, each tied to an alarm: failed deployment/rollback, unhealthy pods, database connectivity, stuck queue/DLQ redrive, outbox lag.
 
@@ -869,8 +906,10 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 - Domain code has no I/O imports (boto3, sqlalchemy, httpx, redis).
 - Every consumer is idempotent on event_id; dedupe happens in the same transaction as the business write.
 - Order events go through the outbox. Never call PutEvents from a request handler.
-- Money: Decimal / NUMERIC(10,2), strings in JSON. IDs: ULID.
+- Money: Decimal, strings in JSON. NUMERIC(10,2) for prices, NUMERIC(12,2) for order totals. IDs: ULID.
 - AWS clients are built from env only; no endpoint URLs or credentials in code.
+- Cloud AWS access exists only through GitHub Actions OIDC: workflows assume a role by ARN (stored as a GitHub variable, not a secret) with `permissions: id-token: write` and least-privilege per-purpose roles.
+- Workflows that touch EKS run on the ephemeral self-hosted runners in the VPC; everything else runs on GitHub-hosted runners.
 - Liveness checks nothing external. Readiness checks required stores only.
 - Structured JSON logs with correlation_id; metric labels use route templates.
 - Migrations: Alembic, backward compatible, run via the migrate command only.
@@ -883,15 +922,24 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 - Add Kafka, a service mesh, a UI, auth, payments, or GitOps tooling.
 - Write Helm before M8 is done, or Terraform / GitHub Actions before M9 is done.
 - Run kubectl or helm without an explicit --context; local work always targets the orbstack context.
+- Use, request, create or store AWS credentials (no `aws configure`, access keys, or AWS_* secrets in GitHub).
+- Run terraform plan/apply, aws, kubectl or helm against AWS/EKS from the laptop. Locally only: terraform fmt/validate (`init -backend=false`), tflint, checkov, helm lint, kubeconform.
+- Manage the OIDC provider or the `gha-bootstrap` role in Terraform (created by hand; Terraform reads the provider via a data source).
+- Run self-hosted runners for fork PRs, or for any job that is not a deploy/drill/e2e job on main or an approved environment.
 ```
 
 ### Open questions
 
-- [ ] Is Python 3.13/FastAPI acceptable, or does your target stack need Java/Spring Boot or Go? Changing ADR-01 after M1 is expensive.
-- [ ] LocalStack token: free Hobby plan (non-commercial use only) or a paid/CI token? Needed before M2.
-- [ ] Apple Silicon is assumed (arm64 images, Graviton nodes). On an Intel Mac, switch EKS nodes to m7i and keep multi-arch builds.
+- [x] Python 3.13 / FastAPI confirmed (30 Sep 2026); ADR-01 stands.
+- [x] LocalStack: free Hobby plan token (non-commercial use), not paid (30 Sep 2026). The token goes in the git-ignored `.env` as `LOCALSTACK_AUTH_TOKEN`. CI use of the Hobby token is unresolved; decide in the pipeline-strategy pass.
+- [x] Apple Silicon confirmed (30 Sep 2026): arm64 images, Graviton nodes, multi-arch builds.
 - [ ] Should `reserved` stock ever be released or committed? This design never releases (no cancellation). Needed before adding cancellations in a later week.
-- [ ] Dev and prod as two AWS accounts or two namespaces in one account? Enterprise default is separate accounts under AWS Organizations; one account is fine for the week but changes the OIDC and Terraform env design.
+- [x] Environments: the remote repo (https://github.com/loriamichaelj/retail-platform) carries the **dev environment only** (30 Sep 2026). Prod roles, the `prod` Environment and `promote.yml` are deferred; the prod rows in section 13 are illustrative until a prod decision is made.
+- [x] Bootstrap: OIDC provider and `gha-bootstrap` role created by hand; state bucket via `bootstrap.yml` (decided 30 Sep 2026).
+- [x] EKS access: self-hosted ephemeral runners in the VPC, private endpoint (decided 30 Sep 2026). Repo is public, so the runner restrictions in section 13 apply.
+- [x] No domain yet (30 Sep 2026): dev uses HTTP on the internal ALB; HTTPS/ACM is deferred until a domain exists.
+- [x] Runner mechanism: EC2 Auto Scaling group with ephemeral, JIT-registered runners (30 Sep 2026).
+- [ ] Pipeline, cloud and Terraform strategy: deliberately deferred until M9 is done locally. Section 13 is provisional until then.
 - [ ] Budget ceiling for the week's AWS spend (EKS control plane, NAT, Aurora, ElastiCache run 24/7). Decides single-NAT, instance sizes, and whether to `terraform destroy` nightly.
 
 ### Risks
@@ -902,4 +950,7 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 | Outbox relay implemented as "publish then mark" outside a lock | Duplicate or skipped events | Unit test for partial failure; `SKIP LOCKED`; idempotent consumers absorb duplicates |
 | Reservation logic conflates duplicate vs out-of-stock cancellations | Oversell or false rejects | Explicit `CancellationReasons` handling + unit tests (section 5) |
 | Scope creep from Day 1–2 into Day 3+ | No cloud deployment by Day 5 | Milestone gates; M9 is the hard stop for Phase 1 |
-| Idle AWS resources over nights/weekend | Unexpected bill | Tag everything `project=retail-week3`, AWS Budgets alert, destroy dev when idle |
+| Idle AWS resources over nights/weekend | Unexpected bill | Tag everything `project=retail-week3`, AWS Budgets alert, destroy dev via `infra-destroy.yml` when idle |
+| Self-hosted runner on a public repo executes untrusted fork code | Code execution inside the VPC next to the cluster | Runners serve only main/dispatch/tag/environment jobs, never `pull_request`; approval required for outside collaborators; ephemeral single-job runners; instance profile grants SSM only |
+| `gha-bootstrap` can create IAM roles | Effectively admin if the trust is widened or the workflow is edited | Exact `sub` pin to `environment:bootstrap`, required reviewer, `workflow_dispatch` only, branch protection on `.github/` |
+| No local way to run plan/apply/kubectl | Slow feedback; cloud errors surface only in CI | Static checks locally; workflows dump diagnostics on failure; small, frequent infra PRs |
