@@ -1,6 +1,6 @@
 # Retail Microservices Platform — Design Doc
 
-Author: M.L. · 30 Sep 2026 · Status: v1.1, ready for build (v1.1: facts verified 30 Sep 2026; AWS access is GitHub-OIDC-only, so Phases 2–3 are reordered around a bootstrap workflow and in-VPC runners; bootstrap script and spec gaps fixed)
+Author: M.L. · 30 Sep 2026 · Status: v1.2, M0–M2 built (v1.2: layout, bootstrap and tooling notes updated from M0–M2; OrbStack sized for an 8 GB Mac; v1.1: facts verified 30 Sep 2026; AWS access is GitHub-OIDC-only, so Phases 2–3 are reordered around a bootstrap workflow and in-VPC runners; bootstrap script and spec gaps fixed)
 
 ## 1. Overview
 
@@ -315,6 +315,7 @@ EventBridge `PutEvents` entry: `Source = retail.<service>`, `DetailType = <Event
 - `event_id`: ULID, the idempotency key for every consumer.
 - `correlation_id`: from the originating HTTP request; propagated unchanged through every event and log line.
 - `causation_id`: `event_id` of the event that triggered this one.
+- `occurred_at`: UTC with millisecond precision. The model truncates at construction so an envelope equals itself after a round trip over the wire.
 - Versioning: additive fields keep the major version. A breaking change creates `schema_version: "2.0"` and the producer dual-publishes until all consumers migrate. Consumers ignore unknown fields.
 
 ### Catalog
@@ -352,6 +353,14 @@ Queue settings (all three):
 3. Dedupe on `event_id` inside the same transaction as the business write.
 4. Apply business change guarded by current state (state machine in section 7).
 5. Commit, then delete the SQS message. Transient errors → do not delete; SQS redelivers after visibility timeout.
+
+Implementation notes (`retail_common.events.consumer`, M1):
+
+- The handler owns the dedupe-plus-business-write transaction and returns `HandlerOutcome.PROCESSED` or `DUPLICATE`; the consumer counts that outcome and deletes the message.
+- Unknown event types and unknown schema *major* versions are logged and deleted, which is what lets a producer dual-publish `2.0` safely.
+- Poison (unparseable, invalid, or a handler raising `PoisonMessage`) and transient failures both leave the message undeleted; they differ only in the `poison` vs `error` outcome and log level. A poison message therefore waits out the 60 s visibility timeout on each of its 5 receives (about 5 minutes) before reaching the DLQ.
+- Each message runs under its own correlation id (the event's, if it is a safe value) and the caller's context is restored afterwards.
+- Log lines and poison reasons carry field paths and messages only, never payload values.
 
 ### Order Service outbox relay
 
@@ -475,14 +484,15 @@ One monorepo, `uv` workspaces, one Dockerfile per service built from the repo ro
 
 ```text
 retail-platform/
-├── CLAUDE.md                     # short pointer to this doc + working rules (section 14)
+├── CLAUDE.md                     # working rules (section 14); git-ignored, kept locally
 ├── docs/
 │   ├── DESIGN.md                 # this document
 │   ├── adr/                      # one file per ADR when decisions change
 │   └── runbooks/                 # Phase 4
 ├── libs/common/                  # installable package: retail_common
 │   └── retail_common/
-│       ├── config.py             # BaseServiceSettings
+│       ├── config.py             # BaseServiceSettings, AwsSettings
+│       ├── service.py            # create_service_app(): wires logging, correlation, metrics, errors, health
 │       ├── logging.py            # structlog setup, correlation-id middleware
 │       ├── metrics.py            # Prometheus middleware + shared metrics
 │       ├── health.py             # live/ready router with pluggable checks
@@ -495,7 +505,7 @@ retail-platform/
 │       └── errors.py             # error model + exception handlers
 ├── services/
 │   ├── product-service/
-│   │   ├── app/  (main.py, api/, domain/, repo/, cache.py)
+│   │   ├── app/  (main.py, config.py, api/, domain/, repo/, cache.py)
 │   │   ├── migrations/           # Alembic
 │   │   ├── tests/  (unit/, integration/)
 │   │   ├── Dockerfile
@@ -509,7 +519,7 @@ retail-platform/
 │   ├── docker-compose.yml
 │   ├── localstack/init/ready.d/10-bootstrap.sh
 │   ├── postgres/init/01-databases.sh
-│   ├── seed/seed.py              # categories, 20 products, stock levels
+│   ├── seed/                     # catalog.py (data) + seed.py; shipped in the product image
 │   └── observability/ (prometheus.yml, grafana/)
 ├── tests/e2e/                    # acceptance + failure drills (pytest)
 ├── deploy/helm/                  # M9 (placeholder until then)
@@ -521,6 +531,8 @@ retail-platform/
 ```
 
 Inside each service: `api/` (FastAPI routers, request/response models) → `domain/` (pure logic, no I/O) → `repo/` (SQLAlchemy / boto3 adapters). Domain code never imports boto3, SQLAlchemy or httpx; that is what makes unit tests fast and the cloud swap config-only.
+
+Every service's top-level package is named `app`, so two services cannot share one Python environment. Services are therefore uv workspace members with `package = false` (run from their own directory or image, never installed), and `make lint` / `make test` run mypy and pytest once per service in separate processes with separate caches.
 
 ### Stack (pin exact versions in `uv.lock`)
 
@@ -656,72 +668,14 @@ volumes:
 
 Creates exactly the resources Terraform will create in Phase 2, with the same names. Keep the two in sync; a stretch goal is to replace this script with the Phase 2 Terraform module applied via `tflocal`.
 
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-REGION=us-east-1
-ACCT=000000000000
-BUS=retail-events
+The script in the repository is the verified version. It ran unmodified on the first real start against `localstack/localstack:2026.03.0` and created the bus, 4 rules, 3 queues plus 3 DLQs, 3 DynamoDB tables and the Lambda. Its differences from the original design sketch:
 
-awslocal events create-event-bus --name "$BUS"
+- The Lambda zip is built from *inside* the function directory so `handler.py` sits at the archive root. The sketch zipped an absolute path, which stores the file under `opt/functions/...` where `handler.lambda_handler` cannot resolve.
+- DynamoDB TTL is enabled on `inventory_reservations` and `notifications` (attribute `ttl`).
+- M2 ships a stub `handler.py`; M7 replaces it. The script needs it present or `set -e` aborts the bootstrap.
+- The unused queue-URL echo is gone, and the script ends by printing `retail bootstrap complete` and touching `/tmp/bootstrap.done`, which is the Compose healthcheck.
 
-mk_queue() {  # $1 = queue name
-  local dlq_url dlq_arn url arn
-  dlq_url=$(awslocal sqs create-queue --queue-name "$1-dlq" \
-    --attributes MessageRetentionPeriod=1209600 --query QueueUrl --output text)
-  dlq_arn=$(awslocal sqs get-queue-attributes --queue-url "$dlq_url" \
-    --attribute-names QueueArn --query Attributes.QueueArn --output text)
-  url=$(awslocal sqs create-queue --queue-name "$1" --attributes \
-    "{\"VisibilityTimeout\":\"60\",\"ReceiveMessageWaitTimeSeconds\":\"20\",\"RedrivePolicy\":\"{\\\"deadLetterTargetArn\\\":\\\"$dlq_arn\\\",\\\"maxReceiveCount\\\":\\\"5\\\"}\"}" \
-    --query QueueUrl --output text)
-  echo "$url"
-}
-
-route() {  # $1 rule, $2 queue, $3 JSON array of detail-types
-  local url arn
-  url=$(mk_queue "$2")
-  arn="arn:aws:sqs:$REGION:$ACCT:$2"
-  awslocal events put-rule --event-bus-name "$BUS" --name "$1" \
-    --event-pattern "{\"detail-type\":$3}"
-  awslocal events put-targets --event-bus-name "$BUS" --rule "$1" \
-    --targets "Id=1,Arn=$arn"
-}
-
-route to-inventory    inventory-order-events '["OrderCreated"]'
-route to-order        order-inventory-events '["InventoryReserved","InventoryFailed"]'
-route to-notification notification-events    '["InventoryReserved","InventoryFailed","OrderStatusUpdated"]'
-
-awslocal dynamodb create-table --table-name inventory \
-  --attribute-definitions AttributeName=sku,AttributeType=S \
-  --key-schema AttributeName=sku,KeyType=HASH --billing-mode PAY_PER_REQUEST
-awslocal dynamodb create-table --table-name inventory_reservations \
-  --attribute-definitions AttributeName=order_id,AttributeType=S \
-  --key-schema AttributeName=order_id,KeyType=HASH --billing-mode PAY_PER_REQUEST
-awslocal dynamodb create-table --table-name notifications \
-  --attribute-definitions AttributeName=order_id,AttributeType=S AttributeName=event_id,AttributeType=S \
-  --key-schema AttributeName=order_id,KeyType=HASH AttributeName=event_id,KeyType=RANGE \
-  --billing-mode PAY_PER_REQUEST
-
-for t in inventory_reservations notifications; do
-  awslocal dynamodb update-time-to-live --table-name "$t" \
-    --time-to-live-specification Enabled=true,AttributeName=ttl
-done
-
-# Lambda: package from mounted source without needing `zip` in the image.
-# M2 ships a stub handler (returns None) so this block succeeds before M7 implements it.
-cd /tmp && python3 -m zipfile -c low-stock.zip /opt/functions/low-stock-alert/handler.py
-awslocal lambda create-function --function-name low-stock-alert --runtime python3.13 \
-  --handler handler.lambda_handler --zip-file fileb:///tmp/low-stock.zip \
-  --role "arn:aws:iam::$ACCT:role/lambda-role" --environment Variables={LOW_STOCK_THRESHOLD=5}
-awslocal events put-rule --event-bus-name "$BUS" --name to-low-stock \
-  --event-pattern '{"detail-type":["InventoryReserved"]}'
-awslocal events put-targets --event-bus-name "$BUS" --rule to-low-stock \
-  --targets "Id=1,Arn=arn:aws:lambda:$REGION:$ACCT:function:low-stock-alert"
-
-touch /tmp/bootstrap.done
-```
-
-The script is a spec, not a guarantee: Claude Code must run it and fix quoting or API differences against the pinned LocalStack version.
+LocalStack state is in memory: the script runs on every start, and DynamoDB data (seeded stock) does not survive a restart while PostgreSQL data does. Run `make seed` after `make up`.
 
 **LocalStack needs an auth token (verified).** Since release 2026.03.0, `localstack/localstack` is a single image that will not start without `LOCALSTACK_AUTH_TOKEN`, and tags use calendar versioning. The free Hobby plan covers the services used here but is for non-commercial use; for employer work, use a paid or CI token. Put the token in `.env` (git-ignored) and pin a CalVer tag in `LOCALSTACK_TAG`. If a token is not an option, fall back to `amazon/dynamodb-local` + ElasticMQ for SQS + an in-process `LocalEventBus` adapter that applies the routing table above; the publisher port in `retail_common.events` makes that a config switch, not a rewrite.
 
@@ -731,7 +685,9 @@ LocalStack does not enforce IAM, SQS queue policies or Lambda invoke permissions
 
 ### Makefile targets
 
-`up`, `down`, `reset` (drop volumes), `logs s=<svc>`, `seed`, `test` (unit), `itest` (integration), `e2e`, `drill-consumer-down`, `drill-poison`, `lint`, `fmt`, `dlq-peek q=<queue>`, `dlq-redrive q=<queue>`.
+`up`, `down`, `reset` (drop volumes), `logs s=<svc>`, `seed`, `test` (unit), `itest` (integration), `e2e`, `drill-consumer-down`, `drill-poison`, `lint`, `fmt`, `dlq-peek q=<queue>`, `dlq-redrive q=<queue>`; plus `lock` and `sync` for the uv environment.
+
+Conventions (built in M0–M2): `up` runs `docker compose up -d --build --wait`, so it blocks until PostgreSQL, Valkey and LocalStack (healthy only after the bootstrap finishes) are healthy and fails if a container exits. Images are tagged `retail/<svc>:dev-<git sha>` through `IMAGE_TAG`, never `:latest` (Compose would otherwise tag builds `:latest`), so Compose must be run through `make`. `down`, `reset` and `logs` work even before `LOCALSTACK_AUTH_TOKEN` is set. `seed` runs the `seed` job (Compose profile `tools`). `test` also enforces the 80% coverage gate on `libs/common`.
 
 ### OrbStack and local Kubernetes
 
@@ -752,7 +708,7 @@ Rules and gotchas:
 - **Ingress (verified).** OrbStack installs no ingress controller; LoadBalancer services are reachable from the Mac at `*.k8s.orb.local`. Install Traefik with Helm and route host `retail.k8s.orb.local`. `ingressClassName` and annotations are per-env values (`traefik` locally, `alb` on EKS), and paths mirror `gateway/nginx.conf`. Do not use ingress-nginx: it was retired in March 2026 and receives no security fixes.
 - **No cloud identity locally.** No Pod Identity or External Secrets in M9. `values-local.yaml` renders a plain Secret from `.env` with LocalStack `test` credentials; the chart toggles `externalSecret.enabled` and the ServiceAccount role per env.
 - **CPU architecture.** On Apple Silicon, local images are `linux/arm64`. EKS nodes are therefore Graviton (arm64) in this design, and CI builds `linux/arm64,linux/amd64` with `docker buildx`. An amd64-only image on arm64 nodes fails at start with `exec format error`.
-- **Resources.** Give the OrbStack VM at least 8 GB RAM. Local values request 50m CPU / 128Mi per pod so 13 processes plus Traefik fit. HPA needs metrics-server: install it if `kubectl --context orbstack top nodes` fails.
+- **Resources.** Give the OrbStack VM 6 GB on an 8 GB Mac (`orbctl config set memory_mib 6144`, then `orbctl stop`; it restarts on the next Docker command), or 8 GB or more on a larger machine. The limit is a cap, not a reservation, but equalling the Mac's total RAM risks swapping. The LocalStack Lambda runtime adds a container on top of the stack. Local values request 50m CPU / 128Mi per pod so 13 processes plus Traefik fit. HPA needs metrics-server: install it if `kubectl --context orbstack top nodes` fails.
 - **Context safety.** Every `k8s-*` Make target passes `--kube-context orbstack` / `--context orbstack` explicitly, so a local command can never land on an EKS cluster that happens to be the current context.
 
 Additional Make targets: `k8s-build`, `k8s-deploy` (`helm upgrade --install --atomic` with local values), `k8s-e2e` (acceptance test through the local ingress), `k8s-rollback`, `k8s-down`.
@@ -805,9 +761,9 @@ The "Bus unavailable" drill is the one that proves ADR-04. If it fails, the outb
 
 Ten milestones, each a separate PR-sized unit that leaves `make up` working. Claude Code finishes one, runs its checks, and stops for review before the next.
 
-- [ ] **M0 — Scaffold.** Repo tree from section 9, uv workspace, ruff/mypy/pytest config, Makefile, `.env.example`, `CLAUDE.md`, empty service apps returning `/health/live`. *Done when:* `make lint test` passes; `make up` starts four services with 200 on `/health/live`.
-- [ ] **M1 — `libs/common`.** Settings, structlog + correlation middleware, metrics middleware, health router, error model, httpx client, envelope + v1 schemas, EventBridge publisher, SQS consumer loop. *Done when:* unit tests cover partial `PutEvents` failure, poison vs transient handling, correlation propagation.
-- [ ] **M2 — Local infrastructure.** Compose with PostgreSQL, Valkey, LocalStack (auth token in .env), gateway; PostgreSQL init (two DBs; per service an owner role for migrations and an app role with DML only); LocalStack bootstrap (including DynamoDB TTL and a stub `functions/low-stock-alert/handler.py` that M7 replaces); seed script (5 categories, 20 products, stock 10–50 each). *Done when:* `awslocal events list-rules --event-bus-name retail-events` shows 4 rules; tables and queues exist; seed is idempotent.
+- [x] **M0 — Scaffold.** Repo tree from section 9, uv workspace, ruff/mypy/pytest config, Makefile, `.env.example`, `CLAUDE.md`, empty service apps returning `/health/live`. *Done when:* `make lint test` passes; `make up` starts four services with 200 on `/health/live`.
+- [x] **M1 — `libs/common`.** Settings, structlog + correlation middleware, metrics middleware, health router, error model, httpx client, envelope + v1 schemas, EventBridge publisher, SQS consumer loop. *Done when:* unit tests cover partial `PutEvents` failure, poison vs transient handling, correlation propagation.
+- [x] **M2 — Local infrastructure.** Compose with PostgreSQL, Valkey, LocalStack (auth token in .env), gateway; PostgreSQL init (two DBs; per service an owner role for migrations and an app role with DML only); LocalStack bootstrap (including DynamoDB TTL and a stub `functions/low-stock-alert/handler.py` that M7 replaces); seed script (5 categories, 20 products, stock 10–50 each; the catalog half skips with a warning until M3's migration creates the tables, stock seeds immediately). *Done when:* `awslocal events list-rules --event-bus-name retail-events` shows 4 rules; tables and queues exist; seed is idempotent.
 - [ ] **M3 — Product Service.** Alembic migration, CRUD, cache-aside + invalidation, readiness on PostgreSQL. *Done when:* integration tests pass with Valkey up and down.
 - [ ] **M4 — Inventory Service API.** Get stock, batch availability, admin set-stock. *Done when:* strongly consistent reads verified in integration test.
 - [ ] **M5 — Order Service (sync path + outbox).** Migration, create order with price snapshot, idempotency key, pre-check, outbox write in the same transaction, relay process. *Done when:* `POST /orders` → row in `orders` + `outbox`; relay publishes; the "Bus unavailable" drill passes.
@@ -901,6 +857,10 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 - Work one milestone (M0–M9) at a time. Finish with: make lint test (and itest/e2e when the milestone says so).
 - Stop after each milestone with a summary of what changed, what was verified, and any deviation from DESIGN.md.
 - Ask before adding a dependency, a service, a table, an event type, or changing an API contract.
+- Develop on the `dev` branch; `main` is protected and only takes PRs from `dev`. Commit only when asked, and push or open a PR only when asked.
+- No AI attribution in commits or PRs (no Co-Authored-By or "Generated with" lines).
+- Run lint, test, up, down, seed and logs through `make`: Compose needs the Makefile's `IMAGE_TAG` and `--env-file .env`.
+- Every service's package is named `app`, so mypy and pytest run once per service (`make lint test` does this); never run one pytest or mypy over several services.
 
 ## Must
 - Domain code has no I/O imports (boto3, sqlalchemy, httpx, redis).
@@ -916,6 +876,7 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 
 ## Must not
 - Commit secrets or .env. Use .env.example.
+- Read, print or log values from .env (LOCALSTACK_AUTH_TOKEN, passwords). Check only whether a value is set.
 - Cache inventory/stock data.
 - Use :latest image tags anywhere (Compose, CI, or Helm values).
 - Use KEYS * in Valkey, floats for money, or bare except.
