@@ -1,0 +1,60 @@
+[project]
+name = "retail-platform"
+version = "0.0.0"
+description = "Workspace root for the retail microservices platform (see docs/DESIGN.md)."
+requires-python = ">=3.13,<3.14"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "httpx",
+    "mypy",
+    "pytest",
+    "pytest-cov",
+    "ruff",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["libs/common", "services/*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "BLE", "S", "DTZ", "PT", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["S101"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["retail_common", "app"]
+
+[tool.mypy]
+python_version = "3.13"
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+
+# Strict on libs/common and every service's domain/ (DESIGN.md section 9).
+# `strict = true` is not accepted in per-module overrides, so the flags are spelled out.
+[[tool.mypy.overrides]]
+module = ["retail_common", "retail_common.*", "app.domain", "app.domain.*"]
+disallow_any_generics = true
+disallow_incomplete_defs = true
+disallow_subclassing_any = true
+disallow_untyped_calls = true
+disallow_untyped_decorators = true
+disallow_untyped_defs = true
+extra_checks = true
+no_implicit_reexport = true
+strict_equality = true
+warn_return_any = true
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+markers = ["integration: needs the Compose stack (make up)"]

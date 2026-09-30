@@ -1,0 +1,17 @@
+[project]
+name = "inventory-service"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi",
+    "retail-common",
+    "uvicorn",
+]
+
+# Deployable app, not an installable library: every service's top-level package is
+# named `app`, so the code is run from its directory instead of being installed.
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+retail-common = { workspace = true }

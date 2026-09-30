@@ -1,1 +1,26 @@
 CLAUDE.md
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+
+# Python / tooling
+.venv/
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+*.egg-info/
+
+# Terraform (Phase 2+); state and plans never belong in git
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+
+.DS_Store

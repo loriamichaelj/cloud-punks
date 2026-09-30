@@ -1,0 +1,51 @@
+# M0: the four service stubs only. PostgreSQL, Valkey, LocalStack and the gateway arrive in M2.
+# Always run through the Makefile (it sets IMAGE_TAG and --env-file .env).
+name: retail
+
+x-svc: &svc
+  env_file: ../.env
+  restart: unless-stopped
+  environment: &env
+    ENVIRONMENT: local
+    LOG_LEVEL: INFO
+
+services:
+  product-service:
+    <<: *svc
+    image: retail/product-service:${IMAGE_TAG:?use make up}
+    build: { context: .., dockerfile: services/product-service/Dockerfile }
+    command: ["api"]
+    environment:
+      <<: *env
+      SERVICE_NAME: product-service
+    ports: ["8001:8001"]
+
+  inventory-service:
+    <<: *svc
+    image: retail/inventory-service:${IMAGE_TAG:?use make up}
+    build: { context: .., dockerfile: services/inventory-service/Dockerfile }
+    command: ["api"]
+    environment:
+      <<: *env
+      SERVICE_NAME: inventory-service
+    ports: ["8002:8002"]
+
+  order-service:
+    <<: *svc
+    image: retail/order-service:${IMAGE_TAG:?use make up}
+    build: { context: .., dockerfile: services/order-service/Dockerfile }
+    command: ["api"]
+    environment:
+      <<: *env
+      SERVICE_NAME: order-service
+    ports: ["8003:8003"]
+
+  notification-service:
+    <<: *svc
+    image: retail/notification-service:${IMAGE_TAG:?use make up}
+    build: { context: .., dockerfile: services/notification-service/Dockerfile }
+    command: ["api"]
+    environment:
+      <<: *env
+      SERVICE_NAME: notification-service
+    ports: ["8004:8004"]
