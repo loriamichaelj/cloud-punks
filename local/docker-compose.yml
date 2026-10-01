@@ -21,6 +21,7 @@ x-svc: &svc
 services:
   postgres:
     image: postgres:17
+    restart: unless-stopped
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set it in .env}
       # Read by init/01-databases.sh to create the <svc>_owner / <svc>_app roles.
@@ -41,6 +42,7 @@ services:
 
   valkey:
     image: valkey/valkey:9.0
+    restart: unless-stopped
     ports: ["6379:6379"]
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
@@ -49,6 +51,7 @@ services:
 
   localstack:
     image: localstack/localstack:${LOCALSTACK_TAG:?set it in .env}
+    restart: unless-stopped
     environment:
       SERVICES: events,sqs,dynamodb,lambda,logs,iam,sts
       LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:?set it in .env}
@@ -111,6 +114,23 @@ services:
       localstack: { condition: service_healthy }
     ports: ["8002:8002"]
 
+  # One-shot: applies Alembic migrations as the schema owner, then exits (ADR-11).
+  order-migrate:
+    <<: *svc
+    image: retail/order-service:${IMAGE_TAG:?use make up}
+    build: { context: .., dockerfile: services/order-service/Dockerfile }
+    command: ["migrate"]
+    restart: "no"
+    environment:
+      <<: *env
+      SERVICE_NAME: order-migrate
+      DB_HOST: postgres
+      DB_NAME: order_db
+      DB_USER: order_owner
+      DB_PASSWORD: ${ORDER_OWNER_PASSWORD:?set it in .env}
+    depends_on:
+      postgres: { condition: service_healthy }
+
   order-service:
     <<: *svc
     image: retail/order-service:${IMAGE_TAG:?use make up}
@@ -119,7 +139,35 @@ services:
     environment:
       <<: *env
       SERVICE_NAME: order-service
+      DB_HOST: postgres
+      DB_NAME: order_db
+      DB_USER: order_app
+      DB_PASSWORD: ${ORDER_APP_PASSWORD:?set it in .env}
+      PRODUCT_SERVICE_URL: http://product-service:8001
+      INVENTORY_SERVICE_URL: http://inventory-service:8002
+    # Product and inventory are not start-up dependencies: the API answers 503 while they are
+    # down and recovers by itself, which is the behaviour worth having in an outage.
+    depends_on:
+      order-migrate: { condition: service_completed_successfully }
     ports: ["8003:8003"]
+
+  # The outbox relay: the only process that publishes order events (ADR-04). Same image, own
+  # command; health and metrics on the side port 9000 (internal only).
+  order-relay:
+    <<: *svc
+    image: retail/order-service:${IMAGE_TAG:?use make up}
+    build: { context: .., dockerfile: services/order-service/Dockerfile }
+    command: ["relay"]
+    environment:
+      <<: *env
+      SERVICE_NAME: order-relay
+      DB_HOST: postgres
+      DB_NAME: order_db
+      DB_USER: order_app
+      DB_PASSWORD: ${ORDER_APP_PASSWORD:?set it in .env}
+    depends_on:
+      order-migrate: { condition: service_completed_successfully }
+      localstack: { condition: service_healthy }
 
   notification-service:
     <<: *svc

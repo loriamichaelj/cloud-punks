@@ -585,6 +585,7 @@ name = "order-service"
 version = "0.1.0"
 source = { virtual = "services/order-service" }
 dependencies = [
+    { name = "alembic" },
     { name = "fastapi" },
     { name = "retail-common" },
     { name = "uvicorn" },
@@ -592,6 +593,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "alembic" },
     { name = "fastapi" },
     { name = "retail-common", editable = "libs/common" },
     { name = "uvicorn" },
@@ -891,10 +893,13 @@ dependencies = [
     { name = "fastapi" },
     { name = "httpx2" },
     { name = "prometheus-client" },
+    { name = "psycopg", extra = ["binary"] },
     { name = "pydantic-settings" },
     { name = "python-ulid" },
+    { name = "sqlalchemy" },
     { name = "structlog" },
     { name = "tenacity" },
+    { name = "uvicorn" },
 ]
 
 [package.metadata]
@@ -903,10 +908,13 @@ requires-dist = [
     { name = "fastapi" },
     { name = "httpx2" },
     { name = "prometheus-client" },
+    { name = "psycopg", extras = ["binary"] },
     { name = "pydantic-settings" },
     { name = "python-ulid" },
+    { name = "sqlalchemy" },
     { name = "structlog" },
     { name = "tenacity" },
+    { name = "uvicorn" },
 ]
 
 [[package]]

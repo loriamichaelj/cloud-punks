@@ -22,7 +22,7 @@ from sqlalchemy.exc import OperationalError
 from app.config import DatabaseSettings, Settings
 from app.main import create_app
 from app.migrate import run_migrations
-from app.repo.db import build_engine
+from retail_common.database import build_engine
 
 PG_HOST = "localhost"
 VALKEY_HOST = "localhost"

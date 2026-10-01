@@ -5,8 +5,8 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.main import create_app
-from app.repo.db import build_engine
 from app.repo.products import PostgresProductRepository
+from retail_common.database import build_engine
 
 
 def dead_repository() -> PostgresProductRepository:
@@ -50,7 +50,7 @@ def test_database_outage_is_a_503_not_a_500_and_cached_reads_survive(
 
 
 def test_a_dead_database_makes_the_service_unready_but_not_unlive() -> None:
-    from app.repo.db import ping
+    from retail_common.database import ping
     from retail_common.health import ReadinessCheck
 
     repository = dead_repository()

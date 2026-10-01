@@ -56,14 +56,22 @@ test: sync
 
 # Integration tests run each service in-process against the real stores of the running stack
 # (`make up` first). `--env-file .env` supplies the database passwords to the tests.
+#
+# The order relay tests need exclusive ownership of the outbox, so a running `order-relay`
+# container is paused for the run and started again afterwards (even if a test fails).
 itest: sync
-	@for s in $(SERVICES); do \
+	@relay_was_running=$$($(COMPOSE_NOAUTH) ps --status running --services 2>/dev/null | grep -c '^order-relay$$' || true); \
+	if [ "$$relay_was_running" != "0" ]; then echo "pausing order-relay for the integration tests"; $(COMPOSE_NOAUTH) stop order-relay >/dev/null; fi; \
+	status=0; \
+	for s in $(SERVICES); do \
 		if ls services/$$s/tests/integration/test_*.py >/dev/null 2>&1; then \
 			echo "pytest integration $$s"; \
 			PYTHONPATH=services/$$s:services/$$s/tests/integration $(RUN) --env-file .env \
-				pytest services/$$s/tests/integration -q -m integration || exit 1; \
+				pytest services/$$s/tests/integration -q -m integration || { status=$$?; break; }; \
 		fi; \
-	done
+	done; \
+	if [ "$$relay_was_running" != "0" ]; then echo "starting order-relay again"; $(COMPOSE_NOAUTH) start order-relay >/dev/null; fi; \
+	exit $$status
 
 # --wait blocks until postgres, valkey and localstack (whose healthcheck waits for the bootstrap
 # script) are healthy, and fails if a container exits, e.g. LocalStack without a token.

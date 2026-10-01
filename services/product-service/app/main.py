@@ -12,8 +12,8 @@ from app.cache import CacheMetrics, ValkeyProductCache
 from app.config import Settings
 from app.domain.ports import ProductCache, ProductRepository
 from app.domain.service import ProductService
-from app.repo.db import build_engine, ping
 from app.repo.products import PostgresProductRepository
+from retail_common.database import build_engine, ping
 from retail_common.health import ReadinessCheck
 from retail_common.metrics import build_registry
 from retail_common.service import create_service_app

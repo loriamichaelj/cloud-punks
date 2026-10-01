@@ -2,7 +2,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.config import DatabaseSettings, Settings
-from app.repo.db import database_url
+from retail_common.database import database_url
 
 DB = {
     "DB_HOST": "postgres",

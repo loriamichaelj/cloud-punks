@@ -8,8 +8,6 @@ import structlog
 from sqlalchemy import ColumnElement, Engine, Row, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import Connection
-from sqlalchemy.exc import InterfaceError, OperationalError
-from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from app.domain.errors import DuplicateSku, ProductNotFound, StoreUnavailable, UnknownCategory
 from app.domain.models import (
@@ -20,6 +18,7 @@ from app.domain.models import (
     ProductPage,
 )
 from app.repo.tables import categories, products
+from retail_common.database import STORE_ERRORS
 
 _log = structlog.get_logger("product_repository")
 
@@ -34,7 +33,7 @@ def _store_errors() -> Iterator[None]:
     """
     try:
         yield
-    except (OperationalError, InterfaceError, PoolTimeoutError) as exc:
+    except STORE_ERRORS as exc:
         _log.warning("store_unavailable", error=type(exc).__name__)
         raise StoreUnavailable from exc
 

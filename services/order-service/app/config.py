@@ -1,7 +1,28 @@
-"""order-service settings; service-specific variables are added as milestones need them."""
+"""order-service settings (DESIGN.md section 8). Everything comes from the environment.
 
-from retail_common.config import BaseServiceSettings
+Three processes share one image and need different variables, so each gets its own class and a
+missing variable fails only the process that needs it:
+
+* ``DatabaseSettings`` - the ``migrate`` job (runs as ``order_owner``);
+* ``Settings`` - the API (runs as ``order_app``): also needs the two upstream URLs. It never talks
+  to the event bus: events leave only through the outbox relay;
+* ``RelaySettings`` - the relay: also needs AWS and the bus name, but no upstream URLs.
+"""
+
+from pydantic import Field
+
+from retail_common.config import AwsSettings
+from retail_common.database import DatabaseSettings as CommonDatabaseSettings
 
 
-class Settings(BaseServiceSettings):
+class DatabaseSettings(CommonDatabaseSettings):
     service_name: str = "order-service"
+
+
+class Settings(DatabaseSettings):
+    product_service_url: str = Field(min_length=1)
+    inventory_service_url: str = Field(min_length=1)
+
+
+class RelaySettings(DatabaseSettings, AwsSettings):
+    event_bus_name: str = Field(min_length=1)

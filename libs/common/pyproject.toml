@@ -8,10 +8,13 @@ dependencies = [
     "fastapi",
     "httpx2",
     "prometheus-client",
+    "psycopg[binary]",
     "pydantic-settings",
     "python-ulid",
+    "sqlalchemy",
     "structlog",
     "tenacity",
+    "uvicorn",
 ]
 
 [build-system]
