@@ -17,7 +17,7 @@ EventBridge, SQS, DynamoDB and Lambda run in LocalStack, so no AWS account or cr
 - Docker with Compose (developed on OrbStack, Apple Silicon)
 - [`uv`](https://docs.astral.sh/uv/) and Python 3.13
 - Node 24 (`ui/.nvmrc`), only for the `ui-*` targets
-- A free LocalStack Hobby auth token (non-commercial use): <https://app.localstack.cloud>
+- A LocalStacc auth token: <https://app.localstack.cloud>
 
 ## Run it
 
