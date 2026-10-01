@@ -13,11 +13,24 @@ from fastapi import FastAPI
 
 DEFAULT_PORT = 9000
 
+# How long an idle HTTP connection stays open. uvicorn's default is 5 s, which loses a race with
+# any proxy that reuses connections: the proxy sends a request on a connection the server has just
+# closed and the caller gets a 502 or a hung request although nothing was wrong (seen with Traefik
+# on the local cluster). It must exceed the proxy's idle timeout; the ALB's is 60 s.
+HTTP_KEEP_ALIVE_S = 75
+
 
 class SideServer:
     def __init__(self, app: FastAPI, *, host: str = "0.0.0.0", port: int = DEFAULT_PORT) -> None:  # noqa: S104
         # log_config/access_log off: retail_common owns logging (shared JSON format).
-        config = uvicorn.Config(app, host=host, port=port, log_config=None, access_log=False)
+        config = uvicorn.Config(
+            app,
+            host=host,
+            port=port,
+            log_config=None,
+            access_log=False,
+            timeout_keep_alive=HTTP_KEEP_ALIVE_S,
+        )
         self._server = uvicorn.Server(config)
         self._thread = threading.Thread(target=self._server.run, name="side-server", daemon=True)
 

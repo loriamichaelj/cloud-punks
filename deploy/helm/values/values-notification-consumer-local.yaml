@@ -1,0 +1,9 @@
+image:
+  repository: retail/notification-service
+args: [consumer]
+port: 9000   # health and metrics side server
+preStopSleepSeconds: 0
+terminationGracePeriodSeconds: 40
+env:
+  SERVICE_NAME: notification-consumer
+  QUEUE_NAME: notification-events

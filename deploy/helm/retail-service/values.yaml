@@ -1,0 +1,88 @@
+# Defaults for one process. Each release sets only what differs (values/values-<release>-<env>.yaml).
+# The same chart serves every environment: only the values files change (DESIGN.md section 13).
+
+nameOverride: ""
+
+image:
+  repository: ""        # required for a workload, e.g. retail/order-service
+  tag: ""               # required for a workload: set by the deploy target (dev-<git sha>), never "latest"
+  pullPolicy: IfNotPresent
+
+# Set false for a release that renders only an Ingress or the backing-service names.
+workload:
+  enabled: true
+
+args: []                # the image's ENTRYPOINT is `python -m app`; the process is its argument (api, relay, consumer)
+replicas: 1             # ignored when hpa.enabled (the autoscaler owns the count)
+
+# Container port and what probes ask. APIs listen on their service port; consumers and the relay
+# serve health and metrics on a side port (9000).
+port: 8000
+probes:
+  livePath: /health/live       # checks nothing external
+  readyPath: /health/ready     # checks required stores only
+  startupFailureThreshold: 30  # x 2 s: time to start
+terminationGracePeriodSeconds: 30
+preStopSleepSeconds: 5          # APIs and the UI: let the Service stop routing before SIGTERM
+
+# Plain, non-secret environment (ConfigMap). Secrets are referenced by name, never inlined.
+env: {}
+secretEnv: []           # [{name: DB_PASSWORD, secret: order-app-db, key: DB_PASSWORD}]
+
+service:
+  enabled: false        # APIs and the UI
+  port: 8000
+
+serviceAccount:
+  create: true
+  annotations: {}       # EKS: the Pod Identity / IRSA role per process
+
+resources:
+  requests: { cpu: 50m, memory: 128Mi }
+  limits: { memory: 256Mi }
+
+securityContext:
+  runAsUser: 10001
+  runAsGroup: 10001
+
+pdb:
+  enabled: false
+hpa:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  cpuUtilization: 70
+
+topologySpread:
+  enabled: true         # spread across zones when the cluster has them; never blocks scheduling
+
+# Alembic migration Job, a pre-install,pre-upgrade hook. It runs before the release's own
+# ConfigMap exists, so it carries its own environment, and as the schema owner role.
+migrate:
+  enabled: false
+  env: {}
+  secretEnv: []
+
+# EKS: External Secrets Operator creates the same Secrets that `make k8s-secrets` creates locally.
+externalSecret:
+  enabled: false
+  secretStore: { name: aws-secrets-manager, kind: ClusterSecretStore }
+  secrets: []           # [{name: order-app-db, data: [{secretKey: DB_PASSWORD, remoteKey: ..., property: ...}]}]
+
+# One shared Ingress mirrors gateway/nginx.conf; `/` is the default rule, to the UI.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: ""
+  routes: []            # [{path: /api/v1/orders, service: order-service, port: 8003}]
+  default: { service: ui, port: 8005 }
+
+# Names the pods use for stores that live outside the cluster (DB_HOST=postgres is the same string
+# as in Compose). Locally they point at the Mac; on EKS the endpoints come from ConfigMaps instead.
+externalNames: {}       # {postgres: host.docker.internal}
+
+# The same, as a fixed address: a selector-less Service plus an EndpointSlice. Cluster DNS answers
+# these itself, whereas an ExternalName is resolved upstream and was measured at up to 750 ms
+# on OrbStack, longer than the 500 ms a readiness check may take.
+externalAddresses: {}   # {postgres: {ip: 0.250.250.254, port: 5432}}

@@ -1,0 +1,14 @@
+image:
+  repository: retail/order-service
+args: [consumer]
+port: 9000   # health and metrics side server
+preStopSleepSeconds: 0
+terminationGracePeriodSeconds: 40
+env:
+  SERVICE_NAME: order-consumer
+  QUEUE_NAME: order-inventory-events
+  DB_HOST: postgres
+  DB_NAME: order_db
+  DB_USER: order_app
+secretEnv:
+  - { name: DB_PASSWORD, secret: order-app-db, key: DB_PASSWORD }

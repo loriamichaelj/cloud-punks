@@ -1,0 +1,11 @@
+# PostgreSQL, Valkey and LocalStack stay in Compose on the Mac (as managed services do on EKS);
+# these names let pods use the same DB_HOST=postgres, redis://valkey, http://localstack:4566.
+# 0.250.250.254 is OrbStack's fixed address for the Mac (what host.docker.internal resolves to).
+# An ExternalName to host.docker.internal worked but its upstream DNS lookup sometimes took
+# 750 ms, which tripped the 500 ms readiness checks; a fixed address is answered by cluster DNS.
+workload:
+  enabled: false
+externalAddresses:
+  postgres: { ip: 0.250.250.254, port: 5432 }
+  valkey: { ip: 0.250.250.254, port: 6379 }
+  localstack: { ip: 0.250.250.254, port: 4566 }

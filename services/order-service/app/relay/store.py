@@ -2,13 +2,14 @@
 
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import Engine, delete, func, select, update
 from sqlalchemy.engine import Connection
 
 from app.relay.core import OutboxBatch, OutboxRow
-from app.repo.tables import outbox
+from app.relay.sweeper import StuckOrders
+from app.repo.tables import orders, outbox
 
 LAST_ERROR_MAX = 512
 
@@ -75,3 +76,25 @@ class PostgresOutboxStore:
                 ).where(outbox.c.published_at.is_(None))
             ).one()
         return int(row[0]), (float(row[1]) if row[1] is not None else None)
+
+    def stuck_orders(self, older_than: timedelta, sample: int) -> StuckOrders:
+        """PENDING orders older than ``older_than``; served by ``ix_orders_pending_created``."""
+        stuck = (orders.c.status == "PENDING") & (orders.c.created_at < func.now() - older_than)
+        with self._engine.connect() as connection:
+            count, oldest = connection.execute(
+                select(
+                    func.count(),
+                    func.extract("epoch", func.now() - func.min(orders.c.created_at)),
+                ).where(stuck)
+            ).one()
+            ids: Sequence[str] = (
+                connection.execute(
+                    select(orders.c.order_id)
+                    .where(stuck)
+                    .order_by(orders.c.created_at)
+                    .limit(sample)
+                )
+                .scalars()
+                .all()
+            )
+        return StuckOrders(int(count), float(oldest) if oldest is not None else None, tuple(ids))

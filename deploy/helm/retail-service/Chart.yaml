@@ -1,0 +1,6 @@
+apiVersion: v2
+name: retail-service
+description: One retail platform process (API, consumer, relay or the UI) per release; also the shared Ingress and the backing-service names.
+type: application
+version: 0.1.0
+appVersion: "dev"

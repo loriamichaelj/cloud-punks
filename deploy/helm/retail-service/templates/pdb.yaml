@@ -1,0 +1,11 @@
+{{- if and .Values.workload.enabled .Values.pdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "retail.name" . }}
+  labels: {{- include "retail.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: {{- include "retail.selectorLabels" . | nindent 6 }}
+{{- end }}

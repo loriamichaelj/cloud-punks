@@ -26,6 +26,9 @@ class Settings(DatabaseSettings):
 
 class RelaySettings(DatabaseSettings, AwsSettings):
     event_bus_name: str = Field(min_length=1)
+    # How often the stuck-order sweeper looks (section 8: 60 s). Compose shortens it so the
+    # drill sees the gauge move within seconds; the 5 minute threshold is not configurable.
+    sweep_interval_s: float = Field(default=60.0, gt=0)
 
 
 class ConsumerSettings(DatabaseSettings, AwsSettings):

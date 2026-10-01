@@ -58,6 +58,18 @@ def test_the_relay_needs_the_database_and_aws_but_not_the_upstream_urls(
     assert not hasattr(settings, "product_service_url")
 
 
+def test_the_sweep_interval_defaults_to_sixty_seconds_and_can_be_shortened(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env(monkeypatch, DB, AWS)
+    assert RelaySettings().sweep_interval_s == 60.0  # type: ignore[call-arg]
+    monkeypatch.setenv("SWEEP_INTERVAL_S", "10")
+    assert RelaySettings().sweep_interval_s == 10.0  # type: ignore[call-arg]
+    monkeypatch.setenv("SWEEP_INTERVAL_S", "0")
+    with pytest.raises(ValidationError, match="sweep_interval_s"):
+        RelaySettings()  # type: ignore[call-arg]
+
+
 @pytest.mark.parametrize("missing", list(AWS))
 def test_the_relay_fails_fast_without_aws_settings(
     monkeypatch: pytest.MonkeyPatch, missing: str

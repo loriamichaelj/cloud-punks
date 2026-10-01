@@ -1,0 +1,15 @@
+# One Ingress mirroring gateway/nginx.conf; `/` goes to the UI. Traefik locally. No host rule, so
+# it answers on retail.k8s.orb.local (OrbStack) and on a port-forward alike; the ALB annotations
+# replace these on EKS.
+workload:
+  enabled: false
+ingress:
+  enabled: true
+  className: traefik
+  routes:
+    - { path: /api/v1/products, service: product-service, port: 8001 }
+    - { path: /api/v1/categories, service: product-service, port: 8001 }
+    - { path: /api/v1/inventory, service: inventory-service, port: 8002 }
+    - { path: /api/v1/orders, service: order-service, port: 8003 }
+    - { path: /api/v1/notifications, service: notification-service, port: 8004 }
+  default: { service: ui, port: 8005 }

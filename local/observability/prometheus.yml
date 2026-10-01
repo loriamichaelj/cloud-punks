@@ -1,0 +1,22 @@
+# Local Prometheus for the `observability` Compose profile (make obs-up). On Kubernetes this
+# becomes kube-prometheus-stack ServiceMonitors (or AMP); the metric names do not change.
+global:
+  scrape_interval: 5s # short on purpose: drills and the dashboard should react within seconds
+  evaluation_interval: 15s
+
+scrape_configs:
+  # API processes serve /metrics on their service port.
+  - job_name: api
+    static_configs:
+      - { targets: ["product-service:8001"], labels: { service: product-service } }
+      - { targets: ["inventory-service:8002"], labels: { service: inventory-service } }
+      - { targets: ["order-service:8003"], labels: { service: order-service } }
+      - { targets: ["notification-service:8004"], labels: { service: notification-service } }
+
+  # Consumers and the relay serve it on the side port 9000.
+  - job_name: worker
+    static_configs:
+      - { targets: ["inventory-consumer:9000"], labels: { service: inventory-consumer } }
+      - { targets: ["order-consumer:9000"], labels: { service: order-consumer } }
+      - { targets: ["notification-consumer:9000"], labels: { service: notification-consumer } }
+      - { targets: ["order-relay:9000"], labels: { service: order-relay } }

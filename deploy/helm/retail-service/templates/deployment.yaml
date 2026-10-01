@@ -1,0 +1,84 @@
+{{- if .Values.workload.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "retail.name" . }}
+  labels: {{- include "retail.labels" . | nindent 4 }}
+  annotations:
+    # Read by the e2e helper that stops and starts a process (an HPA-owned Deployment has no replicas field here).
+    retail.io/desired-replicas: {{ ternary .Values.hpa.minReplicas .Values.replicas .Values.hpa.enabled | quote }}
+spec:
+  {{- if not .Values.hpa.enabled }}
+  replicas: {{ .Values.replicas }}
+  {{- end }}
+  selector:
+    matchLabels: {{- include "retail.selectorLabels" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 25%
+  template:
+    metadata:
+      labels: {{- include "retail.labels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ toYaml .Values.env | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "retail.name" . }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext: {{- include "retail.podSecurityContext" . | nindent 8 }}
+      {{- if .Values.topologySpread.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {{- include "retail.selectorLabels" . | nindent 14 }}
+      {{- end }}
+      containers:
+        - name: app
+          image: {{ include "retail.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.args }}
+          args: {{ toJson . }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.port }}
+          {{- if .Values.env }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "retail.name" . }}
+          {{- end }}
+          {{- with .Values.secretEnv }}
+          env: {{- include "retail.secretEnv" . | nindent 12 }}
+          {{- end }}
+          startupProbe:
+            httpGet: { path: {{ .Values.probes.livePath }}, port: http }
+            periodSeconds: 2
+            failureThreshold: {{ .Values.probes.startupFailureThreshold }}
+          livenessProbe:
+            httpGet: { path: {{ .Values.probes.livePath }}, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: {{ .Values.probes.readyPath }}, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          {{- if gt (int .Values.preStopSleepSeconds) 0 }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", {{ .Values.preStopSleepSeconds | quote }}]
+          {{- end }}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          securityContext: {{- include "retail.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

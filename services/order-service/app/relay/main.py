@@ -1,6 +1,7 @@
 """``python -m app relay``: the outbox relay process (ADR-04)."""
 
 import signal
+import threading
 import types
 from dataclasses import dataclass
 from typing import Any
@@ -15,6 +16,7 @@ from sqlalchemy import Engine
 from app.config import RelaySettings
 from app.relay.core import OutboxRelay
 from app.relay.store import PostgresOutboxStore
+from app.relay.sweeper import StuckOrderSweeper
 from retail_common.database import build_engine, ping
 from retail_common.events.publisher import EventBridgePublisher
 from retail_common.health import ReadinessCheck
@@ -30,6 +32,7 @@ class RelayRuntime:
     """Everything the relay process needs, wired but not started."""
 
     relay: OutboxRelay
+    sweeper: StuckOrderSweeper
     store: PostgresOutboxStore
     side_app: FastAPI
     engine: Engine
@@ -85,7 +88,12 @@ def build_relay(settings: RelaySettings, *, events_client: Any = None) -> RelayR
         registry=registry,
     ).set_function(oldest_age)
 
-    return RelayRuntime(OutboxRelay(store, publisher), store, side_app, engine)
+    # Starts as NaN (unknown) until the first sweep; the sweeper owns the value from then on.
+    stuck = Gauge("orders_stuck", "Orders PENDING for more than 5 minutes.", registry=registry)
+    stuck.set(float("nan"))
+
+    sweeper = StuckOrderSweeper(store, stuck, interval_s=settings.sweep_interval_s)
+    return RelayRuntime(OutboxRelay(store, publisher), sweeper, store, side_app, engine)
 
 
 def main() -> int:
@@ -96,15 +104,20 @@ def main() -> int:
     def shutdown(signum: int, _frame: types.FrameType | None) -> None:
         _log.info("relay_shutdown_requested", signal=signal.Signals(signum).name)
         runtime.relay.stop()
+        runtime.sweeper.stop()
 
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
 
     side_server.start()
+    sweeper_thread = threading.Thread(target=runtime.sweeper.run, name="stuck-sweeper", daemon=True)
+    sweeper_thread.start()
     _log.info("relay_started", bus=settings.event_bus_name)
     try:
         runtime.relay.run()
     finally:
+        runtime.sweeper.stop()
+        sweeper_thread.join(timeout=5)
         side_server.stop()
         runtime.engine.dispose()
         _log.info("relay_stopped")

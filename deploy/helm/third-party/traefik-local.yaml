@@ -1,0 +1,18 @@
+# Traefik for the local cluster only (ingress-nginx was retired in March 2026). It reads the
+# Ingress that the `gateway` release renders. On EKS the AWS Load Balancer Controller replaces it.
+ingressClass:
+  enabled: true
+  isDefaultClass: true
+providers:
+  kubernetesIngress:
+    publishedService:
+      enabled: true
+ports:
+  websecure:
+    expose:
+      default: false   # no TLS locally
+resources:
+  requests: { cpu: 50m, memory: 64Mi }
+  limits: { memory: 192Mi }
+accessLog:
+  enabled: true   # status, upstream duration and retries per request: how the ingress is debugged

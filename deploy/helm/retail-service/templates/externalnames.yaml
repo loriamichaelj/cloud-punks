@@ -1,0 +1,36 @@
+{{- range $name, $host := .Values.externalNames }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels: {{- include "retail.labels" $ | nindent 4 }}
+spec:
+  type: ExternalName
+  externalName: {{ $host }}
+{{- end }}
+{{- range $name, $target := .Values.externalAddresses }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels: {{- include "retail.labels" $ | nindent 4 }}
+spec:
+  ports:
+    - port: {{ $target.port }}
+      targetPort: {{ $target.port }}
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: {{ $name }}
+  labels:
+    kubernetes.io/service-name: {{ $name }}
+    {{- include "retail.labels" $ | nindent 4 }}
+addressType: IPv4
+ports:
+  - port: {{ $target.port }}
+endpoints:
+  - addresses: [{{ $target.ip | quote }}]
+{{- end }}

@@ -1,0 +1,21 @@
+# Shared by every process release on the local cluster (OrbStack). Mirrors the `x-svc` block in
+# local/docker-compose.yml. LocalStack accepts any credentials: these are not real ones, and
+# nothing here is a secret. Passwords come from Secrets that `make k8s-secrets` creates from .env.
+image:
+  pullPolicy: IfNotPresent   # images are built locally and shared with the cluster, never pulled
+
+env:
+  ENVIRONMENT: local
+  LOG_LEVEL: INFO
+  AWS_REGION: us-east-1
+  AWS_ENDPOINT_URL: http://localstack:4566
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+  EVENT_BUS_NAME: retail-events
+  CACHE_URL: redis://valkey:6379/0
+  DB_PORT: "5432"
+  DB_SSLMODE: disable
+
+hpa:
+  minReplicas: 2
+  maxReplicas: 4

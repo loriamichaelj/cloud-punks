@@ -9,6 +9,8 @@ import sys
 
 import uvicorn
 
+from retail_common.side_server import HTTP_KEEP_ALIVE_S
+
 PORT = 8003
 
 
@@ -18,7 +20,14 @@ def main(argv: list[str]) -> int:
         from app.main import create_app  # imported here so other commands stay cheap
 
         # log_config/access_log off: retail_common owns logging (shared JSON format).
-        uvicorn.run(create_app(), host="0.0.0.0", port=PORT, log_config=None, access_log=False)  # noqa: S104
+        uvicorn.run(
+            create_app(),
+            host="0.0.0.0",  # noqa: S104
+            port=PORT,
+            log_config=None,
+            access_log=False,
+            timeout_keep_alive=HTTP_KEEP_ALIVE_S,
+        )
         return 0
     if command == "consumer":
         from app.consumer.main import main as consumer_main

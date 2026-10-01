@@ -1,19 +1,19 @@
 """The acceptance test (DESIGN.md section 11, steps 1 to 10)."""
 
 import json
-import os
-import re
 import uuid
 from typing import Any
 
-import boto3
 import httpx2
 import pytest
 from conftest import (
-    PRODUCT_METRICS,
     SKU_A,
     SKU_B,
+    api_metrics,
+    assert_platform_whole,
+    aws,
     compose,
+    metric_by_pod,
     notification_types,
     place_order,
     set_stock,
@@ -23,27 +23,12 @@ from conftest import (
 )
 
 
-def _client(service: str) -> Any:
-    """LocalStack with dummy credentials, whatever the shell exports (this suite never reaches AWS)."""
-    return boto3.client(
-        service,
-        region_name="us-east-1",
-        endpoint_url=os.environ.get("E2E_AWS_ENDPOINT", "http://localhost:4566"),
-        aws_access_key_id="test",
-        aws_secret_access_key="test",
-    )
-
-
 def _logs() -> Any:
-    return _client("logs")
+    return aws("logs")
 
 
-def cache_hits(keyspace: str) -> float:
-    text = httpx2.get(PRODUCT_METRICS, timeout=5).text
-    match = re.search(
-        rf'^cache_hits_total{{keyspace="{keyspace}"}} ([0-9.e+]+)$', text, re.MULTILINE
-    )
-    return float(match.group(1)) if match else 0.0
+def cache_hits(keyspace: str) -> dict[str, float]:
+    return metric_by_pod(api_metrics(8001), "cache_hits_total", keyspace=keyspace)
 
 
 def test_step_1_the_catalog_is_seeded_and_a_second_read_is_a_cache_hit(http: httpx2.Client) -> None:
@@ -56,7 +41,9 @@ def test_step_1_the_catalog_is_seeded_and_a_second_read_is_a_cache_hit(http: htt
     second = http.get(f"/api/v1/products/{SKU_A}")
 
     assert second.status_code == 200
-    assert cache_hits("product") == before + 1
+    after = cache_hits("product")
+    # exactly one more hit, on whichever replica answered (pods that came or went are ignored)
+    assert sum(after[pod] - before[pod] for pod in before.keys() & after.keys()) == 1
 
 
 def test_steps_2_to_5_and_8_an_order_is_confirmed_reserves_stock_and_is_idempotent(
@@ -174,35 +161,7 @@ def test_a_low_stock_reservation_triggers_the_lambda(http: httpx2.Client, custom
 
 
 def test_step_9_every_process_is_ready_and_no_dead_letters_exist(http: httpx2.Client) -> None:
-    for port in (8001, 8002, 8003, 8004):
-        assert httpx2.get(f"http://localhost:{port}/health/ready", timeout=5).status_code == 200
-    states = json.loads("[" + ",".join(compose("ps", "--format", "json").splitlines()) + "]")
-    unhealthy = {
-        s["Service"]: s["Health"]
-        for s in states
-        if s.get("Health") not in ("healthy", "") or s.get("State") != "running"
-        if not s["Service"].endswith("-migrate")
-    }
-    assert unhealthy == {}
-
-    sqs = _client("sqs")
-    depth = {
-        queue: int(
-            sqs.get_queue_attributes(
-                QueueUrl=sqs.get_queue_url(QueueName=queue)["QueueUrl"],
-                AttributeNames=[
-                    "ApproximateNumberOfMessages",
-                    "ApproximateNumberOfMessagesNotVisible",
-                ],
-            )["Attributes"]["ApproximateNumberOfMessages"]
-        )
-        for queue in (
-            "inventory-order-events-dlq",
-            "order-inventory-events-dlq",
-            "notification-events-dlq",
-        )
-    }
-    assert depth == {q: 0 for q in depth}
+    assert_platform_whole(http)
 
 
 def test_step_10_one_correlation_id_runs_through_every_service(

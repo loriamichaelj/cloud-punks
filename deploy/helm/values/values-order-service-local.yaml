@@ -1,0 +1,29 @@
+image:
+  repository: retail/order-service
+args: [api]
+port: 8003
+service: { enabled: true, port: 8003 }
+pdb: { enabled: true }
+hpa: { enabled: true }
+env:
+  SERVICE_NAME: order-service
+  DB_HOST: postgres
+  DB_NAME: order_db
+  DB_USER: order_app
+  PRODUCT_SERVICE_URL: http://product-service:8001
+  INVENTORY_SERVICE_URL: http://inventory-service:8002
+secretEnv:
+  - { name: DB_PASSWORD, secret: order-app-db, key: DB_PASSWORD }
+migrate:
+  enabled: true
+  env:
+    ENVIRONMENT: local
+    LOG_LEVEL: INFO
+    SERVICE_NAME: order-migrate
+    DB_HOST: postgres
+    DB_PORT: "5432"
+    DB_NAME: order_db
+    DB_USER: order_owner
+    DB_SSLMODE: disable
+  secretEnv:
+    - { name: DB_PASSWORD, secret: order-owner-db, key: DB_PASSWORD }

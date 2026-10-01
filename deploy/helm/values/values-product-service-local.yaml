@@ -1,0 +1,27 @@
+image:
+  repository: retail/product-service
+args: [api]
+port: 8001
+service: { enabled: true, port: 8001 }
+pdb: { enabled: true }
+hpa: { enabled: true }
+env:
+  SERVICE_NAME: product-service
+  DB_HOST: postgres
+  DB_NAME: product_db
+  DB_USER: product_app
+secretEnv:
+  - { name: DB_PASSWORD, secret: product-app-db, key: DB_PASSWORD }
+migrate:
+  enabled: true
+  env:
+    ENVIRONMENT: local
+    LOG_LEVEL: INFO
+    SERVICE_NAME: product-migrate
+    DB_HOST: postgres
+    DB_PORT: "5432"
+    DB_NAME: product_db
+    DB_USER: product_owner
+    DB_SSLMODE: disable
+  secretEnv:
+    - { name: DB_PASSWORD, secret: product-owner-db, key: DB_PASSWORD }

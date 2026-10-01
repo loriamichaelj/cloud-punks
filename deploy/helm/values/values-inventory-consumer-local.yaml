@@ -1,0 +1,9 @@
+image:
+  repository: retail/inventory-service
+args: [consumer]
+port: 9000   # health and metrics side server
+preStopSleepSeconds: 0
+terminationGracePeriodSeconds: 40   # finish the 20 s long poll and the batch in flight
+env:
+  SERVICE_NAME: inventory-consumer
+  QUEUE_NAME: inventory-order-events

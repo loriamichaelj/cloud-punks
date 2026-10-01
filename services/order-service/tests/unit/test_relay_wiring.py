@@ -91,3 +91,15 @@ def test_the_publisher_uses_the_configured_bus(settings: RelaySettings) -> None:
         assert runtime.relay._publisher._bus_name == "retail-events"
     finally:
         runtime.engine.dispose()
+
+
+def test_the_side_server_exposes_orders_stuck_as_unknown_until_the_first_sweep(
+    settings: RelaySettings,
+) -> None:
+    runtime = build_relay(settings, events_client=RecordingEvents())
+    try:
+        text = TestClient(runtime.side_app).get("/metrics").text
+    finally:
+        runtime.engine.dispose()
+
+    assert "orders_stuck NaN" in text  # unknown, not a reassuring zero

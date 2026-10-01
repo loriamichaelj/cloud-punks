@@ -22,14 +22,14 @@ After changing `gateway/nginx.conf`, reload it: `docker compose ... exec gateway
 
 ## Make targets
 
-| Target | What it does |
-| --- | --- |
-| `make ui-install` | `npm ci` |
-| `make ui-dev` | Vite dev server on :5173 |
-| `make ui-types` | regenerate `src/api/generated` from `docs/openapi/*.json` |
+| Target                                                   | What it does                                                                                           |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `make ui-install`                                        | `npm ci`                                                                                               |
+| `make ui-dev`                                            | Vite dev server on :5173                                                                               |
+| `make ui-types`                                          | regenerate `src/api/generated` from `docs/openapi/*.json`                                              |
 | `make ui-lint` / `ui-typecheck` / `ui-test` / `ui-build` | ESLint + Prettier, `tsc`, Vitest (≥ 80% on `src/lib`), production build with the 200 kB gzipped budget |
-| `make openapi` | rewrite `docs/openapi/<service>.json` from each service's code |
-| `make ui-e2e` | Playwright journeys against the running stack |
+| `make openapi`                                           | rewrite `docs/openapi/<service>.json` from each service's code                                         |
+| `make ui-e2e`                                            | Playwright journeys against the running stack                                                          |
 
 `make lint` and `make test` run all of the checks above (except `ui-e2e`), and fail on a stale
 OpenAPI snapshot or stale generated types.

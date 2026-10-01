@@ -1,0 +1,12 @@
+image:
+  repository: retail/order-service
+args: [relay]
+port: 9000   # health and metrics side server
+preStopSleepSeconds: 0
+env:
+  SERVICE_NAME: order-relay
+  DB_HOST: postgres
+  DB_NAME: order_db
+  DB_USER: order_app
+secretEnv:
+  - { name: DB_PASSWORD, secret: order-app-db, key: DB_PASSWORD }

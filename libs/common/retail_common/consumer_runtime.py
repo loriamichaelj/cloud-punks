@@ -16,6 +16,7 @@ from fastapi import FastAPI
 from retail_common.config import BaseServiceSettings
 from retail_common.events.consumer import SqsConsumer
 from retail_common.health import ReadinessCheck
+from retail_common.queue_metrics import register_queue_depth
 from retail_common.service import create_service_app
 from retail_common.side_server import DEFAULT_PORT, SideServer
 
@@ -70,5 +71,6 @@ def build_consumer_runtime(
     handlers, and any extra metrics via ``runtime.side_app.state.registry``, afterwards.
     """
     side_app = create_service_app(settings, readiness_checks=readiness_checks)
+    register_queue_depth(side_app.state.registry, sqs_client, queue_name)
     consumer = SqsConsumer(sqs_client, queue_name, metrics=side_app.state.event_metrics)
     return ConsumerRuntime(consumer=consumer, side_app=side_app)

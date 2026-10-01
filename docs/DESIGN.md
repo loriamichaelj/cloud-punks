@@ -1,6 +1,6 @@
 # Retail Microservices Platform — Design Doc
 
-Author: M.L. · Status: M0–M8 built; M9 (hardening) and M10 (local Kubernetes) next. Change history and as-built notes: `docs/adr/README.md`.
+Author: M.L. · Status: M0–M10 built; Phase 1 is complete and the cloud, pipeline and Terraform strategy pass is next. Change history and as-built notes: `docs/adr/README.md`.
 
 ## 1. Overview
 
@@ -466,6 +466,8 @@ No credentials in code, images, or Git. Locally, `AWS_ACCESS_KEY_ID=test` / `AWS
 | `event_handler_duration_seconds` | histogram | `event_type` |
 | `outbox_unpublished` | gauge | — |
 | `outbox_oldest_unpublished_age_seconds` | gauge | — |
+| `orders_stuck` | gauge | — (orders PENDING over 5 min; order-relay; `NaN` if the database cannot be read) |
+| `queue_messages` | gauge | `queue, state` (`visible` / `in_flight`; each consumer reports its queue and its DLQ) |
 | `orders_total` | counter | `final_status` |
 | `order_time_to_terminal_seconds` | histogram | — (PENDING→CONFIRMED/REJECTED) |
 | `cache_hits_total` / `cache_misses_total` / `cache_errors_total` | counter | `keyspace` |
@@ -477,7 +479,7 @@ Use the `route` template (`/api/v1/orders/{order_id}`), never the raw path — r
 - Outbound HTTP: `httpx2` with connect 1 s / read 2 s timeouts; retry only GETs plus the read-only `POST /inventory/availability` (the single allowed POST retry), max 2 retries, exponential backoff with jitter (`tenacity`). Never retry any other POST.
 - DB pool: SQLAlchemy with psycopg 3, `pool_size=5, max_overflow=5, pool_pre_ping=True, pool_recycle=1800`. Each PostgreSQL connection is a backend process, so keep `replicas × (pool_size + max_overflow)` well under the instance `max_connections`; in cloud put RDS Proxy in front so HPA scale-out cannot exhaust connections.
 - Set `statement_timeout = 5s` and `idle_in_transaction_session_timeout = 30s` on the `<svc>_app` roles. A stuck transaction holding the outbox lock is the failure you want killed, not waited on.
-- Stuck-order sweeper (order-service, runs in the relay process every 60 s): orders `PENDING` longer than 5 min are logged and counted in `orders_stuck` gauge. No auto-reject this week; this is the alarm source for the stuck-queue runbook.
+- Stuck-order sweeper (order-service, runs in the relay process every 60 s): orders `PENDING` longer than 5 min are logged and counted in `orders_stuck` gauge (`SWEEP_INTERVAL_S`, default 60). No auto-reject this week; this is the alarm source for the stuck-queue runbook.
 - Graceful shutdown: on SIGTERM, stop accepting HTTP, finish in-flight requests, consumers stop polling and finish the current batch within 25 s (Kubernetes `terminationGracePeriodSeconds: 30`).
 
 ## 9. Repository layout and tech stack
@@ -524,8 +526,10 @@ retail-platform/
 │   ├── postgres/init/01-databases.sh
 │   ├── seed/                     # catalog.py (data) + seed.py; shipped in the product image
 │   └── observability/ (prometheus.yml, grafana/)
-├── tests/e2e/                    # acceptance + failure drills (pytest)
-├── deploy/helm/                  # M10 (placeholder until then)
+├── tests/e2e/                    # acceptance (test_acceptance.py) + failure drills (test_drills.py)
+├── scripts/                      # export_openapi.py, dlq.py
+├── README.md                     # run instructions
+├── deploy/helm/                  # retail-service chart, values/ (per release, per env), third-party/ (Traefik)
 ├── infra/terraform/              # Phase 2 (placeholder)
 ├── .github/workflows/            # Phases 2–3 (placeholder): bootstrap, infra, infra-destroy, pr, main, promote
 ├── Makefile
@@ -599,7 +603,7 @@ LocalStack does not enforce IAM, SQS queue policies or Lambda invoke permissions
 
 ### Makefile targets
 
-`up`, `down`, `reset` (drop volumes), `logs s=<svc>`, `seed`, `test` (unit), `itest` (integration), `e2e`, `drill-consumer-down`, `drill-poison`, `lint`, `fmt`, `dlq-peek q=<queue>`, `dlq-redrive q=<queue>`; plus `lock` and `sync` for the uv environment.
+`up`, `down`, `reset` (drop volumes), `logs s=<svc>`, `seed`, `test` (unit), `itest` (integration), `e2e` (acceptance and all drills), `drills`, `drill-consumer-down`, `drill-poison`, `drill-duplicate`, `drill-bus-down`, `drill-cache-down`, `drill-db-down`, `lint`, `fmt`, `dlq-peek q=<queue>-dlq`, `dlq-redrive q=<queue>-dlq`, `obs-up`, `obs-down`, `openapi`, `ui-*`; plus `lock` and `sync` for the uv environment.
 
 ### OrbStack and local Kubernetes
 
@@ -615,7 +619,7 @@ PostgreSQL, Valkey and LocalStack stay outside the cluster in M10 on purpose. Th
 
 Pre-research for M10 (host access from pods, ingress, architecture, resources, context safety): `docs/adr/README.md`. Every `k8s-*` Make target passes `--context orbstack` explicitly.
 
-Additional Make targets: `k8s-build`, `k8s-deploy` (`helm upgrade --install --atomic` with local values), `k8s-e2e` (acceptance test through the local ingress), `k8s-rollback`, `k8s-down`.
+Additional Make targets: `k8s-lint`, `k8s-build`, `k8s-build-multiarch`, `k8s-secrets`, `k8s-ingress` (Traefik, metrics-server), `k8s-deploy` (`helm upgrade --install --rollback-on-failure` with local values), `k8s-e2e` (acceptance steps and UI journeys through the local ingress), `k8s-resilience` (delete each workload's pod under load), `k8s-rollback`, `k8s-down`. How it was built and what differs from this sketch: `docs/adr/README.md`.
 
 ## 11. Testing strategy
 
@@ -679,8 +683,8 @@ Eleven milestones (M0 to M10), each a separate PR-sized unit that leaves `make u
 - [x] **M6 — Async flow.** Inventory consumer (transactional reservation, duplicate re-emit), Order consumer (state machine, `processed_events`), outcome → `OrderStatusUpdated` via outbox. *Done when:* acceptance steps 1–5, 7 and 8 pass (`make e2e`); step 6 needs M7's notifications and is tested there.
 - [x] **M7 — Notification + Lambda.** Notification consumer + read API; low-stock Lambda with unit test and LocalStack invocation. *Done when:* acceptance steps 1–10 pass (step 6 first runs here); low-stock log visible in LocalStack logs.
 - [x] **M8 — UI (React).** `ui/` built to section 15: a Vite + TypeScript SPA with catalog (category filter, pagination, stock badges), product, basket, checkout, live order tracking (polls to `CONFIRMED`/`REJECTED`, shows notifications), my orders, and a demo-tools page behind a build flag; API types generated from committed OpenAPI snapshots; `ui` nginx image; gateway `/` route; `make ui-*` targets. Depends on M7 (order status transitions and notifications must exist). *Done when:* `make lint test` runs and passes the UI checks (eslint, `tsc`, vitest, production build within the bundle budget); after `make reset && make up && make seed` the UI is served at `http://localhost:8080/`; `make ui-e2e` passes every journey in section 15.6 including the async `REJECTED` order and the double-submit idempotency case; its Helm values (`values-ui-local.yaml`) and Traefik route arrive with M10.
-- [ ] **M9 — Hardening.** All failure drills scripted as Make targets and pytest e2e cases; stuck-order sweeper; Prometheus + Grafana profile with one dashboard (RED per service, queue depth, outbox lag); README with run instructions. *Done when:* `make e2e` runs acceptance + all drills green from a clean `make reset && make up`, and `make ui-e2e` passes on the same clean start.
-- [ ] **M10 — Local Kubernetes on OrbStack.** Helm library chart `deploy/helm/retail-service` built to the section 13 spec, `values-<svc>-local.yaml` (including `values-ui-local.yaml`), Traefik ingress mirroring the gateway paths, migration Jobs as `pre-install,pre-upgrade` hooks, HPA on the API services, PDBs, multi-arch `docker buildx` build. *Done when:* `make k8s-deploy k8s-e2e` passes (API acceptance and the UI journeys); `kubectl delete pod` on any service recovers with no failed orders; a deliberately broken release (bad readiness path) fails `--atomic`, and `helm rollback` restores a passing e2e.
+- [x] **M9 — Hardening.** All failure drills scripted as Make targets and pytest e2e cases; stuck-order sweeper; Prometheus + Grafana profile with one dashboard (RED per service, queue depth, outbox lag); README with run instructions. *Done when:* `make e2e` runs acceptance + all drills green from a clean `make reset && make up`, and `make ui-e2e` passes on the same clean start.
+- [x] **M10 — Local Kubernetes on OrbStack.** Helm library chart `deploy/helm/retail-service` built to the section 13 spec, `values-<svc>-local.yaml` (including `values-ui-local.yaml`), Traefik ingress mirroring the gateway paths, migration Jobs as `pre-install,pre-upgrade` hooks, HPA on the API services, PDBs, multi-arch `docker buildx` build. *Done when:* `make k8s-deploy k8s-e2e` passes (API acceptance and the UI journeys); `kubectl delete pod` on any service recovers with no failed orders; a deliberately broken release (bad readiness path) fails `--atomic`, and `helm rollback` restores a passing e2e.
 
 M8 deliberately sits right after M7, which it needs (order status transitions and notifications), and before hardening and Kubernetes: it is the first real client of the APIs, and it touches the gateway, Compose, the clean-start e2e and the Helm chart, so building it first means M9 and M10 include it instead of reopening them.
 
@@ -771,10 +775,11 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 - Ask before adding a dependency, a service, a table, an event type, or changing an API contract.
 - Develop on `dev`; `main` only takes PRs from `dev`. Commit, push and open PRs only when asked. No AI attribution in commits or PRs.
 - Record a changed API contract in the same change (`make openapi` for the generated spec; baseline in DESIGN.md).
-- Run lint, test, up, down, seed and logs through `make` (Compose needs its `IMAGE_TAG` and `--env-file .env`).
+- Run lint, test, up, down, seed, logs and the local cluster (`k8s-*`) through `make` (Compose needs its `IMAGE_TAG` and `--env-file .env`).
 - Unit tests are hermetic (no AWS, no LocalStack). Integration tests touch only their own data and never the shared queues or the real `retail-events` bus.
 - A test that guards critical behavior must be shown able to fail: break the code once, see it fail, restore it.
 - Every service's package is named `app`: run mypy and pytest once per service, never over several.
+- Node work goes through `make ui-*`; `npm ci`, never `npm install`; ask before adding an npm dependency outside DESIGN.md section 15.2.
 - Operating notes and lessons from earlier milestones: docs/adr/README.md.
 
 ## Must
@@ -790,25 +795,22 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 - Make downstream calls (HTTP, bus) before opening the write transaction, never while holding a database connection (the outbox relay is the one exception).
 - A store that cannot serve a request is a 503 with Retry-After and a generic message, never a 500. A cache failure is a miss, never an error.
 - Cloud AWS access only through GitHub Actions OIDC roles; jobs that touch EKS run on the in-VPC ephemeral runners.
+- UI (`ui/`, DESIGN.md section 15) is a pure client of the public `/api/v1` API, same-origin through the gateway: relative URLs, no secrets, no AWS or database access. A need the API cannot meet is a question for the owner, never a new endpoint.
+- UI money is integer minor units (`BigInt`) formatted by string; browser totals are labelled estimates. Every order submit sends an `Idempotency-Key` (same basket, same key); every request sends `X-Correlation-ID`; error panels show the `correlation_id`.
+- UI: TypeScript `strict`; wrap every `localStorage` access in try/catch; UI image built from `ui/` only, multi-stage, non-root; `VITE_DEMO_TOOLS` off outside local.
 
 ## Must not
 - Commit secrets or .env (use .env.example), or read, print or log values from .env.
 - Cache inventory/stock data.
+- Cache stock in the UI either (`staleTime: 0`, `gcTime: 0`, never persisted).
+- In the UI: use a JS `number` or `parseFloat` for money, `any`, `dangerouslySetInnerHTML`, inline scripts or styles, or external requests.
 - Use :latest image tags anywhere, KEYS * in Valkey, floats for money, or bare except.
 - Add Kafka, a service mesh, auth, payments, or GitOps tooling (login, payments and server-side carts stay out even with the UI).
-- Write Helm before M9 is done, or Terraform / GitHub Actions before M10 is done.
+- Write Terraform or GitHub Actions before M10 is done.
 - Run kubectl or helm without an explicit --context (local work targets `orbstack`).
 - Use, request, create or store AWS credentials, or run terraform plan/apply, aws, kubectl or helm against AWS/EKS from the laptop (locally only: terraform fmt/validate, tflint, checkov, helm lint, kubeconform).
 - Manage the OIDC provider or the `gha-bootstrap` role in Terraform, or run self-hosted runners for fork PRs.
 
-## UI (ui/, DESIGN.md section 15)
-- Pure client of the public `/api/v1` API, same-origin through the gateway: relative URLs, no secrets, no AWS or database access. A need the API cannot meet is a question for the owner, never a new endpoint.
-- Money is never a JS `number` or `parseFloat`: integer minor units (`BigInt`), formatted by string; browser totals are labelled estimates.
-- Never cache stock (`staleTime: 0`, `gcTime: 0`, never persisted).
-- Every order submit sends an `Idempotency-Key` (same basket, same key); every request sends `X-Correlation-ID`; error panels show the `correlation_id`.
-- TypeScript `strict`, no `any`, no `dangerouslySetInnerHTML`, no inline scripts or styles, no external requests; wrap every `localStorage` access in try/catch.
-- Node work through `make ui-*`; `npm ci`, never `npm install`; ask before adding an npm dependency outside DESIGN.md section 15.2.
-- UI image from `ui/` only, multi-stage, non-root, never `:latest`; `VITE_DEMO_TOOLS` off outside local.
 ```
 
 ### Open questions
