@@ -204,6 +204,9 @@ The owner asked for a more presentable, colourful, light UI with product assets.
 
 ## Decided questions
 
+- [x] Cloud database is Amazon RDS for PostgreSQL 17, not Aurora (decided 1 Oct 2026). Dev is a single Single-AZ instance; RDS Proxy is optional and off by default with one node. DESIGN.md sections 2, 3, 5, 8, 10 and 13 updated.
+- [x] Dev EKS has one node (decided 1 Oct 2026), consequences recorded in DESIGN.md section 13. The budget and sizing pass (nightly destroy or always on) is deferred; the owner will plan it later.
+
 - [x] A React UI is in scope (decided 1 Oct 2026), as M8 and section 15. Login, payments and server-side carts remain out.
 - [x] Sequencing: the UI is M8, right after M7 (decided 1 Oct 2026), before hardening and Kubernetes. It is the first real client of the APIs, so contract gaps surface while changing them is cheap, and M9 (drills, clean-start e2e) and M10 (the chart and ingress) cover the UI from the start instead of reopening the gateway, Compose, e2e and Helm later.
 - [x] Python 3.13 / FastAPI confirmed (30 Sep 2026); ADR-01 stands.

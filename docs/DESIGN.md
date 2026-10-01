@@ -4,7 +4,7 @@ Author: M.L. · Status: M0–M10 built; Phase 1 is complete and the cloud, pipel
 
 ## 1. Overview
 
-We build a four-service retail order platform that runs end-to-end on localhost first, then moves to AWS EKS with no application code changes — only configuration. Every AWS dependency is reached through an adapter whose endpoint is an environment variable, so LocalStack, PostgreSQL and Valkey containers stand in for EventBridge/SQS/DynamoDB, Aurora and ElastiCache.
+We build a four-service retail order platform that runs end-to-end on localhost first, then moves to AWS EKS with no application code changes — only configuration. Every AWS dependency is reached through an adapter whose endpoint is an environment variable, so LocalStack, PostgreSQL and Valkey containers stand in for EventBridge/SQS/DynamoDB, RDS and ElastiCache.
 
 **Goals**
 
@@ -51,7 +51,7 @@ Each decision below is binding for Claude Code; changing one means updating this
 | ADR-10 | AWS SDK endpoint via `AWS_ENDPOINT_URL`, no code branches for local | Identical code path local and cloud; boto3 honours the env var natively | `if ENV == local` branches (untested prod paths) |
 | ADR-11 | Schema migrations run as a separate one-shot process, never at app startup | N replicas racing migrations; later maps to a Helm pre-upgrade Job | Migrate on boot (race, slow readiness) |
 | ADR-12 | Valkey 9.0 locally and on ElastiCache | ElastiCache now offers Valkey at lower cost than Redis OSS; wire-compatible with `redis-py` | Redis OSS 7 (fine, pricier on ElastiCache) |
-| ADR-13 | PostgreSQL 17 locally, Aurora PostgreSQL in cloud (deviates from the original brief's Aurora/RDS MySQL; that brief is not in this repo) | Transactional DDL (a failed migration rolls back cleanly), `JSONB` for the outbox, partial indexes, `INSERT … ON CONFLICT DO NOTHING` for dedupe, `SKIP LOCKED` | Aurora MySQL 3 (the original brief's default; non-transactional DDL, weaker partial-index story) |
+| ADR-13 | PostgreSQL 17 locally, Amazon RDS for PostgreSQL 17 in cloud (changed from Aurora on 1 Oct 2026 to cut cost and moving parts; deviates from the original brief's Aurora/RDS MySQL; that brief is not in this repo) | Transactional DDL (a failed migration rolls back cleanly), `JSONB` for the outbox, partial indexes, `INSERT … ON CONFLICT DO NOTHING` for dedupe, `SKIP LOCKED` | Aurora MySQL 3 (the original brief's default; non-transactional DDL, weaker partial-index story) |
 | ADR-14 | AWS is reached only from GitHub Actions through OIDC role assumption; no IAM users, access keys or local AWS credentials exist. The OIDC provider and the `gha-bootstrap` role are created by hand once; all other roles are Terraform-managed | Removes long-lived credentials entirely; every cloud change is reviewed, logged and reproducible | Local `terraform apply` with SSO or keys (unreviewed changes, credentials on a laptop) |
 | ADR-15 | Jobs that need the EKS API (helm, kubectl, e2e, drills) run on ephemeral self-hosted runners inside the VPC; all other jobs use GitHub-hosted runners | EKS endpoint stays private and the ALB can be internal; Terraform AWS-API calls need no VPC access | Public EKS endpoint with IAM auth (simpler, larger attack surface) |
 | ADR-16 | The UI is a React + TypeScript single-page app built with Vite into static files, served by an unprivileged nginx container (`ui`), and reached through the same gateway/ALB as the API on the same origin (`/` goes to `ui`, `/api/v1/*` to the services) | No CORS and no per-environment API URL in the bundle (it calls relative `/api/v1`), so one image runs on Compose, local Kubernetes and EKS; static files need no Node runtime to operate | Next.js (a Node SSR runtime to run and patch for no benefit here); Create React App (deprecated); S3 + CloudFront (cloud-only, breaks "same image everywhere"; a possible later option); a separate UI origin with CORS |
@@ -107,7 +107,7 @@ Order is the only service with both sync dependencies (Product for price, Invent
 | Compute | Docker Compose containers (M0–M9), then OrbStack Kubernetes (M10) | EKS Deployments on managed node groups | Nothing in the image; Helm values |
 | Ingress | nginx gateway on :8080; Traefik in M10 | ALB via AWS Load Balancer Controller | Same path rules in Ingress (`/api/v1/*` to the services, everything else to `ui`) |
 | UI | `ui` container (nginx serving static files) behind the gateway | EKS Deployment behind the ALB's default rule, image from ECR | Helm values only |
-| Relational | PostgreSQL 17 container | Aurora PostgreSQL 17, Multi-AZ | `DB_HOST`, secret source |
+| Relational | PostgreSQL 17 container | RDS for PostgreSQL 17 (dev Single-AZ, prod Multi-AZ) | `DB_HOST`, secret source |
 | Key-value | LocalStack DynamoDB | DynamoDB on-demand | `AWS_ENDPOINT_URL` unset |
 | Cache | Valkey 9.0 container | ElastiCache for Valkey (TLS) | `CACHE_URL` |
 | Events | LocalStack EventBridge + SQS | EventBridge + SQS | `AWS_ENDPOINT_URL` unset; `QUEUE_NAME` resolved at startup |
@@ -193,7 +193,7 @@ Rules:
 
 ## 5. Data model
 
-Two PostgreSQL 17 databases (Aurora PostgreSQL compatible), three DynamoDB tables, one cache namespace per service. Migrations use Alembic; every migration must be backward compatible with the previous app version (expand → migrate → contract), because Phase 3 rollbacks roll back code, not schema.
+Two PostgreSQL 17 databases (plain PostgreSQL features only, so RDS for PostgreSQL runs them unchanged), three DynamoDB tables, one cache namespace per service. Migrations use Alembic; every migration must be backward compatible with the previous app version (expand → migrate → contract), because Phase 3 rollbacks roll back code, not schema.
 
 Each database has two roles: `<svc>_owner` owns the schema and runs migrations; `<svc>_app` gets `SELECT, INSERT, UPDATE, DELETE` through `ALTER DEFAULT PRIVILEGES`, so the running service cannot alter its own schema. Tables live in the `public` schema of each database.
 
@@ -432,7 +432,7 @@ Every service implements the same config, health, logging, metrics and resilienc
 | `LOG_LEVEL` | `INFO` | ConfigMap |
 | `AWS_REGION` | `us-east-1` | ConfigMap |
 | `AWS_ENDPOINT_URL` | `http://localstack:4566` | **Unset** in cloud |
-| `DB_HOST` / `DB_PORT` / `DB_NAME` | `postgres` / `5432` / `order_db` | ConfigMap (RDS Proxy or Aurora writer endpoint) |
+| `DB_HOST` / `DB_PORT` / `DB_NAME` | `postgres` / `5432` / `order_db` | ConfigMap (RDS instance endpoint, or RDS Proxy if kept) |
 | `DB_USER` / `DB_PASSWORD` | from `.env` (`order_app`; migrate job uses `order_owner`) | Secrets Manager → Kubernetes Secret (External Secrets Operator) |
 | `DB_SSLMODE` | `disable` | `verify-full`; **verify in Phase 2** which CA chain RDS Proxy presents (it may not be the RDS CA bundle) |
 | `CACHE_URL` | `redis://valkey:6379/0` | ConfigMap (`rediss://` with TLS) |
@@ -570,7 +570,7 @@ The Dockerfile is production-shaped from day one: multi-stage, `uv sync --frozen
 
 | Compose service | Image | Command | Port | Becomes on EKS |
 | --- | --- | --- | --- | --- |
-| postgres | `postgres:17` | — | 5432 | Aurora PostgreSQL 17 (behind RDS Proxy) |
+| postgres | `postgres:17` | — | 5432 | RDS for PostgreSQL 17 (RDS Proxy optional) |
 | valkey | `valkey/valkey:9.0` | — | 6379 | ElastiCache for Valkey |
 | localstack | `localstack/localstack` at a pinned CalVer tag (2026.03.0 or later), auth token required | — | 4566 | EventBridge, SQS, DynamoDB, Lambda |
 | product-migrate / order-migrate | service image | `migrate` | — | Helm pre-install/pre-upgrade Job |
@@ -613,7 +613,7 @@ OrbStack is the local runtime for both local stages: its Docker engine runs Comp
 | --- | --- | --- | --- | --- |
 | Compose (M0–M9) | Compose containers | Compose | nginx gateway :8080 | Fast inner loop |
 | Local Kubernetes (M10) | OrbStack Kubernetes, namespace `retail` | Compose, outside the cluster | Traefik | Rehearse Helm, probes, HPA, rollback |
-| EKS (Phase 2) | EKS, namespace `retail` | Aurora, ElastiCache, DynamoDB, EventBridge/SQS | ALB | Production shape |
+| EKS (Phase 2) | EKS, namespace `retail` | RDS, ElastiCache, DynamoDB, EventBridge/SQS | ALB | Production shape |
 
 PostgreSQL, Valkey and LocalStack stay outside the cluster in M10 on purpose. That matches EKS, where data lives in managed services, and keeps stateful workloads out of Kubernetes.
 
@@ -721,17 +721,17 @@ Terraform references the OIDC provider with a `data` source (an account can hold
 
 | Area | Decision | Enterprise note |
 | --- | --- | --- |
-| Network | VPC across 3 AZs: public (ALB, NAT), private-app (nodes), private-data (Aurora, ElastiCache) | Single NAT in dev, one per AZ in prod. Add VPC endpoints (S3 + DynamoDB gateway; ECR api/dkr, SQS, STS, Secrets Manager, EventBridge, Logs interface) — NAT data processing is the #1 surprise bill on EKS |
-| EKS | Managed node group, AL2023 AMIs, 3 × m7g.large Graviton/arm64 (dev: 2), matching Apple Silicon builds and cheaper per vCPU, access entries instead of `aws-auth` ConfigMap | Kubernetes 1.36, the newest EKS version in standard support (until 2 Aug 2027); pin it in Terraform. EKS publishes no Amazon Linux 2 AMIs after 1.32, so AL2023 or Bottlerocket only. EKS Auto Mode is a valid simpler alternative with less learning value |
+| Network | VPC across 3 AZs: public (ALB, NAT), private-app (nodes), private-data (RDS, ElastiCache; an RDS subnet group needs two AZs even for a Single-AZ instance) | Single NAT in dev, one per AZ in prod. Add VPC endpoints (S3 + DynamoDB gateway; ECR api/dkr, SQS, STS, Secrets Manager, EventBridge, Logs interface) — NAT data processing is the #1 surprise bill on EKS |
+| EKS | Managed node group, AL2023 AMIs, **one node** (decided 1 Oct 2026): 1 × m7g.large Graviton/arm64 (2 vCPU, 8 GiB; **verify** it fits the 9 workloads at their requests plus add-ons and the pod limit), matching Apple Silicon builds and cheaper per vCPU, access entries instead of `aws-auth` ConfigMap | One node means no node-level availability: a node replacement, node-group update or EKS upgrade takes the platform down for minutes, zone spread and PDBs protect nothing, and HPA maxima are bounded by the node (cap them at about 4). Accepted for dev. Kubernetes 1.36, the newest EKS version in standard support (until 2 Aug 2027); pin it in Terraform. EKS publishes no Amazon Linux 2 AMIs after 1.32, so AL2023 or Bottlerocket only. EKS Auto Mode is a valid simpler alternative with less learning value |
 | Add-ons | vpc-cni, coredns, kube-proxy, eks-pod-identity-agent, metrics-server; Helm: AWS Load Balancer Controller, External Secrets Operator | Install add-ons via Terraform `aws_eks_addon` / `helm_release`, versions pinned |
 | Workload IAM | EKS Pod Identity, one IAM role per ServiceAccount | Least privilege per process: relay = `events:PutEvents` on the bus only; each consumer = receive/delete on its own queue only |
-| Aurora | Aurora PostgreSQL 17.10 (18.x is GA on Aurora and RDS Proxy supports 18.3+; 17 is kept for consistency with local PostgreSQL 17, revisit after the week), dev 1 instance, prod writer + reader in 2 AZs; KMS CMK; 7-day backups; deletion protection; RDS-managed master secret; RDS Proxy in front for connection pooling | App users created by a bootstrap migration, secrets in Secrets Manager, never Terraform outputs |
+| RDS | RDS for PostgreSQL 17 (latest 17.x minor, pinned in Terraform; 18 is available but 17 matches local PostgreSQL 17, revisit after the week — **verify** current minors), dev a single `db.t4g` instance, Single-AZ; prod Multi-AZ; KMS CMK; 7-day backups; deletion protection; RDS-managed master secret. RDS Proxy is optional: with one node and about 15 pods at `pool_size 5 + max_overflow 5` the instance's `max_connections` is not at risk, so the default is to leave it out and add it with a second node group or HPA headroom | App users created by a bootstrap migration, secrets in Secrets Manager, never Terraform outputs |
 | ElastiCache | Valkey 9.0, TLS in transit, AUTH, prod 1 replica Multi-AZ | ElastiCache Serverless is simpler but has a minimum hourly cost — **verify** pricing |
 | DynamoDB | On-demand, PITR on, SSE with KMS, TTL on `ttl` | — |
 | Events | Same names as bootstrap script; SQS SSE; queue policies scoped by `aws:SourceArn`; EventBridge archive | — |
 | ECR | One repo per service (including `ui`), tag immutability, scan on push (Inspector enhanced), lifecycle keep 30 | Tags `sha-<git sha>`; deploy by digest in prod |
 
-**Helm:** the M10 library chart, reused unchanged with new values files, `deploy/helm/retail-service` + `values-<service>-<env>.yaml`. The chart renders, per process: Deployment (rolling, `maxUnavailable: 0`, `maxSurge: 25%`), ServiceAccount, Service (APIs only), PodDisruptionBudget (`minAvailable: 1`), HPA (APIs: CPU 70%, min 2, max 6), zone `topologySpreadConstraints`, probes on `/health/live` and `/health/ready`, `securityContext` (`runAsNonRoot`, `readOnlyRootFilesystem`, drop ALL, plus an `emptyDir` mounted at `/tmp`), ExternalSecret, and the migration Job as a `pre-install,pre-upgrade` hook. The UI is one more release of the same chart (`values-ui-<env>.yaml`: port 8005, probes on `/healthz`, a writable `emptyDir` for nginx's temp and cache paths). One shared Ingress (ALB, `scheme: internal` so e2e runs from the in-VPC runners, HTTPS via ACM, `group.name: retail`) mirrors `gateway/nginx.conf` paths, with `/` as the default rule to `ui`. There is no domain yet, so dev serves HTTP on the internal ALB; HTTPS via ACM needs a domain you control plus a Route 53 private zone and is deferred.
+**Helm:** the M10 library chart, reused unchanged with new values files, `deploy/helm/retail-service` + `values-<service>-<env>.yaml`. The chart renders, per process: Deployment (rolling, `maxUnavailable: 0`, `maxSurge: 25%`), ServiceAccount, Service (APIs only), PodDisruptionBudget (`minAvailable: 1`), HPA (APIs: CPU 70%, min 2, max 4 while there is one node), zone `topologySpreadConstraints`, probes on `/health/live` and `/health/ready`, `securityContext` (`runAsNonRoot`, `readOnlyRootFilesystem`, drop ALL, plus an `emptyDir` mounted at `/tmp`), ExternalSecret, and the migration Job as a `pre-install,pre-upgrade` hook. The UI is one more release of the same chart (`values-ui-<env>.yaml`: port 8005, probes on `/healthz`, a writable `emptyDir` for nginx's temp and cache paths). One shared Ingress (ALB, `scheme: internal` so e2e runs from the in-VPC runners, HTTPS via ACM, `group.name: retail`) mirrors `gateway/nginx.conf` paths, with `/` as the default rule to `ui`. There is no domain yet, so dev serves HTTP on the internal ALB; HTTPS via ACM needs a domain you control plus a Route 53 private zone and is deferred.
 
 ### Phase 3 — GitHub Actions (Day 4)
 
@@ -755,7 +755,7 @@ Non-negotiables: each OIDC trust policy is pinned to an exact `sub` (`environmen
 | Create-order latency p95 | < 500 ms | same |
 | Order processing: orders reaching a terminal state within 30 s | 99% | `order_time_to_terminal_seconds` |
 
-Alarms (page vs ticket decided in the Phase 4 pass): SQS `ApproximateAgeOfOldestMessage` > 120 s; any DLQ `ApproximateNumberOfMessagesVisible` > 0; `outbox_oldest_unpublished_age_seconds` > 60; ALB 5xx rate and p95 `TargetResponseTime`; Aurora CPU, `DatabaseConnections`, `FreeableMemory`; Aurora MaximumUsedTransactionIDs > 1 billion (wraparound risk) and replica lag; pod restarts > 3 in 10 min; EventBridge rule `FailedInvocations` > 0. Logs via Fluent Bit (Container Insights) to CloudWatch; metrics via kube-prometheus-stack or Amazon Managed Service for Prometheus + Grafana.
+Alarms (page vs ticket decided in the Phase 4 pass): SQS `ApproximateAgeOfOldestMessage` > 120 s; any DLQ `ApproximateNumberOfMessagesVisible` > 0; `outbox_oldest_unpublished_age_seconds` > 60; ALB 5xx rate and p95 `TargetResponseTime`; RDS CPU, `DatabaseConnections`, `FreeableMemory`, `FreeStorageSpace`; MaximumUsedTransactionIDs > 1 billion (wraparound risk); replica lag if a replica exists; pod restarts > 3 in 10 min; EventBridge rule `FailedInvocations` > 0. Logs via Fluent Bit (Container Insights) to CloudWatch; metrics via kube-prometheus-stack or Amazon Managed Service for Prometheus + Grafana.
 
 The failure drills in section 11 run on EKS as `workflow_dispatch` jobs on the `retail-vpc` runners using `gha-deploy-<env>` (for example `kubectl scale deploy/inventory-consumer --replicas=0`); there is no laptop access to the cluster.
 
@@ -822,7 +822,7 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 - [ ] Later hosting: serve the static files from S3 + CloudFront instead of a container? Not before the cloud strategy pass.
 - [ ] Should `reserved` stock ever be released or committed? This design never releases (no cancellation). Needed before adding cancellations in a later week.
 - [ ] Pipeline, cloud and Terraform strategy: deliberately deferred until M10 is done locally. Section 13 is provisional until then.
-- [ ] Budget ceiling for the week's AWS spend (EKS control plane, NAT, Aurora, ElastiCache run 24/7). Decides single-NAT, instance sizes, and whether to `terraform destroy` nightly.
+- [ ] Budget ceiling for the week's AWS spend (EKS control plane, NAT, RDS, ElastiCache run 24/7; one node and RDS instead of Aurora are decided). Decides single-NAT, instance sizes, and whether to `terraform destroy` nightly.
 
 Decided questions are recorded in `docs/adr/README.md`.
 
