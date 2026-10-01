@@ -219,13 +219,54 @@ services:
     environment:
       <<: *env
       SERVICE_NAME: notification-service
+    # Its table is created by the LocalStack bootstrap; ready checks only the table.
+    depends_on:
+      localstack: { condition: service_healthy }
     ports: ["8004:8004"]
+
+  # The notification consumer: one record per InventoryReserved, InventoryFailed and
+  # OrderStatusUpdated event, deduplicated on event_id. Same image, own command.
+  notification-consumer:
+    <<: *svc
+    image: retail/notification-service:${IMAGE_TAG:?use make up}
+    build: { context: .., dockerfile: services/notification-service/Dockerfile }
+    command: ["consumer"]
+    # Finish the current 20 s long poll before exiting (see inventory-consumer).
+    stop_grace_period: 30s
+    environment:
+      <<: *env
+      SERVICE_NAME: notification-consumer
+      QUEUE_NAME: notification-events
+    depends_on:
+      localstack: { condition: service_healthy }
+
+  # The React single-page app: static files behind nginx. No runtime configuration; it calls
+  # relative /api/v1 URLs, so it must be reached through the gateway. The demo tools page is a
+  # build-time switch, on for local builds only.
+  ui:
+    image: retail/ui:${IMAGE_TAG:?use make up}
+    build:
+      context: ../ui
+      args:
+        VITE_DEMO_TOOLS: "true"
+    restart: unless-stopped
+    ports: ["8005:8005"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8005/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   gateway:
     image: nginx:1.27-alpine
     volumes: ["../gateway/nginx.conf:/etc/nginx/nginx.conf:ro"]
     ports: ["8080:8080"]
-    depends_on: [product-service, inventory-service, order-service, notification-service]
+    depends_on:
+      product-service: { condition: service_started }
+      inventory-service: { condition: service_started }
+      order-service: { condition: service_started }
+      notification-service: { condition: service_started }
+      ui: { condition: service_healthy }
     restart: unless-stopped
 
   # One-shot dev job (`make seed`): catalog into product_db, stock into DynamoDB.

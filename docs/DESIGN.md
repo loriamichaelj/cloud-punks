@@ -1,6 +1,6 @@
 # Retail Microservices Platform — Design Doc
 
-Author: M.L. · 30 Sep 2026 · Status: v1.8, M0–M6 built; the React UI is M8 (after M7), hardening M9, local Kubernetes M10 (v1.8: M6 built — reservation record attributes, consumer processes and shutdown, acceptance step 6 moved to M7, M6 test rules; v1.7: milestones renumbered; v1.6: section 15 and ADR-16/17; v1.5: order API contract, outbox relay behavior, test isolation rules and the corrected bus-unavailable drill; v1.4: inventory API contract and hermetic unit tests; v1.3: product API contract and cache/outage behavior from M3, HTTP client moved to httpx2; v1.2: layout, bootstrap and tooling notes updated from M0–M2; OrbStack sized for an 8 GB Mac; v1.1: facts verified 30 Sep 2026; AWS access is GitHub-OIDC-only, so Phases 2–3 are reordered around a bootstrap workflow and in-VPC runners; bootstrap script and spec gaps fixed)
+Author: M.L. · Status: M0–M8 built; M9 (hardening) and M10 (local Kubernetes) next. Change history and as-built notes: `docs/adr/README.md`.
 
 ## 1. Overview
 
@@ -139,49 +139,14 @@ All services expose JSON over HTTP under `/api/v1`, plus `/health/live`, `/healt
 | product | `PUT /api/v1/products/{sku}` | Update price/details (admin) | Deletes `product:{sku}` and list keys |
 | product | `GET /api/v1/categories` | List categories | Cached, TTL 3600 s |
 | inventory | `GET /api/v1/inventory/{sku}` | Stock for one SKU | Never cached; strongly consistent read |
-| inventory | `POST /api/v1/inventory/availability` | Batch check; body and response are defined in "Inventory API contract" below | Advisory only; reservation is authoritative |
+| inventory | `POST /api/v1/inventory/availability` | Batch check; body and response in the OpenAPI spec | Advisory only; reservation is authoritative |
 | inventory | `PUT /api/v1/inventory/{sku}` | Set stock (admin/seed) | — |
 | order | `POST /api/v1/orders` | Create order | Requires `Idempotency-Key` header; returns 202 + order in `PENDING` |
 | order | `GET /api/v1/orders/{order_id}` | Order with items and status | — |
 | order | `GET /api/v1/orders?customer_id=` | Orders for a customer | Newest first, paginated |
 | notification | `GET /api/v1/notifications?order_id=` | Notifications for an order | For demo and test assertions |
 
-### Product API contract (built in M3)
-
-The generated OpenAPI spec at `/openapi.json` is the contract of record; this is its summary.
-
-- **Product:** `{sku, name, description, category, price, currency, active, created_at, updated_at}`. `category` is the category *slug*. `price` is a decimal string with exactly two decimals (`"19.90"`), normalized on input and output so the wire format never depends on which adapter produced the value. Timestamps are UTC ISO 8601.
-- **List:** `GET /products?category=&page=&size=` returns `{items, page, size, total}`, `page >= 1`, `1 <= size <= 100` (default 1 and 20), ordered by SKU, **active products only**. Categories return `{items: [{slug, name}]}`. An unknown `category` filter returns an empty page.
-- **Detail:** `GET /products/{sku}` also returns inactive products (with `active: false`); the order service decides what to do with them. Unknown SKU: 404 `PRODUCT_NOT_FOUND`.
-- **Create:** `POST /products` takes `{sku, name, description?, category, price, currency?}` and returns 201. SKU `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, category `^[a-z0-9][a-z0-9-]{0,63}$`, currency `^[A-Z]{3}$` (default `USD`). Duplicate SKU: 409 `SKU_EXISTS` (never overwrites). Unknown category: 422 `UNKNOWN_CATEGORY`.
-- **Update:** `PUT /products/{sku}` replaces every mutable field (`name, description, category, price, currency, active`); `sku` is immutable and may not appear in the body. Unknown SKU: 404.
-- **Validation:** unknown request fields are rejected (422) so typos surface. `price` must be a JSON *string*; a JSON number is rejected, because it would pass through a float on the way in. At most two decimals, `0 <= price < 10^8`. Validation errors name the field and rule but never echo the submitted value.
-- **Store outage:** when PostgreSQL cannot serve a request (down, dropped connection, the role's 5 s `statement_timeout`, exhausted pool) the service answers 503 `STORE_UNAVAILABLE` with `Retry-After: 1` and a generic message, never a 500. The shared HTTP client retries 503 but not 500, so callers back off correctly. Cached reads still succeed.
-- There is no authentication this week (non-goal), so the "admin" endpoints are open.
-
-### Inventory API contract (built in M4)
-
-The generated OpenAPI spec at `/openapi.json` is the contract of record; this is its summary.
-
-- **Stock:** `GET /inventory/{sku}` returns `{sku, available, reserved, updated_at}`. `available` is what can still be promised; reserving moves units from `available` to `reserved`. Unknown SKU: 404 `INVENTORY_NOT_FOUND`.
-- **Availability:** `POST /inventory/availability` takes `{"items": [{"sku", "quantity"}]}` (the design's `[{sku, qty}]` shorthand, made an object so it can grow, with `quantity` as everywhere else) and returns `{available, items: [{sku, requested, available, sufficient, reason}]}` in request order. `reason` is `null`, `OUT_OF_STOCK` or `UNKNOWN_SKU` (the same values as `InventoryFailed`); an unknown SKU reports `available: 0`. `available` is true only if every line is sufficient. 1 to 20 lines, distinct SKUs, `quantity` 1 to 100: the same limits as an order. **Advisory only** (ADR-08): the transactional reservation is the authority.
-- **Set stock:** `PUT /inventory/{sku}` takes `{"available": n}` (0 to 1,000,000) and is an upsert: it creates the record with `reserved: 0` or keeps the existing `reserved`. `reserved` can never be set by hand, because reservations own it. Last writer wins against a concurrent reservation; this is an admin and seed tool, with no authentication this week.
-- **Strict numbers:** quantities and stock must be JSON integers; `"5"`, `5.0` and `true` are rejected. Unknown request fields are rejected.
-- **Reserved name:** `availability` cannot be an SKU, since it is the literal name of the batch endpoint and would otherwise match `/{sku}`.
-- **Strong consistency, never cached:** every DynamoDB read uses `ConsistentRead=True` (`GetItem`, and `BatchGetItem` with per-table `ConsistentRead`), and every response under `/api/v1/inventory`, errors included, carries `Cache-Control: no-store`; a cached 404 would outlive the SKU being created.
-- **Store outage:** connection failures, timeouts, throttling and a missing table answer 503 `STORE_UNAVAILABLE` with `Retry-After: 1` (the shared response from `retail_common.errors`). Permission and validation errors from DynamoDB are real bugs and stay 500. The client uses 1 s connect and 2 s read timeouts and at most 2 retries, so a failed request can take about 2 s. `UnprocessedKeys` from a batch read are retried up to 3 rounds, then reported as an outage.
-
-### Order API contract (built in M5)
-
-The generated OpenAPI spec at `/openapi.json` is the contract of record; the Create-order contract below is the original sketch and this is what was built.
-
-- **Order:** `{order_id, customer_id, status, status_reason, total_amount, currency, items: [{sku, quantity, unit_price}], created_at, updated_at}`: a superset of the sketch. Money is a two-decimal string. Items are returned ordered by SKU, not in request order.
-- **Create:** `POST /orders` requires an `Idempotency-Key` header (`[A-Za-z0-9._:-]{1,64}`; a missing or malformed key is 422 `VALIDATION_ERROR`). It answers **202** with the order in `PENDING` and a `Location` header; a replay answers **200**. The body is `{customer_id, items}`: `customer_id` matches `[A-Za-z0-9][A-Za-z0-9._:-]{0,63}`, 1 to 20 items with distinct SKUs, `quantity` a strict integer 1 to 100. Unknown fields are rejected, so a client cannot supply its own price or total.
-- **Order of work:** the key lookup, then prices from the product service (in parallel, carrying the correlation id), then the stock pre-check, then one transaction writing the order, its items and the outbox row. Nothing before that transaction leaves a trace, and no HTTP call is made while a database connection is held.
-- **Idempotency:** the key is unique per customer and never expires. "Same body" ignores item order (the request hash covers the customer plus items sorted by SKU). A replay is answered before any downstream call, so it returns the original order even if prices or stock have since changed, and even if a dependency is down. The same key with a different body is 422 `IDEMPOTENCY_KEY_REUSED`. Concurrent requests with one key create exactly one order (the unique constraint decides; the losers become replays). A failed attempt never consumes the key: retry with the same one.
-- **Errors:** 409 `OUT_OF_STOCK` with `SKU-X: requested 2, available 1` for each failing line (an SKU with no inventory record reports `available 0`); 422 `UNKNOWN_PRODUCT`, `PRODUCT_INACTIVE` (inactive products cannot be ordered) and `MIXED_CURRENCY` (an order has one currency); 503 `UPSTREAM_UNAVAILABLE` with `Retry-After` when the product or inventory service is unreachable, with nothing written; 503 `STORE_UNAVAILABLE` when PostgreSQL is; 404 `ORDER_NOT_FOUND`.
-- **Reads:** `GET /orders/{order_id}` (the id must be a ULID, else 422) and `GET /orders?customer_id=&page=&size=` (`customer_id` required, newest first, `size` 1 to 100, returns `{items, page, size, total}`).
-- **No event bus in the API:** the API process has no bus client at all; a test fails if any module outside `app/relay/` mentions `put_events`, `EventBridgePublisher` or `boto3`.
+The generated OpenAPI specs (`docs/openapi/<service>.json`, written by `make openapi`) are the contract of record for fields, limits and error codes; narrative summaries as built are in `docs/adr/README.md`.
 
 ### Create-order contract
 
@@ -324,14 +289,6 @@ Reservation is one `TransactWriteItems` call: a `Put` on `inventory_reservations
 
 **Gotcha:** On `TransactionCanceledException`, inspect `CancellationReasons`. `ConditionalCheckFailed` on the reservation item means a duplicate (re-emit stored outcome). On an inventory item it means insufficient stock (write a FAILED reservation, emit InventoryFailed). Treating both the same way is the classic oversell/double-fail bug.
 
-**Implementation notes (M6).**
-
-- The record is the single source of truth for an order's outcome. The outcome event is always rebuilt from it, with the stored `event_id` and `created_at`, so a re-emission is the *same* event and consumers dedupe on it. A FAILED record is final: a later restock never turns an announced rejection into a sale.
-- `remaining` (stock left per SKU, for the low-stock alert) cannot be returned by a transaction. It is read with `ConsistentRead` right after the commit and written once, guarded by `attribute_not_exists(remaining)`. If the process dies between the two, the redelivery finds a RESERVED record without `remaining` and completes it; the first stored value stands.
-- `status` is a DynamoDB reserved word and must be aliased (`#status`). LocalStack accepts it unaliased, real DynamoDB does not, so a static test scans every expression the store sends.
-- A transaction cancelled for a stock item means OUT_OF_STOCK, or UNKNOWN_SKU when the item does not exist (`ReturnValuesOnConditionCheckFailure=ALL_OLD` gives the available count for `failed_items`). A conflict with a concurrent transaction or throttling is retried, never recorded as a failure.
-- An order that lists the same SKU twice is a `PoisonMessage` (DynamoDB refuses two operations on one item in a transaction); the API's order validation already prevents it.
-
 **Unknown vs insufficient:** a missing `inventory` item and a stock shortfall both fail `available >= :qty`. Add `attribute_exists(sku)` to the condition and set `ReturnValuesOnConditionCheckFailure: ALL_OLD` on each `Update`; `CancellationReasons[i].Item` is then absent for an unknown SKU (`UNKNOWN_SKU`) and present, with `available`, for a shortfall (`OUT_OF_STOCK`, `failed_items[].available`). Use `ConsistentRead=True` for `GET /inventory/{sku}` and the availability check.
 
 ### Cache design (Valkey)
@@ -343,14 +300,6 @@ Reservation is one `TransactWriteItems` call: a `Put` on `inventory_reservations
 | `categories:v1` | Categories JSON | 3600 s | Delete on category change |
 
 Cache is optional at runtime: a Valkey error logs a warning, increments `cache_errors_total`, and falls through to PostgreSQL. The service must stay ready with the cache down. Never use `KEYS *` for invalidation; it blocks Valkey on large keyspaces.
-
-Implementation notes (M3):
-
-- Writes commit to PostgreSQL first and invalidate afterwards. `PUT` deletes `product:v1:{sku}` and every tracked list key; `POST` deletes the list keys. The remaining race (a reader that loaded the old row just before the write) is bounded by the TTL, which the design accepts.
-- Only pages 1 to 50 are cached, so a client walking pages cannot grow the key space or the tracking set without bound. The tracking set has a 3600 s TTL refreshed on every add, so it always outlives the 300 s entries it tracks, and the key is added to it *before* being written.
-- Invalidation reads and deletes the tracking set in one `MULTI/EXEC`, then deletes the keys in chunks of 500; it never scans.
-- Sockets use 0.25 s connect and read timeouts, so a hung Valkey costs a request fractions of a second. Errors are counted in `cache_errors_total{keyspace}` and are not counted as misses. A corrupt or foreign-version entry is dropped and treated as a miss.
-- Category rows are written only by the seed and migrations, which bypass the cache: after `make seed` a cached category list or page can lag by up to its TTL. A fresh `make up` starts with an empty cache.
 
 ## 6. Event design
 
@@ -415,14 +364,6 @@ Queue settings (all three):
 4. Apply business change guarded by current state (state machine in section 7).
 5. Commit, then delete the SQS message. Transient errors → do not delete; SQS redelivers after visibility timeout.
 
-Implementation notes (`retail_common.events.consumer`, M1):
-
-- The handler owns the dedupe-plus-business-write transaction and returns `HandlerOutcome.PROCESSED` or `DUPLICATE`; the consumer counts that outcome and deletes the message.
-- Unknown event types and unknown schema *major* versions are logged and deleted, which is what lets a producer dual-publish `2.0` safely.
-- Poison (unparseable, invalid, or a handler raising `PoisonMessage`) and transient failures both leave the message undeleted; they differ only in the `poison` vs `error` outcome and log level. A poison message therefore waits out the 60 s visibility timeout on each of its 5 receives (about 5 minutes) before reaching the DLQ.
-- Each message runs under its own correlation id (the event's, if it is a safe value) and the caller's context is restored afterwards.
-- Log lines and poison reasons carry field paths and messages only, never payload values.
-
 ### Order Service outbox relay
 
 - `POST /orders` writes `orders`, `order_items` and an `outbox` row in one PostgreSQL transaction.
@@ -430,15 +371,6 @@ Implementation notes (`retail_common.events.consumer`, M1):
 - `SKIP LOCKED` lets multiple relay replicas run safely. Poll interval 500 ms when idle.
 - `PutEvents` returns HTTP 200 with partial failures in `FailedEntryCount`; check per entry.
 - Consequence: events can be published more than once (crash between PutEvents and UPDATE). That is why ADR-07 exists.
-
-Implementation notes (`python -m app relay`, M5):
-
-- The claim, the `PutEvents` call and the `UPDATE` share one transaction, so the role's 30 s `idle_in_transaction_session_timeout` bounds how long a hung publish can hold its row locks. A crash rolls everything back and the rows are simply published again.
-- Rows are published oldest first. A row whose payload is not a valid envelope is marked failed (`attempts`, `last_error`) without blocking the rows behind it. A failed batch backs off exponentially from 0.5 s to 10 s instead of hammering a down bus; a pass that published anything goes again immediately.
-- Published rows older than 7 days are deleted in batches of 1,000, at most once a minute.
-- A side server on port 9000 (shared `SideServer` in `libs/common`) serves `/health/live`, `/health/ready` and `/metrics`. **Readiness checks PostgreSQL only**: a bus outage is when the relay must stay in rotation and keep retrying. `outbox_unpublished` and `outbox_oldest_unpublished_age_seconds` are gauges computed from PostgreSQL at scrape time (NaN, not a failed scrape, if the database is down).
-- Known limitation: a row that can never be published keeps being retried forever and takes a slot in every batch. A handful is harmless; more than 50 would starve healthy rows. A maximum-attempts policy belongs with the DLQ-style tooling in M9.
-- Settings are per process, so a missing variable fails only the process that needs it: the API needs the two upstream URLs and no AWS settings; the relay needs AWS and the bus name and no upstream URLs; the `migrate` job needs only the database.
 
 ### Lambda: low-stock-alert
 
@@ -653,105 +585,9 @@ The Dockerfile is production-shaped from day one: multi-stage, `uv sync --frozen
 
 Container ports 9000 on consumers are internal only (health + metrics).
 
-**Consumer processes (M6).** `python -m app consumer` starts the side server (health and metrics on 9000, in its own thread) and the SQS loop; SIGTERM or SIGINT stops the loop after the current poll and the side server is always stopped. Liveness checks nothing; readiness checks the one required store (DynamoDB for inventory, PostgreSQL for order), never the queue or the bus, because those are exactly what the loop retries through. The HTTP read timeout for SQS is 30 s, longer than the 20 s long poll. The inventory consumer publishes its outcome events directly (ADR-05: the stored reservation makes a retry safe); the order consumer writes `OrderStatusUpdated` to the outbox like every other order event. Compose gives consumers `stop_grace_period: 30s`: a consumer killed mid-poll leaves an abandoned request that can still be handed a message, which then stays invisible for the 60 s visibility timeout, so every restart would stall orders for a minute.
-
-### Compose skeleton
-
-```yaml
-name: retail
-x-svc: &svc
-  env_file: ../.env
-  restart: unless-stopped
-  environment: &env
-    AWS_REGION: us-east-1
-    AWS_ENDPOINT_URL: http://localstack:4566
-    AWS_ACCESS_KEY_ID: test
-    AWS_SECRET_ACCESS_KEY: test
-    EVENT_BUS_NAME: retail-events
-    CACHE_URL: redis://valkey:6379/0
-    DB_PORT: "5432"
-    DB_SSLMODE: disable
-    LOG_LEVEL: INFO
-    ENVIRONMENT: local
-
-services:
-  postgres:
-    image: postgres:17
-    environment:
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      # read by init/01-databases.sh to create <svc>_owner / <svc>_app roles
-      PRODUCT_OWNER_PASSWORD: ${PRODUCT_OWNER_PASSWORD}
-      PRODUCT_APP_PASSWORD: ${PRODUCT_APP_PASSWORD}
-      ORDER_OWNER_PASSWORD: ${ORDER_OWNER_PASSWORD}
-      ORDER_APP_PASSWORD: ${ORDER_APP_PASSWORD}
-    volumes: ["./postgres/init:/docker-entrypoint-initdb.d:ro", "pg-data:/var/lib/postgresql/data"]
-    ports: ["5432:5432"]
-    healthcheck: { test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres"], interval: 5s, retries: 20 }
-
-  valkey:
-    image: valkey/valkey:9.0
-    ports: ["6379:6379"]
-
-  localstack:
-    image: localstack/localstack:${LOCALSTACK_TAG}
-    environment:
-      SERVICES: events,sqs,dynamodb,lambda,logs,iam,sts
-      LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:?set it in .env}
-      LAMBDA_DOCKER_NETWORK: retail_default   # Lambda containers join the Compose network
-    volumes:
-      - "./localstack/init/ready.d:/etc/localstack/init/ready.d:ro"
-      - "../functions:/opt/functions:ro"
-      - "/var/run/docker.sock:/var/run/docker.sock"   # required for Lambda execution
-    ports: ["4566:4566"]
-    healthcheck:
-      test: ["CMD-SHELL", "test -f /tmp/bootstrap.done"]
-      interval: 5s
-      retries: 30
-
-  order-migrate:
-    build: { context: .., dockerfile: services/order-service/Dockerfile }
-    command: ["migrate"]
-    environment:
-      DB_HOST: postgres
-      DB_PORT: "5432"
-      DB_NAME: order_db
-      DB_USER: order_owner
-      DB_PASSWORD: ${ORDER_OWNER_PASSWORD}
-    depends_on: { postgres: { condition: service_healthy } }
-
-  order-service:
-    <<: *svc
-    build: { context: .., dockerfile: services/order-service/Dockerfile }
-    command: ["api"]
-    environment:
-      <<: *env
-      SERVICE_NAME: order-service
-      DB_HOST: postgres
-      DB_NAME: order_db
-      DB_USER: order_app
-      DB_PASSWORD: ${ORDER_APP_PASSWORD}
-      PRODUCT_SERVICE_URL: http://product-service:8001
-      INVENTORY_SERVICE_URL: http://inventory-service:8002
-    depends_on:
-      order-migrate: { condition: service_completed_successfully }
-      localstack: { condition: service_healthy }
-  # order-relay / order-consumer: same build, command ["relay"] / ["consumer"], QUEUE_NAME set
-  # product-*, inventory-*, notification-*: same pattern
-
-volumes:
-  pg-data: {}
-```
-
 ### LocalStack bootstrap (`local/localstack/init/ready.d/10-bootstrap.sh`)
 
 Creates exactly the resources Terraform will create in Phase 2, with the same names. Keep the two in sync; a stretch goal is to replace this script with the Phase 2 Terraform module applied via `tflocal`.
-
-The script in the repository is the verified version. It ran unmodified on the first real start against `localstack/localstack:2026.03.0` and created the bus, 4 rules, 3 queues plus 3 DLQs, 3 DynamoDB tables and the Lambda. Its differences from the original design sketch:
-
-- The Lambda zip is built from *inside* the function directory so `handler.py` sits at the archive root. The sketch zipped an absolute path, which stores the file under `opt/functions/...` where `handler.lambda_handler` cannot resolve.
-- DynamoDB TTL is enabled on `inventory_reservations` and `notifications` (attribute `ttl`).
-- M2 ships a stub `handler.py`; M7 replaces it. The script needs it present or `set -e` aborts the bootstrap.
-- The unused queue-URL echo is gone, and the script ends by printing `retail bootstrap complete` and touching `/tmp/bootstrap.done`, which is the Compose healthcheck.
 
 LocalStack state is in memory: the script runs on every start, and DynamoDB data (seeded stock) does not survive a restart while PostgreSQL data does. Run `make seed` after `make up`.
 
@@ -765,8 +601,6 @@ LocalStack does not enforce IAM, SQS queue policies or Lambda invoke permissions
 
 `up`, `down`, `reset` (drop volumes), `logs s=<svc>`, `seed`, `test` (unit), `itest` (integration), `e2e`, `drill-consumer-down`, `drill-poison`, `lint`, `fmt`, `dlq-peek q=<queue>`, `dlq-redrive q=<queue>`; plus `lock` and `sync` for the uv environment.
 
-Conventions (built in M0–M2): `up` runs `docker compose up -d --build --wait`, so it blocks until PostgreSQL, Valkey and LocalStack (healthy only after the bootstrap finishes) are healthy and fails if a container exits. Images are tagged `retail/<svc>:dev-<git sha>` through `IMAGE_TAG`, never `:latest` (Compose would otherwise tag builds `:latest`), so Compose must be run through `make`. `down`, `reset` and `logs` work even before `LOCALSTACK_AUTH_TOKEN` is set. `seed` runs the `seed` job (Compose profile `tools`). `test` also enforces the 80% coverage gate on `libs/common`. `itest` pauses the `order-relay` container for the run (and starts it again even if tests fail), then runs each service's `tests/integration` in-process against the real stores of the running stack (`make up` first; `--env-file .env` supplies the database passwords). Integration tests prefix everything they create with `ITEST-`/`itest-`, clean up after themselves, and use Valkey database 15 so a developer's cache is never touched.
-
 ### OrbStack and local Kubernetes
 
 OrbStack is the local runtime for both local stages: its Docker engine runs Compose (M0–M9), and its built-in single-node Kubernetes cluster runs the Helm chart (M10) before anything touches EKS. That makes Helm, probes, HPA and rollback free to rehearse, which is where most first EKS deployments fail.
@@ -779,16 +613,7 @@ OrbStack is the local runtime for both local stages: its Docker engine runs Comp
 
 PostgreSQL, Valkey and LocalStack stay outside the cluster in M10 on purpose. That matches EKS, where data lives in managed services, and keeps stateful workloads out of Kubernetes.
 
-Rules and gotchas:
-
-- **No registry needed locally (verified).** OrbStack's Kubernetes uses the same container engine as Docker, so images from `docker build` are available to pods without a push. Tag `dev-<git sha>` and set `imagePullPolicy: IfNotPresent` in local values; `:latest` makes Kubernetes always try to pull.
-- **Pods reach Compose through the host.** Compose publishes 5432, 6379 and 4566 on the Mac. `host.docker.internal` is documented for Docker containers; confirm it also resolves from pods before building on it: `kubectl --context orbstack run nettest --rm -it --restart=Never --image=busybox:1.37 -- nc -z -w 2 host.docker.internal 5432`. Then create `ExternalName` Services `postgres`, `valkey` and `localstack` in namespace `retail` pointing at that host, so pods keep the same `DB_HOST=postgres` as Compose.
-- **Ingress (verified).** OrbStack installs no ingress controller; LoadBalancer services are reachable from the Mac at `*.k8s.orb.local`. Install Traefik with Helm and route host `retail.k8s.orb.local`. `ingressClassName` and annotations are per-env values (`traefik` locally, `alb` on EKS), and paths mirror `gateway/nginx.conf`. Do not use ingress-nginx: it was retired in March 2026 and receives no security fixes.
-- **No cloud identity locally.** No Pod Identity or External Secrets in M10. `values-local.yaml` renders a plain Secret from `.env` with LocalStack `test` credentials; the chart toggles `externalSecret.enabled` and the ServiceAccount role per env.
-- **CPU architecture.** On Apple Silicon, local images are `linux/arm64`. EKS nodes are therefore Graviton (arm64) in this design, and CI builds `linux/arm64,linux/amd64` with `docker buildx`. An amd64-only image on arm64 nodes fails at start with `exec format error`.
-- **Engine restarts.** On an 8 GB Mac the Docker engine itself restarted once mid-run under memory pressure (host at 6.8 GB used, active swap). Only containers with a restart policy come back, so PostgreSQL, Valkey and LocalStack now carry `restart: unless-stopped` like the apps; without it the stack came back half-up. LocalStack's state is in memory, so a restart empties DynamoDB (run `make seed`) and drops queued events. OrbStack's built-in Kubernetes also consumes memory; if the engine is unstable before M10, disable it (`orbctl config set k8s.enable false`) until then.
-- **Resources.** Give the OrbStack VM 6 GB on an 8 GB Mac (`orbctl config set memory_mib 6144`, then `orbctl stop`; it restarts on the next Docker command), or 8 GB or more on a larger machine. The limit is a cap, not a reservation, but equalling the Mac's total RAM risks swapping. The LocalStack Lambda runtime adds a container on top of the stack. Local values request 50m CPU / 128Mi per pod so 13 processes plus Traefik fit. HPA needs metrics-server: install it if `kubectl --context orbstack top nodes` fails.
-- **Context safety.** Every `k8s-*` Make target passes `--kube-context orbstack` / `--context orbstack` explicitly, so a local command can never land on an EKS cluster that happens to be the current context.
+Pre-research for M10 (host access from pods, ingress, architecture, resources, context safety): `docs/adr/README.md`. Every `k8s-*` Make target passes `--context orbstack` explicitly.
 
 Additional Make targets: `k8s-build`, `k8s-deploy` (`helm upgrade --install --atomic` with local values), `k8s-e2e` (acceptance test through the local ingress), `k8s-rollback`, `k8s-down`.
 
@@ -813,15 +638,7 @@ Unit tests that must exist (these catch the real bugs):
 
 ### Integration tests
 
-**Rules learned in M5.** (1) Integration tests never read, purge or publish to the shared queues or the real `retail-events` bus: SQS counts every receive, five receives move a message to the DLQ (a purge helper did exactly that to a real event), and anything a test publishes would be processed by the inventory consumer as a phantom order. Relay tests create a private bus, rule and queue per session and delete them afterwards. (2) Relay tests need exclusive ownership of the outbox: a session fixture refuses to run if another relay is publishing or foreign rows are pending, and `make itest` pauses the `order-relay` container for the run and starts it again afterwards. (3) Every row a test creates must be identifiable by its cleanup; a test row with a broken payload and a random event id once leaked and starved later runs. (4) Each service's `pyproject.toml` must declare what it imports: the workspace shares one virtual environment, so an undeclared import passes every test and then crashes the container. A test in `libs/common` reads each service's imports and requires them to resolve to a declared dependency or one of its transitive dependencies. (5) The relay's wiring is built by a function that starts nothing, so it is unit-tested; its first real start crashed on a duplicate Prometheus registration that no test had constructed.
-
-**Rules learned in M6.** (1) Run integration tests through `make itest`, never bare `pytest`: without the paused relay, the orders a test creates are published, the inventory consumer answers them, and when the test's cleanup has deleted the order the order consumer correctly dead-letters the outcome (two such messages reached the DLQ and had to be purged). (2) Test ids that the cleanup must recognise have to be valid ULIDs as well: Crockford base32 has no `I`, `L`, `O` or `U`, so the old `01ITEST` prefix cannot be used where an envelope validates the id; processed-event and reservation rows use `01TEST`. (3) Each guarantee has a mutation check, run when the test was written: dropping the `status = 'PENDING'` guard fails the stale-event and competing-outcome tests; dropping the `processed_events` stop fails the redelivery tests; removing `available >= :q` from the reservation fails the oversell test (20 concurrent orders for 5 units: exactly 5 win); dropping the reservation `attribute_not_exists` fails the redelivery and crash-window tests. (4) The "request handlers never publish" guard in order-service now allows `boto3` inside the `consumer` package (it reads SQS) but still forbids `put_events` anywhere outside `relay`. (5) The consumers' wiring is built by a function that starts nothing and is unit-tested, including the SQS read timeout and a shared metrics registry (the lesson of M5). (6) `tests/e2e` drives the platform through the gateway; `make e2e` passes `E2E_COMPOSE` so the step 7 drill can stop and start `inventory-consumer`, and the test skips that step if it is not set.
-
-Each service's integration suite runs the app in-process against the real Compose stores and is parametrized over cache up and cache down where a cache exists. Beyond happy paths, product-service's suite covers: cache-aside proof (a hit survives a change made behind the cache's back), invalidation, TTLs and tracking-set behavior, Valkey dying mid-flight (a TCP proxy fixture kills established connections, restores them, or accepts and never answers), PostgreSQL unreachable (503 and cached reads survive), and migration 0001 inspected from the catalog (types, identity, partial index, constraints, ownership, and that the app role holds exactly DML). A mutation check, run when the suite was written, confirmed it fails when invalidation or error swallowing is removed.
-
-Inventory's suite adds the consistency proof. LocalStack and moto are always strongly consistent, so a behavioural test cannot show the code asked for it. Two independent checks do: botocore's `Stubber`, which rejects any call whose parameters differ from the expected ones (so dropping `ConsistentRead=True` fails it), and a request hook in the integration test that records the parameter on every DynamoDB read as sent. The suite also covers read-after-write 50 times in a row, a reservation made behind the API's back being seen immediately, and DynamoDB unreachable (503 on every endpoint, liveness still 200).
-
-**Unit tests are hermetic.** Each suite's `conftest.py` strips `AWS_ENDPOINT_URL*`, `AWS_PROFILE` and `AWS_SESSION_TOKEN` and sets dummy credentials. Without it, a shell that exports an endpoint made the moto-based tests talk to LocalStack instead of the mock. The integration conftests do the opposite on purpose: they force the endpoint to `localhost:4566` with dummy credentials before any client is built, so they cannot reach a real account either.
+Each service's integration suite runs the app in-process against the real Compose stores. Unit tests are hermetic (no AWS, no LocalStack); integration tests force LocalStack with dummy credentials, use a private bus and queue, and clean up only rows they created. Rules learned while building them: `docs/adr/README.md`.
 
 ### Acceptance test (steps 1–10)
 
@@ -830,7 +647,7 @@ Inventory's suite adds the consistency proof. LocalStack and moto are always str
 3. `POST /api/v1/orders` with 2 × A → 202, `PENDING`.
 4. Poll `GET /api/v1/orders/{id}` every 250 ms, max 15 s → `CONFIRMED`.
 5. Stock for A decreased by exactly 2.
-6. `GET /api/v1/notifications?order_id=` shows InventoryReserved and OrderStatusUpdated notifications. *(Needs the notification consumer: tested from M7.)*
+6. `GET /api/v1/notifications?order_id=` shows InventoryReserved and OrderStatusUpdated notifications.
 7. Async rejection: stop inventory-consumer, POST an order for SKU B (pre-check passes), set B's stock to 0, start the consumer → `REJECTED` with reason `OUT_OF_STOCK`.
 8. Replay step 3 with the same `Idempotency-Key` → same `order_id`, stock unchanged.
 9. All `/health/ready` return 200; all DLQs empty.
@@ -849,8 +666,6 @@ Inventory's suite adds the consistency proof. LocalStack and moto are always str
 
 The "Bus unavailable" drill is the one that proves ADR-04. If it fails, the outbox is not actually transactional.
 
-**The drill must isolate the bus.** In LocalStack, EventBridge and DynamoDB share one container, so stopping LocalStack also takes down the inventory store and the pre-check fails first: `POST /orders` answers 503 `UPSTREAM_UNAVAILABLE` and writes nothing, which is a different (also verified) behavior, not the outbox proof. boto3 honors a per-service endpoint variable named after the service *id*: `AWS_ENDPOINT_URL_EVENTBRIDGE`, not `..._EVENTS` (which is silently ignored; a first attempt at this drill passed for exactly that reason), so check `client.meta.endpoint_url` before trusting a drill. Results when run on the real stack: with the bus unreachable, 3 orders returned 202, their rows stayed `published=f` with `attempts=4` and `last_error=EndpointConnectionError`, `outbox_unpublished` read 3, and after the bus returned all 3 were published and the queue grew by exactly 3.
-
 ## 12. Phase 1 milestones (Claude Code work plan)
 
 Eleven milestones (M0 to M10), each a separate PR-sized unit that leaves `make up` working. Claude Code finishes one, runs its checks, and stops for review before the next.
@@ -861,12 +676,11 @@ Eleven milestones (M0 to M10), each a separate PR-sized unit that leaves `make u
 - [x] **M3 — Product Service.** Alembic migration, CRUD, cache-aside + invalidation, readiness on PostgreSQL. *Done when:* integration tests pass with Valkey up and down.
 - [x] **M4 — Inventory Service API.** Get stock, batch availability, admin set-stock. *Done when:* strongly consistent reads verified in integration test.
 - [x] **M5 — Order Service (sync path + outbox).** Migration (all four order tables, including `processed_events`, which M6 first uses), create order with price snapshot, idempotency key, pre-check, outbox write in the same transaction, relay process. *Done when:* `POST /orders` → row in `orders` + `outbox`; relay publishes; the "Bus unavailable" drill passes.
-- [x] **M6 — Async flow.** Inventory consumer (transactional reservation, duplicate re-emit), Order consumer (state machine, `processed_events`), outcome → `OrderStatusUpdated` via outbox. *Done when:* acceptance steps 1–5, 7 and 8 pass (`make e2e`); step 6 needs M7's notifications and is tested there (v1.8 corrects the original "1–8", which could not be met).
-- [ ] **M7 — Notification + Lambda.** Notification consumer + read API; low-stock Lambda with unit test and LocalStack invocation. *Done when:* acceptance steps 1–10 pass (step 6 first runs here); low-stock log visible in LocalStack logs.
-- [ ] **M8 — UI (React).** `ui/` built to section 15: a Vite + TypeScript SPA with catalog (category filter, pagination, stock badges), product, basket, checkout, live order tracking (polls to `CONFIRMED`/`REJECTED`, shows notifications), my orders, and a demo-tools page behind a build flag; API types generated from committed OpenAPI snapshots; `ui` nginx image; gateway `/` route; `make ui-*` targets. Depends on M7 (order status transitions and notifications must exist). *Done when:* `make lint test` runs and passes the UI checks (eslint, `tsc`, vitest, production build within the bundle budget); after `make reset && make up && make seed` the UI is served at `http://localhost:8080/`; `make ui-e2e` passes every journey in section 15.6 including the async `REJECTED` order and the double-submit idempotency case; its Helm values (`values-ui-local.yaml`) and Traefik route arrive with M10.
+- [x] **M6 — Async flow.** Inventory consumer (transactional reservation, duplicate re-emit), Order consumer (state machine, `processed_events`), outcome → `OrderStatusUpdated` via outbox. *Done when:* acceptance steps 1–5, 7 and 8 pass (`make e2e`); step 6 needs M7's notifications and is tested there.
+- [x] **M7 — Notification + Lambda.** Notification consumer + read API; low-stock Lambda with unit test and LocalStack invocation. *Done when:* acceptance steps 1–10 pass (step 6 first runs here); low-stock log visible in LocalStack logs.
+- [x] **M8 — UI (React).** `ui/` built to section 15: a Vite + TypeScript SPA with catalog (category filter, pagination, stock badges), product, basket, checkout, live order tracking (polls to `CONFIRMED`/`REJECTED`, shows notifications), my orders, and a demo-tools page behind a build flag; API types generated from committed OpenAPI snapshots; `ui` nginx image; gateway `/` route; `make ui-*` targets. Depends on M7 (order status transitions and notifications must exist). *Done when:* `make lint test` runs and passes the UI checks (eslint, `tsc`, vitest, production build within the bundle budget); after `make reset && make up && make seed` the UI is served at `http://localhost:8080/`; `make ui-e2e` passes every journey in section 15.6 including the async `REJECTED` order and the double-submit idempotency case; its Helm values (`values-ui-local.yaml`) and Traefik route arrive with M10.
 - [ ] **M9 — Hardening.** All failure drills scripted as Make targets and pytest e2e cases; stuck-order sweeper; Prometheus + Grafana profile with one dashboard (RED per service, queue depth, outbox lag); README with run instructions. *Done when:* `make e2e` runs acceptance + all drills green from a clean `make reset && make up`, and `make ui-e2e` passes on the same clean start.
 - [ ] **M10 — Local Kubernetes on OrbStack.** Helm library chart `deploy/helm/retail-service` built to the section 13 spec, `values-<svc>-local.yaml` (including `values-ui-local.yaml`), Traefik ingress mirroring the gateway paths, migration Jobs as `pre-install,pre-upgrade` hooks, HPA on the API services, PDBs, multi-arch `docker buildx` build. *Done when:* `make k8s-deploy k8s-e2e` passes (API acceptance and the UI journeys); `kubectl delete pod` on any service recovers with no failed orders; a deliberately broken release (bad readiness path) fails `--atomic`, and `helm rollback` restores a passing e2e.
-
 
 M8 deliberately sits right after M7, which it needs (order status transitions and notifications), and before hardening and Kubernetes: it is the first real client of the APIs, and it touches the gateway, Compose, the clean-start e2e and the Helm chart, so building it first means M9 and M10 include it instead of reopening them.
 
@@ -955,80 +769,60 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 - Work one milestone (M0–M10) at a time. Finish with: make lint test (and itest/e2e when the milestone says so).
 - Stop after each milestone with a summary of what changed, what was verified, and any deviation from DESIGN.md.
 - Ask before adding a dependency, a service, a table, an event type, or changing an API contract.
-- Develop on the `dev` branch; `main` is protected and only takes PRs from `dev`. Commit only when asked, and push or open a PR only when asked.
-- No AI attribution in commits or PRs (no Co-Authored-By or "Generated with" lines).
-- Run lint, test, up, down, seed and logs through `make`: Compose needs the Makefile's `IMAGE_TAG` and `--env-file .env`.
-- Record a new or changed API contract in docs/DESIGN.md in the same change.
-- `make itest` needs the stack up (`make up`). Integration tests may only touch their own data (`ITEST-`/`itest-` prefixes) and Valkey database 15; never flush database 0 or delete other rows.
-- A test that guards critical behavior (invalidation, error handling, idempotency) must be shown able to fail: break the code once, see the test fail, restore it.
-- Unit tests are hermetic: no real AWS and no LocalStack. Each suite's conftest strips `AWS_ENDPOINT_URL*`/`AWS_PROFILE` and sets dummy credentials; only integration tests may reach LocalStack, and they force its endpoint.
-- Integration tests never read, purge or publish to the shared queues or the real `retail-events` bus (SQS counts every receive; 5 send a message to the DLQ). Use a private bus and queue, and make every row a test creates identifiable for cleanup.
-- Every service declares in its own `pyproject.toml` every package it imports (the shared dev environment hides gaps; a test enforces it).
-- Per-service AWS endpoint overrides use the service id: `AWS_ENDPOINT_URL_EVENTBRIDGE`, `..._SQS`, `..._DYNAMODB` (`..._EVENTS` is silently ignored). Verify `client.meta.endpoint_url` before trusting a failure drill.
-- Every service's package is named `app`, so mypy and pytest run once per service (`make lint test` does this); never run one pytest or mypy over several services.
+- Develop on `dev`; `main` only takes PRs from `dev`. Commit, push and open PRs only when asked. No AI attribution in commits or PRs.
+- Record a changed API contract in the same change (`make openapi` for the generated spec; baseline in DESIGN.md).
+- Run lint, test, up, down, seed and logs through `make` (Compose needs its `IMAGE_TAG` and `--env-file .env`).
+- Unit tests are hermetic (no AWS, no LocalStack). Integration tests touch only their own data and never the shared queues or the real `retail-events` bus.
+- A test that guards critical behavior must be shown able to fail: break the code once, see it fail, restore it.
+- Every service's package is named `app`: run mypy and pytest once per service, never over several.
+- Operating notes and lessons from earlier milestones: docs/adr/README.md.
 
 ## Must
 - Domain code has no I/O imports (boto3, sqlalchemy, httpx2, redis).
 - Every consumer is idempotent on event_id; dedupe happens in the same transaction as the business write.
 - Order events go through the outbox. Never call PutEvents from a request handler.
-- Money: Decimal, strings in JSON. NUMERIC(10,2) for prices, NUMERIC(12,2) for order totals. API input rejects JSON numbers for money; output always has exactly two decimals. IDs: ULID.
+- Money: Decimal, strings in JSON (NUMERIC(10,2) prices, NUMERIC(12,2) totals; JSON numbers rejected). IDs: ULID.
 - AWS clients are built from env only; no endpoint URLs or credentials in code.
-- Cloud AWS access exists only through GitHub Actions OIDC: workflows assume a role by ARN (stored as a GitHub variable, not a secret) with `permissions: id-token: write` and least-privilege per-purpose roles.
-- Workflows that touch EKS run on the ephemeral self-hosted runners in the VPC; everything else runs on GitHub-hosted runners.
 - Liveness checks nothing external. Readiness checks required stores only.
 - Structured JSON logs with correlation_id; metric labels use route templates.
-- Migrations: Alembic, backward compatible, forward-only (downgrade raises), run via the migrate command only, as the schema owner role.
-- Stock reads from DynamoDB use `ConsistentRead=True`, and every inventory response (errors included) is `Cache-Control: no-store`.
-- Make every downstream call (HTTP, bus) before opening the write transaction, and never while holding a database connection; the outbox relay's `PutEvents` under `FOR UPDATE SKIP LOCKED` is the one exception.
-- A store that cannot serve a request (down, timeout, pool exhausted) is a 503 with Retry-After and a generic message, never a 500. A cache failure is a miss, never an error.
+- Migrations: Alembic, backward compatible, forward-only, run via the migrate command only, as the schema owner role.
+- Stock reads use `ConsistentRead=True`; inventory responses are `Cache-Control: no-store`.
+- Make downstream calls (HTTP, bus) before opening the write transaction, never while holding a database connection (the outbox relay is the one exception).
+- A store that cannot serve a request is a 503 with Retry-After and a generic message, never a 500. A cache failure is a miss, never an error.
+- Cloud AWS access only through GitHub Actions OIDC roles; jobs that touch EKS run on the in-VPC ephemeral runners.
 
 ## Must not
-- Commit secrets or .env. Use .env.example.
-- Read, print or log values from .env (LOCALSTACK_AUTH_TOKEN, passwords). Check only whether a value is set.
+- Commit secrets or .env (use .env.example), or read, print or log values from .env.
 - Cache inventory/stock data.
-- Use :latest image tags anywhere (Compose, CI, or Helm values).
-- Use KEYS * in Valkey, floats for money, or bare except.
-- Add Kafka, a service mesh, auth, payments, or GitOps tooling (the UI is in scope as M8; login, payments and server-side carts are not).
+- Use :latest image tags anywhere, KEYS * in Valkey, floats for money, or bare except.
+- Add Kafka, a service mesh, auth, payments, or GitOps tooling (login, payments and server-side carts stay out even with the UI).
 - Write Helm before M9 is done, or Terraform / GitHub Actions before M10 is done.
-- Run kubectl or helm without an explicit --context; local work always targets the orbstack context.
-- Use, request, create or store AWS credentials (no `aws configure`, access keys, or AWS_* secrets in GitHub).
-- Run terraform plan/apply, aws, kubectl or helm against AWS/EKS from the laptop. Locally only: terraform fmt/validate (`init -backend=false`), tflint, checkov, helm lint, kubeconform.
-- Manage the OIDC provider or the `gha-bootstrap` role in Terraform (created by hand; Terraform reads the provider via a data source).
-- Run self-hosted runners for fork PRs, or for any job that is not a deploy/drill/e2e job on main or an approved environment.
+- Run kubectl or helm without an explicit --context (local work targets `orbstack`).
+- Use, request, create or store AWS credentials, or run terraform plan/apply, aws, kubectl or helm against AWS/EKS from the laptop (locally only: terraform fmt/validate, tflint, checkov, helm lint, kubeconform).
+- Manage the OIDC provider or the `gha-bootstrap` role in Terraform, or run self-hosted runners for fork PRs.
 
-## UI (ui/, M8; DESIGN.md section 15)
-- The UI is a pure client of the public `/api/v1` API, same-origin through the gateway: relative URLs only, no hard-coded hosts, no secrets, no AWS or database access. A need the API cannot meet is a question for the owner (the API-contract rule), never a new endpoint added on the side.
-- Money is never a JS `number` or `parseFloat`: parse API decimal strings into integer minor units (`BigInt`) and format by string. Totals computed in the browser are labelled estimates; the server's order response is authoritative.
-- Never cache stock: inventory queries use `staleTime: 0` and `gcTime: 0` and are never persisted.
-- Every order submit sends an `Idempotency-Key` (reused when retrying the same basket, new when the basket changes) and every request sends `X-Correlation-ID`; every error panel shows the `correlation_id`.
-- TypeScript `strict`, no `any`, no `dangerouslySetInnerHTML`, no inline scripts or styles, no external requests (the CSP forbids them). Wrap every `localStorage` access in try/catch.
-- No login, payments or server-side cart. The customer id is a demo label, and the checkout button says there is no payment.
-- Node work goes through `make ui-*` targets; scripts and CI use `npm ci`, never `npm install`; the Node version is pinned in `.nvmrc` and the Dockerfile. `make lint test` must pass the UI checks (eslint, `tsc`, vitest, build within the bundle budget).
-- Ask before adding an npm dependency outside the approved list in DESIGN.md section 15.2.
-- The UI image is built from `ui/` only, multi-stage, non-root, never `:latest`; keep `VITE_DEMO_TOOLS` off in anything that is not local.
+## UI (ui/, DESIGN.md section 15)
+- Pure client of the public `/api/v1` API, same-origin through the gateway: relative URLs, no secrets, no AWS or database access. A need the API cannot meet is a question for the owner, never a new endpoint.
+- Money is never a JS `number` or `parseFloat`: integer minor units (`BigInt`), formatted by string; browser totals are labelled estimates.
+- Never cache stock (`staleTime: 0`, `gcTime: 0`, never persisted).
+- Every order submit sends an `Idempotency-Key` (same basket, same key); every request sends `X-Correlation-ID`; error panels show the `correlation_id`.
+- TypeScript `strict`, no `any`, no `dangerouslySetInnerHTML`, no inline scripts or styles, no external requests; wrap every `localStorage` access in try/catch.
+- Node work through `make ui-*`; `npm ci`, never `npm install`; ask before adding an npm dependency outside DESIGN.md section 15.2.
+- UI image from `ui/` only, multi-stage, non-root, never `:latest`; `VITE_DEMO_TOOLS` off outside local.
 ```
 
 ### Open questions
 
-- [x] A React UI is in scope (decided 1 Oct 2026), as M8 and section 15. Login, payments and server-side carts remain out.
-- [x] Sequencing: the UI is M8, right after M7 (decided 1 Oct 2026), before hardening and Kubernetes. It is the first real client of the APIs, so contract gaps surface while changing them is cheap, and M9 (drills, clean-start e2e) and M10 (the chart and ingress) cover the UI from the start instead of reopening the gateway, Compose, e2e and Helm later.
 - [ ] Demo-tools page (set stock and price through the unauthenticated admin endpoints): include it behind a build flag that is off in cloud builds (the default)? It makes the out-of-stock and `REJECTED` journeys demonstrable by hand.
 - [ ] API types in the UI: generated from committed OpenAPI snapshots with openapi-typescript (the default; drift fails the build) or hand-written types validated at runtime with zod?
 - [ ] Node: pin 24 LTS (Active LTS today); Node 26 becomes LTS on 28 Oct 2026 — revisit then.
 - [ ] Visual design: none specified. The default is a minimal neutral theme, light and dark through `prefers-color-scheme`, no brand assets, no product images.
 - [ ] Later hosting: serve the static files from S3 + CloudFront instead of a container? Not before the cloud strategy pass.
-
-- [x] Python 3.13 / FastAPI confirmed (30 Sep 2026); ADR-01 stands.
-- [x] LocalStack: free Hobby plan token (non-commercial use), not paid (30 Sep 2026). The token goes in the git-ignored `.env` as `LOCALSTACK_AUTH_TOKEN`. CI use of the Hobby token is unresolved; decide in the pipeline-strategy pass.
-- [x] Apple Silicon confirmed (30 Sep 2026): arm64 images, Graviton nodes, multi-arch builds.
 - [ ] Should `reserved` stock ever be released or committed? This design never releases (no cancellation). Needed before adding cancellations in a later week.
-- [x] Environments: the remote repo (https://github.com/loriamichaelj/retail-platform) carries the **dev environment only** (30 Sep 2026). Prod roles, the `prod` Environment and `promote.yml` are deferred; the prod rows in section 13 are illustrative until a prod decision is made.
-- [x] Bootstrap: OIDC provider and `gha-bootstrap` role created by hand; state bucket via `bootstrap.yml` (decided 30 Sep 2026).
-- [x] EKS access: self-hosted ephemeral runners in the VPC, private endpoint (decided 30 Sep 2026). Repo is public, so the runner restrictions in section 13 apply.
-- [x] No domain yet (30 Sep 2026): dev uses HTTP on the internal ALB; HTTPS/ACM is deferred until a domain exists.
-- [x] Runner mechanism: EC2 Auto Scaling group with ephemeral, JIT-registered runners (30 Sep 2026).
 - [ ] Pipeline, cloud and Terraform strategy: deliberately deferred until M10 is done locally. Section 13 is provisional until then.
 - [ ] Budget ceiling for the week's AWS spend (EKS control plane, NAT, Aurora, ElastiCache run 24/7). Decides single-NAT, instance sizes, and whether to `terraform destroy` nightly.
+
+Decided questions are recorded in `docs/adr/README.md`.
 
 ### Risks
 
@@ -1121,7 +915,7 @@ Journeys (`make ui-e2e`): browse, filter and paginate; the basket survives a rel
 
 ### 15.7 Make targets
 
-`ui-install` (`npm ci`), `ui-dev`, `ui-types`, `ui-lint`, `ui-typecheck`, `ui-test`, `ui-build`, `ui-e2e`, plus `openapi` (writes `docs/openapi/<service>.json` from each app). Once `ui/` exists, `make lint` and `make test` also run the UI's lint, type check, unit and component tests and the production build, so one command still gates everything. Node is a prerequisite from M8 on.
+`ui-install` (`npm ci`), `ui-dev`, `ui-types`, `ui-lint`, `ui-typecheck`, `ui-test`, `ui-build`, `ui-e2e`, plus `openapi` (writes `docs/openapi/<service>.json` from each app) and `openapi-check` / `ui-types-check` (fail on a stale snapshot, run by `make lint`). Once `ui/` exists, `make lint` and `make test` also run the UI's lint, type check, unit and component tests and the production build, so one command still gates everything. Node is a prerequisite from M8 on.
 
 ### 15.8 Layout
 
