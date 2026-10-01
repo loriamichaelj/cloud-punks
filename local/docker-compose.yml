@@ -106,6 +106,9 @@ services:
     environment:
       <<: *env
       SERVICE_NAME: inventory-service
+    # Its table and queues are created by the LocalStack bootstrap; ready only checks the table.
+    depends_on:
+      localstack: { condition: service_healthy }
     ports: ["8002:8002"]
 
   order-service:

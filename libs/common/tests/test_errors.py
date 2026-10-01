@@ -1,3 +1,5 @@
+import json
+
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, Field
 
@@ -125,3 +127,13 @@ def test_500_response_still_carries_the_correlation_id(settings: BaseServiceSett
     assert response.status_code == 500
     assert response.json()["error"]["correlation_id"] == "corr-500"
     assert response.headers[CORRELATION_HEADER] == "corr-500"
+
+
+def test_store_unavailable_response_is_a_503_with_retry_after() -> None:
+    from retail_common.errors import store_unavailable_response
+
+    response = store_unavailable_response("the thing is down")
+
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "1"
+    assert json.loads(response.body)["error"]["code"] == "STORE_UNAVAILABLE"

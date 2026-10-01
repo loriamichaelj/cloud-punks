@@ -1,6 +1,6 @@
 # Retail Microservices Platform — Design Doc
 
-Author: M.L. · 30 Sep 2026 · Status: v1.3, M0–M3 built (v1.3: product API contract and cache/outage behavior from M3, HTTP client moved to httpx2; v1.2: layout, bootstrap and tooling notes updated from M0–M2; OrbStack sized for an 8 GB Mac; v1.1: facts verified 30 Sep 2026; AWS access is GitHub-OIDC-only, so Phases 2–3 are reordered around a bootstrap workflow and in-VPC runners; bootstrap script and spec gaps fixed)
+Author: M.L. · 30 Sep 2026 · Status: v1.4, M0–M4 built (v1.4: inventory API contract and hermetic unit tests; v1.3: product API contract and cache/outage behavior from M3, HTTP client moved to httpx2; v1.2: layout, bootstrap and tooling notes updated from M0–M2; OrbStack sized for an 8 GB Mac; v1.1: facts verified 30 Sep 2026; AWS access is GitHub-OIDC-only, so Phases 2–3 are reordered around a bootstrap workflow and in-VPC runners; bootstrap script and spec gaps fixed)
 
 ## 1. Overview
 
@@ -131,7 +131,7 @@ All services expose JSON over HTTP under `/api/v1`, plus `/health/live`, `/healt
 | product | `PUT /api/v1/products/{sku}` | Update price/details (admin) | Deletes `product:{sku}` and list keys |
 | product | `GET /api/v1/categories` | List categories | Cached, TTL 3600 s |
 | inventory | `GET /api/v1/inventory/{sku}` | Stock for one SKU | Never cached; strongly consistent read |
-| inventory | `POST /api/v1/inventory/availability` | Batch check `[{sku, qty}]` → `{available: bool, items:[…]}` | Advisory only; reservation is authoritative |
+| inventory | `POST /api/v1/inventory/availability` | Batch check; body and response are defined in "Inventory API contract" below | Advisory only; reservation is authoritative |
 | inventory | `PUT /api/v1/inventory/{sku}` | Set stock (admin/seed) | — |
 | order | `POST /api/v1/orders` | Create order | Requires `Idempotency-Key` header; returns 202 + order in `PENDING` |
 | order | `GET /api/v1/orders/{order_id}` | Order with items and status | — |
@@ -150,6 +150,18 @@ The generated OpenAPI spec at `/openapi.json` is the contract of record; this is
 - **Validation:** unknown request fields are rejected (422) so typos surface. `price` must be a JSON *string*; a JSON number is rejected, because it would pass through a float on the way in. At most two decimals, `0 <= price < 10^8`. Validation errors name the field and rule but never echo the submitted value.
 - **Store outage:** when PostgreSQL cannot serve a request (down, dropped connection, the role's 5 s `statement_timeout`, exhausted pool) the service answers 503 `STORE_UNAVAILABLE` with `Retry-After: 1` and a generic message, never a 500. The shared HTTP client retries 503 but not 500, so callers back off correctly. Cached reads still succeed.
 - There is no authentication this week (non-goal), so the "admin" endpoints are open.
+
+### Inventory API contract (built in M4)
+
+The generated OpenAPI spec at `/openapi.json` is the contract of record; this is its summary.
+
+- **Stock:** `GET /inventory/{sku}` returns `{sku, available, reserved, updated_at}`. `available` is what can still be promised; reserving moves units from `available` to `reserved`. Unknown SKU: 404 `INVENTORY_NOT_FOUND`.
+- **Availability:** `POST /inventory/availability` takes `{"items": [{"sku", "quantity"}]}` (the design's `[{sku, qty}]` shorthand, made an object so it can grow, with `quantity` as everywhere else) and returns `{available, items: [{sku, requested, available, sufficient, reason}]}` in request order. `reason` is `null`, `OUT_OF_STOCK` or `UNKNOWN_SKU` (the same values as `InventoryFailed`); an unknown SKU reports `available: 0`. `available` is true only if every line is sufficient. 1 to 20 lines, distinct SKUs, `quantity` 1 to 100: the same limits as an order. **Advisory only** (ADR-08): the transactional reservation is the authority.
+- **Set stock:** `PUT /inventory/{sku}` takes `{"available": n}` (0 to 1,000,000) and is an upsert: it creates the record with `reserved: 0` or keeps the existing `reserved`. `reserved` can never be set by hand, because reservations own it. Last writer wins against a concurrent reservation; this is an admin and seed tool, with no authentication this week.
+- **Strict numbers:** quantities and stock must be JSON integers; `"5"`, `5.0` and `true` are rejected. Unknown request fields are rejected.
+- **Reserved name:** `availability` cannot be an SKU, since it is the literal name of the batch endpoint and would otherwise match `/{sku}`.
+- **Strong consistency, never cached:** every DynamoDB read uses `ConsistentRead=True` (`GetItem`, and `BatchGetItem` with per-table `ConsistentRead`), and every response under `/api/v1/inventory`, errors included, carries `Cache-Control: no-store`; a cached 404 would outlive the SKU being created.
+- **Store outage:** connection failures, timeouts, throttling and a missing table answer 503 `STORE_UNAVAILABLE` with `Retry-After: 1` (the shared response from `retail_common.errors`). Permission and validation errors from DynamoDB are real bugs and stay 500. The client uses 1 s connect and 2 s read timeouts and at most 2 retries, so a failed request can take about 2 s. `UnprocessedKeys` from a batch read are retried up to 3 rounds, then reported as an outage.
 
 ### Create-order contract
 
@@ -758,6 +770,10 @@ Unit tests that must exist (these catch the real bugs):
 
 Each service's integration suite runs the app in-process against the real Compose stores and is parametrized over cache up and cache down where a cache exists. Beyond happy paths, product-service's suite covers: cache-aside proof (a hit survives a change made behind the cache's back), invalidation, TTLs and tracking-set behavior, Valkey dying mid-flight (a TCP proxy fixture kills established connections, restores them, or accepts and never answers), PostgreSQL unreachable (503 and cached reads survive), and migration 0001 inspected from the catalog (types, identity, partial index, constraints, ownership, and that the app role holds exactly DML). A mutation check, run when the suite was written, confirmed it fails when invalidation or error swallowing is removed.
 
+Inventory's suite adds the consistency proof. LocalStack and moto are always strongly consistent, so a behavioural test cannot show the code asked for it. Two independent checks do: botocore's `Stubber`, which rejects any call whose parameters differ from the expected ones (so dropping `ConsistentRead=True` fails it), and a request hook in the integration test that records the parameter on every DynamoDB read as sent. The suite also covers read-after-write 50 times in a row, a reservation made behind the API's back being seen immediately, and DynamoDB unreachable (503 on every endpoint, liveness still 200).
+
+**Unit tests are hermetic.** Each suite's `conftest.py` strips `AWS_ENDPOINT_URL*`, `AWS_PROFILE` and `AWS_SESSION_TOKEN` and sets dummy credentials. Without it, a shell that exports an endpoint made the moto-based tests talk to LocalStack instead of the mock. The integration conftests do the opposite on purpose: they force the endpoint to `localhost:4566` with dummy credentials before any client is built, so they cannot reach a real account either.
+
 ### Acceptance test (steps 1–10)
 
 1. `GET /api/v1/products` returns seeded products; second call of `GET /api/v1/products/{sku}` is a cache hit (`cache_hits_total` increments).
@@ -792,7 +808,7 @@ Ten milestones, each a separate PR-sized unit that leaves `make up` working. Cla
 - [x] **M1 — `libs/common`.** Settings, structlog + correlation middleware, metrics middleware, health router, error model, httpx2 client, envelope + v1 schemas, EventBridge publisher, SQS consumer loop. *Done when:* unit tests cover partial `PutEvents` failure, poison vs transient handling, correlation propagation.
 - [x] **M2 — Local infrastructure.** Compose with PostgreSQL, Valkey, LocalStack (auth token in .env), gateway; PostgreSQL init (two DBs; per service an owner role for migrations and an app role with DML only); LocalStack bootstrap (including DynamoDB TTL and a stub `functions/low-stock-alert/handler.py` that M7 replaces); seed script (5 categories, 20 products, stock 10–50 each; the catalog half needs the M3 migration and fails loudly if the schema is missing; stock seeds regardless). *Done when:* `awslocal events list-rules --event-bus-name retail-events` shows 4 rules; tables and queues exist; seed is idempotent.
 - [x] **M3 — Product Service.** Alembic migration, CRUD, cache-aside + invalidation, readiness on PostgreSQL. *Done when:* integration tests pass with Valkey up and down.
-- [ ] **M4 — Inventory Service API.** Get stock, batch availability, admin set-stock. *Done when:* strongly consistent reads verified in integration test.
+- [x] **M4 — Inventory Service API.** Get stock, batch availability, admin set-stock. *Done when:* strongly consistent reads verified in integration test.
 - [ ] **M5 — Order Service (sync path + outbox).** Migration, create order with price snapshot, idempotency key, pre-check, outbox write in the same transaction, relay process. *Done when:* `POST /orders` → row in `orders` + `outbox`; relay publishes; the "Bus unavailable" drill passes.
 - [ ] **M6 — Async flow.** Inventory consumer (transactional reservation, duplicate re-emit), Order consumer (state machine, `processed_events`), outcome → `OrderStatusUpdated` via outbox. *Done when:* acceptance steps 1–8 pass.
 - [ ] **M7 — Notification + Lambda.** Notification consumer + read API; low-stock Lambda with unit test and LocalStack invocation. *Done when:* acceptance steps 1–10 pass; low-stock log visible in LocalStack logs.
@@ -890,6 +906,7 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 - Record a new or changed API contract in docs/DESIGN.md in the same change.
 - `make itest` needs the stack up (`make up`). Integration tests may only touch their own data (`ITEST-`/`itest-` prefixes) and Valkey database 15; never flush database 0 or delete other rows.
 - A test that guards critical behavior (invalidation, error handling, idempotency) must be shown able to fail: break the code once, see the test fail, restore it.
+- Unit tests are hermetic: no real AWS and no LocalStack. Each suite's conftest strips `AWS_ENDPOINT_URL*`/`AWS_PROFILE` and sets dummy credentials; only integration tests may reach LocalStack, and they force its endpoint.
 - Every service's package is named `app`, so mypy and pytest run once per service (`make lint test` does this); never run one pytest or mypy over several services.
 
 ## Must
@@ -903,6 +920,7 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 - Liveness checks nothing external. Readiness checks required stores only.
 - Structured JSON logs with correlation_id; metric labels use route templates.
 - Migrations: Alembic, backward compatible, forward-only (downgrade raises), run via the migrate command only, as the schema owner role.
+- Stock reads from DynamoDB use `ConsistentRead=True`, and every inventory response (errors included) is `Cache-Control: no-store`.
 - A store that cannot serve a request (down, timeout, pool exhausted) is a 503 with Retry-After and a generic message, never a 500. A cache failure is a miss, never an error.
 
 ## Must not

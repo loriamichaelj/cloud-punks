@@ -1,4 +1,5 @@
 import json
+import os
 from collections.abc import Callable
 from typing import Any
 
@@ -22,6 +23,13 @@ def _isolated_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Settings must come from the test, never from the developer's shell."""
     for name in ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+    # moto-based tests must never reach LocalStack or a real account (see the service conftests).
+    for name in list(os.environ):
+        if name.startswith("AWS_ENDPOINT_URL") or name in {"AWS_PROFILE", "AWS_SESSION_TOKEN"}:
+            monkeypatch.delenv(name)
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
 
 
 @pytest.fixture

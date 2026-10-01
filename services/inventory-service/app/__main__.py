@@ -10,10 +10,10 @@ PORT = 8002
 def main(argv: list[str]) -> int:
     command = argv[0] if argv else "api"
     if command == "api":
-        from app.main import app  # imported here so `python -m app unknown` stays cheap
+        from app.main import create_app  # imported here so other commands stay cheap
 
         # log_config/access_log off: retail_common owns logging (shared JSON format).
-        uvicorn.run(app, host="0.0.0.0", port=PORT, log_config=None, access_log=False)  # noqa: S104
+        uvicorn.run(create_app(), host="0.0.0.0", port=PORT, log_config=None, access_log=False)  # noqa: S104
         return 0
     sys.stderr.write(f"unknown command: {command!r} (available: api)\n")
     return 2

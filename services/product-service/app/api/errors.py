@@ -4,7 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.domain.errors import DuplicateSku, ProductNotFound, StoreUnavailable, UnknownCategory
-from retail_common.errors import error_response
+from retail_common.errors import error_response, store_unavailable_response
 
 
 async def _not_found(_request: Request, exc: Exception) -> JSONResponse:
@@ -20,13 +20,7 @@ async def _unknown_category(_request: Request, exc: Exception) -> JSONResponse:
 
 
 async def _store_unavailable(_request: Request, _exc: Exception) -> JSONResponse:
-    # Generic on purpose: exception text from a driver can contain hostnames.
-    return error_response(
-        503,
-        "STORE_UNAVAILABLE",
-        "the product store is temporarily unavailable",
-        {"Retry-After": "1"},
-    )
+    return store_unavailable_response("the product store is temporarily unavailable")
 
 
 def install_domain_error_handlers(app: FastAPI) -> None:

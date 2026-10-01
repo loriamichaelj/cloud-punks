@@ -111,6 +111,15 @@ def error_response(
     return JSONResponse(body.model_dump(), status_code=status_code, headers=headers)
 
 
+def store_unavailable_response(message: str) -> JSONResponse:
+    """The one response every service gives when its backing store cannot serve a request.
+
+    503 with ``Retry-After`` and a generic message (driver exception text can contain hostnames),
+    never a 500: callers retry a 503 and back off, and the outage is not a bug in the service.
+    """
+    return error_response(503, "STORE_UNAVAILABLE", message, {"Retry-After": "1"})
+
+
 def _http_status_code_name(status_code: int) -> str:
     try:
         return HTTPStatus(status_code).name
