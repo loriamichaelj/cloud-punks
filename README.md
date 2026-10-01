@@ -1,8 +1,6 @@
 # Retail platform
 
-A four-service retail order platform that runs end to end on one laptop with Docker Compose, and is built to move to AWS EKS by changing configuration only. Customers browse products, place an order, and watch it go `PENDING` → `CONFIRMED` or `REJECTED` through asynchronous events.
-
-The design is [`docs/DESIGN.md`](docs/DESIGN.md) (source of truth). What was learned while building it, and every deviation from the design, is in [`docs/adr/README.md`](docs/adr/README.md).
+A retail order platform that runs end to end with Docker Compose, and is built to run on AWS EKS. Customers browse products, place an order, and watch it go `PENDING` → `CONFIRMED` or `REJECTED` through asynchronous events.
 
 ```text
 browser ─► gateway (nginx :8080) ─┬─ /            ─► ui (React SPA)
