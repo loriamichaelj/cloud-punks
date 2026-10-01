@@ -6,7 +6,7 @@ requires-python = ">=3.13"
 dependencies = [
     "boto3",
     "fastapi",
-    "httpx",
+    "httpx2",
     "prometheus-client",
     "pydantic-settings",
     "python-ulid",

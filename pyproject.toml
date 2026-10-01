@@ -8,7 +8,7 @@ dependencies = []
 [dependency-groups]
 dev = [
     "fakeredis",
-    "httpx",
+    "httpx2",
     "moto[events,sqs]",
     "mypy",
     "pytest",

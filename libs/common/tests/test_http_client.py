@@ -1,7 +1,7 @@
 import contextvars
 from collections.abc import Callable
 
-import httpx
+import httpx2
 import pytest
 from tenacity import wait_none
 
@@ -13,11 +13,11 @@ from retail_common.logging import CORRELATION_HEADER, set_correlation_id
 class Upstream:
     """A MockTransport handler that replays scripted responses and records the requests."""
 
-    def __init__(self, *script: httpx.Response | Exception) -> None:
+    def __init__(self, *script: httpx2.Response | Exception) -> None:
         self.script = list(script)
-        self.requests: list[httpx.Request] = []
+        self.requests: list[httpx2.Request] = []
 
-    def __call__(self, request: httpx.Request) -> httpx.Response:
+    def __call__(self, request: httpx2.Request) -> httpx2.Response:
         self.requests.append(request)
         step = self.script.pop(0) if len(self.script) > 1 else self.script[0]
         if isinstance(step, Exception):
@@ -30,13 +30,13 @@ def client_for(upstream: Upstream, **kwargs: object) -> ServiceHttpClient:
         "http://product-service:8001",
         upstream="product-service",
         retry_wait=wait_none(),
-        transport=httpx.MockTransport(upstream),
+        transport=httpx2.MockTransport(upstream),
         **kwargs,  # type: ignore[arg-type]
     )
 
 
-def ok(status: int = 200) -> httpx.Response:
-    return httpx.Response(status, json={"ok": True})
+def ok(status: int = 200) -> httpx2.Response:
+    return httpx2.Response(status, json={"ok": True})
 
 
 def test_get_is_retried_until_it_succeeds() -> None:
@@ -67,13 +67,13 @@ def test_gateway_style_errors_are_retried(status: int) -> None:
 
 
 def test_transport_errors_are_retried() -> None:
-    upstream = Upstream(httpx.ConnectError("refused"), httpx.ReadTimeout("slow"), ok(200))
+    upstream = Upstream(httpx2.ConnectError("refused"), httpx2.ReadTimeout("slow"), ok(200))
     assert client_for(upstream).get("/x").status_code == 200
     assert len(upstream.requests) == 3
 
 
 def test_persistent_transport_error_becomes_upstream_unavailable() -> None:
-    upstream = Upstream(httpx.ConnectError("refused"))
+    upstream = Upstream(httpx2.ConnectError("refused"))
     with pytest.raises(UpstreamUnavailableError):
         client_for(upstream).get("/x")
     assert len(upstream.requests) == 3
@@ -99,7 +99,7 @@ def test_a_post_marked_retry_safe_is_retried() -> None:
 
 
 def test_client_errors_are_returned_not_raised_and_not_retried() -> None:
-    upstream = Upstream(httpx.Response(404, json={"error": {"code": "NOT_FOUND"}}))
+    upstream = Upstream(httpx2.Response(404, json={"error": {"code": "NOT_FOUND"}}))
 
     response = client_for(upstream).get("/api/v1/products/NOPE")
 

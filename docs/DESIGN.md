@@ -1,6 +1,6 @@
 # Retail Microservices Platform — Design Doc
 
-Author: M.L. · 30 Sep 2026 · Status: v1.3, M0–M3 built (v1.3: product API contract and cache/outage behavior from M3; v1.2: layout, bootstrap and tooling notes updated from M0–M2; OrbStack sized for an 8 GB Mac; v1.1: facts verified 30 Sep 2026; AWS access is GitHub-OIDC-only, so Phases 2–3 are reordered around a bootstrap workflow and in-VPC runners; bootstrap script and spec gaps fixed)
+Author: M.L. · 30 Sep 2026 · Status: v1.3, M0–M3 built (v1.3: product API contract and cache/outage behavior from M3, HTTP client moved to httpx2; v1.2: layout, bootstrap and tooling notes updated from M0–M2; OrbStack sized for an 8 GB Mac; v1.1: facts verified 30 Sep 2026; AWS access is GitHub-OIDC-only, so Phases 2–3 are reordered around a bootstrap workflow and in-VPC runners; bootstrap script and spec gaps fixed)
 
 ## 1. Overview
 
@@ -493,7 +493,7 @@ Use the `route` template (`/api/v1/orders/{order_id}`), never the raw path — r
 
 ### Resilience
 
-- Outbound HTTP: `httpx` with connect 1 s / read 2 s timeouts; retry only GETs plus the read-only `POST /inventory/availability` (the single allowed POST retry), max 2 retries, exponential backoff with jitter (`tenacity`). Never retry any other POST.
+- Outbound HTTP: `httpx2` with connect 1 s / read 2 s timeouts; retry only GETs plus the read-only `POST /inventory/availability` (the single allowed POST retry), max 2 retries, exponential backoff with jitter (`tenacity`). Never retry any other POST.
 - DB pool: SQLAlchemy with psycopg 3, `pool_size=5, max_overflow=5, pool_pre_ping=True, pool_recycle=1800`. Each PostgreSQL connection is a backend process, so keep `replicas × (pool_size + max_overflow)` well under the instance `max_connections`; in cloud put RDS Proxy in front so HPA scale-out cannot exhaust connections.
 - Set `statement_timeout = 5s` and `idle_in_transaction_session_timeout = 30s` on the `<svc>_app` roles. A stuck transaction holding the outbox lock is the failure you want killed, not waited on.
 - Stuck-order sweeper (order-service, runs in the relay process every 60 s): orders `PENDING` longer than 5 min are logged and counted in `orders_stuck` gauge. No auto-reject this week; this is the alarm source for the stuck-queue runbook.
@@ -517,7 +517,7 @@ retail-platform/
 │       ├── logging.py            # structlog setup, correlation-id middleware
 │       ├── metrics.py            # Prometheus middleware + shared metrics
 │       ├── health.py             # live/ready router with pluggable checks
-│       ├── http_client.py        # httpx client w/ timeouts, retries, header propagation
+│       ├── http_client.py        # httpx2 client w/ timeouts, retries, header propagation
 │       ├── events/
 │       │   ├── envelope.py       # Envelope model, ULID ids
 │       │   ├── schemas.py        # OrderCreated, InventoryReserved, … (v1)
@@ -551,7 +551,7 @@ retail-platform/
 └── pyproject.toml                # uv workspace root, ruff, mypy, pytest config
 ```
 
-Inside each service: `api/` (FastAPI routers, request/response models) → `domain/` (pure logic, no I/O) → `repo/` (SQLAlchemy / boto3 adapters). Domain code never imports boto3, SQLAlchemy or httpx; that is what makes unit tests fast and the cloud swap config-only.
+Inside each service: `api/` (FastAPI routers, request/response models) → `domain/` (pure logic, no I/O) → `repo/` (SQLAlchemy / boto3 adapters). Domain code never imports boto3, SQLAlchemy or httpx2; that is what makes unit tests fast and the cloud swap config-only.
 
 Every service's top-level package is named `app`, so two services cannot share one Python environment. Services are therefore uv workspace members with `package = false` (run from their own directory or image, never installed), and `make lint` / `make test` run mypy and pytest once per service in separate processes with separate caches.
 
@@ -564,11 +564,13 @@ Every service's top-level package is named `app`, so two services cannot share o
 | SQL | SQLAlchemy 2.x (sync), psycopg 3 (binary), Alembic |
 | AWS | boto3 (EventBridge, SQS, DynamoDB); `moto` for unit tests |
 | Cache | redis-py against Valkey 9.0 |
-| HTTP client | httpx + tenacity |
+| HTTP client | httpx2 + tenacity |
 | IDs | `python-ulid` |
 | Logging / metrics | structlog, prometheus-client |
 | Tooling | uv, ruff (lint + format), mypy (strict on `libs/common` and `domain/`), pytest, pytest-cov |
 | Containers | OrbStack (Docker engine + single-node Kubernetes), Docker Compose v2, docker buildx (multi-arch); base image `python:3.13-slim`, non-root user, multi-stage |
+
+`httpx2` is the Pydantic team's successor to `httpx` (same API for what we use). Starlette's `TestClient` requires it and deprecates `httpx`, so using it for both our outbound client and the tests avoids shipping two HTTP libraries.
 
 The Dockerfile is production-shaped from day one: multi-stage, `uv sync --frozen --no-dev`, non-root UID 10001, no shell tools in the final stage beyond what the base provides, `HEALTHCHECK` omitted (Kubernetes probes own that).
 
@@ -742,7 +744,7 @@ Three layers, each runnable alone; Phase 3 CI runs the first two on every PR and
 | --- | --- | --- | --- | --- |
 | Unit | `domain/`, envelope, handlers with fakes | pytest, moto, fakeredis | < 30 s total | ≥ 80% line coverage on `domain/` and `libs/common` |
 | Integration | One service + its real stores | pytest against Compose PostgreSQL/Valkey/LocalStack | < 3 min | All green |
-| End-to-end | Whole platform via gateway | `tests/e2e`, httpx, polling with timeout | < 2 min | Acceptance + drills below |
+| End-to-end | Whole platform via gateway | `tests/e2e`, httpx2, polling with timeout | < 2 min | Acceptance + drills below |
 
 Unit tests that must exist (these catch the real bugs):
 
@@ -787,7 +789,7 @@ The "Bus unavailable" drill is the one that proves ADR-04. If it fails, the outb
 Ten milestones, each a separate PR-sized unit that leaves `make up` working. Claude Code finishes one, runs its checks, and stops for review before the next.
 
 - [x] **M0 — Scaffold.** Repo tree from section 9, uv workspace, ruff/mypy/pytest config, Makefile, `.env.example`, `CLAUDE.md`, empty service apps returning `/health/live`. *Done when:* `make lint test` passes; `make up` starts four services with 200 on `/health/live`.
-- [x] **M1 — `libs/common`.** Settings, structlog + correlation middleware, metrics middleware, health router, error model, httpx client, envelope + v1 schemas, EventBridge publisher, SQS consumer loop. *Done when:* unit tests cover partial `PutEvents` failure, poison vs transient handling, correlation propagation.
+- [x] **M1 — `libs/common`.** Settings, structlog + correlation middleware, metrics middleware, health router, error model, httpx2 client, envelope + v1 schemas, EventBridge publisher, SQS consumer loop. *Done when:* unit tests cover partial `PutEvents` failure, poison vs transient handling, correlation propagation.
 - [x] **M2 — Local infrastructure.** Compose with PostgreSQL, Valkey, LocalStack (auth token in .env), gateway; PostgreSQL init (two DBs; per service an owner role for migrations and an app role with DML only); LocalStack bootstrap (including DynamoDB TTL and a stub `functions/low-stock-alert/handler.py` that M7 replaces); seed script (5 categories, 20 products, stock 10–50 each; the catalog half needs the M3 migration and fails loudly if the schema is missing; stock seeds regardless). *Done when:* `awslocal events list-rules --event-bus-name retail-events` shows 4 rules; tables and queues exist; seed is idempotent.
 - [x] **M3 — Product Service.** Alembic migration, CRUD, cache-aside + invalidation, readiness on PostgreSQL. *Done when:* integration tests pass with Valkey up and down.
 - [ ] **M4 — Inventory Service API.** Get stock, batch availability, admin set-stock. *Done when:* strongly consistent reads verified in integration test.
@@ -891,7 +893,7 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 - Every service's package is named `app`, so mypy and pytest run once per service (`make lint test` does this); never run one pytest or mypy over several services.
 
 ## Must
-- Domain code has no I/O imports (boto3, sqlalchemy, httpx, redis).
+- Domain code has no I/O imports (boto3, sqlalchemy, httpx2, redis).
 - Every consumer is idempotent on event_id; dedupe happens in the same transaction as the business write.
 - Order events go through the outbox. Never call PutEvents from a request handler.
 - Money: Decimal, strings in JSON. NUMERIC(10,2) for prices, NUMERIC(12,2) for order totals. API input rejects JSON numbers for money; output always has exactly two decimals. IDs: ULID.

@@ -15,7 +15,7 @@ A transport failure or a 5xx that survives the retries becomes ``UpstreamUnavail
 from types import TracebackType
 from typing import Any, Self
 
-import httpx
+import httpx2
 import structlog
 from tenacity import (
     RetryCallState,
@@ -49,14 +49,14 @@ class ServiceHttpClient:
         read_timeout_s: float = 2.0,
         max_retries: int = MAX_RETRIES,
         retry_wait: wait_base | None = None,
-        transport: httpx.BaseTransport | None = None,
+        transport: httpx2.BaseTransport | None = None,
     ) -> None:
         self._upstream = upstream
         self._max_retries = max_retries
         self._retry_wait = retry_wait or wait_exponential_jitter(initial=0.1, max=1.0)
-        self._client = httpx.Client(
+        self._client = httpx2.Client(
             base_url=base_url,
-            timeout=httpx.Timeout(
+            timeout=httpx2.Timeout(
                 connect=connect_timeout_s,
                 read=read_timeout_s,
                 write=read_timeout_s,
@@ -67,7 +67,7 @@ class ServiceHttpClient:
 
     def request(
         self, method: str, url: str, *, retry_safe: bool = False, **kwargs: Any
-    ) -> httpx.Response:
+    ) -> httpx2.Response:
         method = method.upper()
         retries = self._max_retries if method == "GET" or retry_safe else 0
 
@@ -76,10 +76,10 @@ class ServiceHttpClient:
         if correlation_id is not None:
             headers[CORRELATION_HEADER] = correlation_id
 
-        def attempt() -> httpx.Response:
+        def attempt() -> httpx2.Response:
             try:
                 response = self._client.request(method, url, headers=headers, **kwargs)
-            except httpx.TransportError as exc:
+            except httpx2.TransportError as exc:
                 raise _TransientUpstreamError(type(exc).__name__) from exc
             if response.status_code in RETRYABLE_STATUS:
                 raise _TransientUpstreamError(f"HTTP {response.status_code}")
@@ -109,10 +109,10 @@ class ServiceHttpClient:
             _log.warning("upstream_unavailable", upstream=self._upstream, reason=str(exc))
             raise UpstreamUnavailableError(f"{self._upstream} is unavailable") from exc
 
-    def get(self, url: str, **kwargs: Any) -> httpx.Response:
+    def get(self, url: str, **kwargs: Any) -> httpx2.Response:
         return self.request("GET", url, **kwargs)
 
-    def post(self, url: str, *, retry_safe: bool = False, **kwargs: Any) -> httpx.Response:
+    def post(self, url: str, *, retry_safe: bool = False, **kwargs: Any) -> httpx2.Response:
         return self.request("POST", url, retry_safe=retry_safe, **kwargs)
 
     def close(self) -> None:
