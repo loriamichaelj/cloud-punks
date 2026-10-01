@@ -5,8 +5,15 @@
 }
 
 .header {
-  background: var(--surface);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(10px);
+  border-top: 4px solid transparent;
+  border-image: linear-gradient(90deg, #4f46e5, #db2777, #f59e0b, #14b8a6, #3b82f6) 1;
   border-bottom: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
 }
 
 .headerInner {
@@ -15,45 +22,67 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px 24px;
-  max-width: 1080px;
+  max-width: 1120px;
   margin: 0 auto;
-  padding: 12px 16px;
+  padding: 10px 16px;
 }
 
 .brand {
-  font-weight: 700;
-  font-size: 1.2rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 800;
+  font-size: 1.15rem;
+  letter-spacing: -0.01em;
   color: var(--text);
   text-decoration: none;
+}
+
+.mark {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+  color: #fff;
+  background: var(--brand-gradient);
+  box-shadow: 0 6px 14px -6px rgba(126, 34, 206, 0.7);
 }
 
 .nav {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 8px;
+  gap: 4px 6px;
 }
 
 .nav a {
-  padding: 8px 12px;
-  border-radius: var(--radius);
+  padding: 8px 14px;
+  border-radius: 999px;
   color: var(--text);
   text-decoration: none;
+  font-weight: 600;
   min-height: 44px;
   display: inline-flex;
   align-items: center;
+  gap: 8px;
+  transition: background 0.15s ease;
+}
+
+.nav a:hover {
+  background: var(--surface-2);
 }
 
 .nav a[aria-current='page'] {
-  background: var(--surface-2);
-  font-weight: 700;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
 }
 
 .main {
   flex: 1;
   width: 100%;
-  max-width: 1080px;
+  max-width: 1120px;
   margin: 0 auto;
-  padding: 24px 16px 48px;
+  padding: 28px 16px 56px;
 }
 
 .main:focus {
@@ -61,11 +90,30 @@
 }
 
 .footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px 14px;
   border-top: 1px solid var(--border);
-  padding: 12px 16px;
+  background: rgba(255, 255, 255, 0.7);
+  padding: 16px;
   text-align: center;
   color: var(--muted);
   font-size: 0.9rem;
+}
+
+.dots {
+  display: inline-flex;
+  gap: 5px;
+}
+
+.dots i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: block;
+  background: var(--cat-solid);
 }
 
 .skip {
@@ -74,6 +122,7 @@
   top: 8px;
   background: var(--surface);
   padding: 8px 12px;
+  border-radius: var(--radius);
   z-index: 10;
 }
 

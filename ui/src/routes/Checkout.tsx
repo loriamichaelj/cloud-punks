@@ -5,6 +5,7 @@ import { api } from '../api/endpoints';
 import { ApiError } from '../api/client';
 import { ErrorPanel } from '../components/ErrorPanel';
 import { formatPrice } from '../components/Price';
+import { ProductImage } from '../components/ProductImage';
 import { fingerprint } from '../lib/basket';
 import { newCorrelationId } from '../lib/correlation';
 import { isValidCustomerId } from '../lib/customer';
@@ -112,13 +113,16 @@ export function CheckoutPage() {
         </div>
 
         <h2>Your order</h2>
-        <ul>
+        <ul className={ui.plainList}>
           {basket.lines.map((l) => (
-            <li key={l.sku}>
-              {l.quantity} × {l.name} at {formatPrice(l.unitPrice, l.currency)}
-              {flagged.includes(l.sku) && (
-                <strong className={ui.fieldError}> (no longer available)</strong>
-              )}
+            <li key={l.sku} className={ui.lineItem}>
+              <ProductImage sku={l.sku} size="thumb" />
+              <span>
+                {l.quantity} × {l.name} at {formatPrice(l.unitPrice, l.currency)}
+                {flagged.includes(l.sku) && (
+                  <strong className={ui.fieldError}> (no longer available)</strong>
+                )}
+              </span>
             </li>
           ))}
         </ul>

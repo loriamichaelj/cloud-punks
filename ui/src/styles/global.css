@@ -1,50 +1,82 @@
 :root {
-  color-scheme: light dark;
-  --bg: #f6f7f9;
+  /* One light theme. Text on every surface is at least WCAG AA (axe checks it in the journeys). */
+  color-scheme: light;
+  --bg: #faf8ff;
   --surface: #ffffff;
-  --surface-2: #eef0f4;
-  --text: #15181e;
-  --muted: #4b5563;
-  --border: #c9ced8;
-  --accent: #0b5cd5;
+  --surface-2: #f1eefc;
+  --text: #1c1b33;
+  --muted: #565a74;
+  --border: #e2def2;
+  --accent: #4f46e5;
+  --accent-strong: #3f37c9;
   --accent-text: #ffffff;
-  --ok-bg: #e3f4e8;
-  --ok-text: #0b5a2a;
-  --warn-bg: #fff1d6;
-  --warn-text: #7a4a00;
-  --bad-bg: #fde4e4;
-  --bad-text: #9b1c1c;
-  --focus: #0b5cd5;
-  --radius: 8px;
+  --accent-soft: #eceafe;
+  --ok-bg: #d8f5e4;
+  --ok-text: #0a5a2c;
+  --warn-bg: #fff0c4;
+  --warn-text: #774600;
+  --bad-bg: #ffe1e5;
+  --bad-text: #a1122b;
+  --focus: #4f46e5;
+  --radius: 12px;
+  --radius-lg: 22px;
   --gap: 16px;
+  --shadow-sm: 0 1px 2px rgba(48, 36, 120, 0.06), 0 2px 8px rgba(48, 36, 120, 0.06);
+  --shadow-md: 0 10px 30px -10px rgba(48, 36, 120, 0.28);
+  --brand-gradient: linear-gradient(120deg, #4338ca 0%, #7e22ce 55%, #be185d 100%);
+
+  /* Category palette: tile tints, text ink (dark, for chips), solid (for filled pills). */
+  --cat-tint-a: #ece9f8;
+  --cat-tint-b: #f7f5fd;
+  --cat-ink: #46417a;
+  --cat-solid: #4f46e5;
+
   font-family:
+    ui-rounded,
+    'SF Pro Rounded',
     system-ui,
     -apple-system,
     'Segoe UI',
     Roboto,
+    'Helvetica Neue',
     sans-serif;
   font-size: 16px;
-  line-height: 1.5;
+  line-height: 1.55;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #111418;
-    --surface: #1a1f26;
-    --surface-2: #232a33;
-    --text: #eef1f5;
-    --muted: #b4bcc8;
-    --border: #3a4350;
-    --accent: #6ea8ff;
-    --accent-text: #0a1220;
-    --ok-bg: #12351f;
-    --ok-text: #8fe0ab;
-    --warn-bg: #3d2f0b;
-    --warn-text: #ffd27a;
-    --bad-bg: #431818;
-    --bad-text: #ffb4b4;
-    --focus: #8bb8ff;
-  }
+[data-category='apparel'] {
+  --cat-tint-a: #e1e0ff;
+  --cat-tint-b: #f1e9ff;
+  --cat-ink: #3730a3;
+  --cat-solid: #4338ca;
+}
+
+[data-category='footwear'] {
+  --cat-tint-a: #ffe0d1;
+  --cat-tint-b: #ffeee1;
+  --cat-ink: #9a3412;
+  --cat-solid: #c2410c;
+}
+
+[data-category='accessories'] {
+  --cat-tint-a: #ffeeb5;
+  --cat-tint-b: #fff8da;
+  --cat-ink: #7a4a05;
+  --cat-solid: #a16207;
+}
+
+[data-category='home'] {
+  --cat-tint-a: #cff3e8;
+  --cat-tint-b: #e5fbf4;
+  --cat-ink: #0f5f58;
+  --cat-solid: #0f766e;
+}
+
+[data-category='electronics'] {
+  --cat-tint-a: #d4e6ff;
+  --cat-tint-b: #e8f1ff;
+  --cat-ink: #1e40af;
+  --cat-solid: #1d4ed8;
 }
 
 * {
@@ -53,12 +85,17 @@
 
 body {
   margin: 0;
-  background: var(--bg);
+  min-height: 100vh;
   color: var(--text);
+  background:
+    radial-gradient(900px 420px at 92% -8%, #efe6ff 0, rgba(239, 230, 255, 0) 70%),
+    radial-gradient(800px 420px at -6% 4%, #ffe9de 0, rgba(255, 233, 222, 0) 65%), var(--bg);
+  background-repeat: no-repeat;
 }
 
 a {
-  color: var(--accent);
+  color: var(--accent-strong);
+  text-underline-offset: 3px;
 }
 
 :focus-visible {
@@ -69,21 +106,30 @@ a {
 h1,
 h2,
 h3 {
-  line-height: 1.25;
+  line-height: 1.2;
   margin: 0 0 12px;
+  letter-spacing: -0.01em;
 }
 
 h1 {
-  font-size: 1.6rem;
+  font-size: 2rem;
+  font-weight: 800;
 }
 
 h2 {
   font-size: 1.2rem;
+  font-weight: 700;
 }
 
 img,
 svg {
   max-width: 100%;
+}
+
+code {
+  background: var(--surface-2);
+  border-radius: 6px;
+  padding: 1px 6px;
 }
 
 .visually-hidden {

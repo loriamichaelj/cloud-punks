@@ -23,6 +23,22 @@ export function Layout() {
       <header className={layout.header}>
         <div className={layout.headerInner}>
           <NavLink to="/" className={layout.brand}>
+            <span className={layout.mark} aria-hidden="true">
+              <svg
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                focusable="false"
+              >
+                <path d="M5 8h14l1 13H4L5 8Z" />
+                <path d="M9 8V6a3 3 0 0 1 6 0v2" />
+              </svg>
+            </span>
             Retail demo shop
           </NavLink>
           <nav aria-label="Main" className={layout.nav}>
@@ -41,7 +57,16 @@ export function Layout() {
         <Outlet />
       </main>
       <footer className={layout.footer}>
-        Demo only: no login and no payments. Your customer id is a label, not a credential.
+        <span className={layout.dots} aria-hidden="true">
+          <i data-category="apparel" />
+          <i data-category="footwear" />
+          <i data-category="accessories" />
+          <i data-category="home" />
+          <i data-category="electronics" />
+        </span>
+        <span>
+          Demo only: no login and no payments. Your customer id is a label, not a credential.
+        </span>
       </footer>
     </div>
   );

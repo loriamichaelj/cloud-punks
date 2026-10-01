@@ -818,7 +818,7 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 - [ ] Demo-tools page (set stock and price through the unauthenticated admin endpoints): include it behind a build flag that is off in cloud builds (the default)? It makes the out-of-stock and `REJECTED` journeys demonstrable by hand.
 - [ ] API types in the UI: generated from committed OpenAPI snapshots with openapi-typescript (the default; drift fails the build) or hand-written types validated at runtime with zod?
 - [ ] Node: pin 24 LTS (Active LTS today); Node 26 becomes LTS on 28 Oct 2026 — revisit then.
-- [ ] Visual design: none specified. The default is a minimal neutral theme, light and dark through `prefers-color-scheme`, no brand assets, no product images.
+- [x] Visual design: decided 1 Oct 2026, a light colourful theme with product art; see `docs/adr/README.md`.
 - [ ] Later hosting: serve the static files from S3 + CloudFront instead of a container? Not before the cloud strategy pass.
 - [ ] Should `reserved` stock ever be released or committed? This design never releases (no cancellation). Needed before adding cancellations in a later week.
 - [ ] Pipeline, cloud and Terraform strategy: deliberately deferred until M10 is done locally. Section 13 is provisional until then.
@@ -864,7 +864,7 @@ Versions below were checked on 1 Oct 2026 and are pinned exactly in `package-loc
 | Packages | npm with `package-lock.json`; scripts and CI use `npm ci`, never `npm install` |
 | Routing | React Router, declarative routes |
 | Server state | TanStack Query (fetching, polling, retries); no Redux or other global store |
-| Styling | CSS Modules and CSS variables, light and dark through `prefers-color-scheme`; no UI kit |
+| Styling | CSS Modules and CSS variables, one light theme with a per-category colour palette; no UI kit |
 | API types | openapi-typescript, generated from committed OpenAPI snapshots of each service (`make ui-types`; a stale snapshot fails the build) |
 | Tests | Vitest, Testing Library, MSW (component tests); Playwright with Chromium and axe (journeys) |
 | Lint / format | ESLint with typescript-eslint, react-hooks and jsx-a11y; Prettier |
@@ -894,7 +894,7 @@ This list is the approved set. Anything else is a "new dependency" and needs ask
 - **Customer identity.** `cust-` plus 8 random hex characters, generated once and kept in `localStorage`; editable and validated against the API's pattern. It is a label, not a credential, and the UI says so.
 - **Storage.** The basket lives under `retail.basket.v1`. Every `localStorage` access is wrapped in try/catch (it can be blocked, full or corrupt) and falls back to an empty basket.
 - **Accessibility.** Semantic landmarks, labelled controls, keyboard operable, focus moved on route changes and errors, status changes announced through `aria-live="polite"`, AA contrast in light and dark, usable from 360 px wide.
-- **No external requests and no inline script or style.** The catalog has no images (initials placeholders), fonts are system fonts, and React's escaping is the only HTML escaping: no `dangerouslySetInnerHTML`.
+- **No external requests and no inline script or style.** Product pictures are local SVG files bundled with the app (`ui/src/assets/products`, matched by SKU; a product without one shows its category icon), fonts are system fonts, and React's escaping is the only HTML escaping: no `dangerouslySetInnerHTML`.
 
 ### 15.5 Build, serve, run
 

@@ -1,6 +1,7 @@
 import { Link } from 'react-router';
 import { useAvailability } from '../api/hooks';
 import { ErrorPanel } from '../components/ErrorPanel';
+import { ProductImage } from '../components/ProductImage';
 import { QuantityInput } from '../components/QuantityInput';
 import { Price, formatPrice } from '../components/Price';
 import { MAX_LINES } from '../lib/basket';
@@ -77,14 +78,19 @@ export function BasketPage() {
                 return (
                   <tr key={line.sku}>
                     <td>
-                      <Link to={`/products/${encodeURIComponent(line.sku)}`}>{line.name}</Link>
-                      {check && !check.sufficient && (
-                        <div className={ui.fieldError} role="status">
-                          {check.available <= 0
-                            ? 'Out of stock'
-                            : `Only ${check.available} available`}
+                      <div className={ui.lineItem}>
+                        <ProductImage sku={line.sku} size="thumb" />
+                        <div>
+                          <Link to={`/products/${encodeURIComponent(line.sku)}`}>{line.name}</Link>
+                          {check && !check.sufficient && (
+                            <div className={ui.fieldError} role="status">
+                              {check.available <= 0
+                                ? 'Out of stock'
+                                : `Only ${check.available} available`}
+                            </div>
+                          )}
                         </div>
-                      )}
+                      </div>
                     </td>
                     <td className={ui.num}>
                       <Price value={line.unitPrice} currency={line.currency} />

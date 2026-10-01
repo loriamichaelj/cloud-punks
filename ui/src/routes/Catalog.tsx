@@ -5,13 +5,16 @@ import { ErrorPanel } from '../components/ErrorPanel';
 import { Loading } from '../components/Loading';
 import { Pagination } from '../components/Pagination';
 import { Price } from '../components/Price';
-import { ProductAvatar } from '../components/ProductAvatar';
+import { CategoryIcon } from '../components/CategoryIcon';
+import { CategoryChip, ProductImage } from '../components/ProductImage';
+import { artFor } from '../assets/productArt';
 import { StockBadge } from '../components/StockBadge';
 import { useBasket } from '../state';
 import ui from '../styles/ui.module.css';
 import styles from './catalog.module.css';
 
 const PAGE_SIZE = 20;
+const HERO_SKUS = ['sku-sneaker-wht-42', 'sku-earbuds-blk', 'sku-mug-wht'];
 
 export function Catalog() {
   const [params, setParams] = useSearchParams();
@@ -36,29 +39,45 @@ export function Catalog() {
 
   return (
     <>
-      <h1>Catalog</h1>
+      <section className={styles.hero} aria-labelledby="catalog-heading">
+        <div>
+          <p className={styles.eyebrow}>Retail demo shop</p>
+          <h1 id="catalog-heading">Catalog</h1>
+          <p className={styles.lede}>
+            Everyday essentials in five colourful collections, from tees to tech.
+          </p>
+        </div>
+        <div className={styles.heroArt} aria-hidden="true">
+          {HERO_SKUS.map((sku) => (
+            <img key={sku} src={artFor(sku)} alt="" />
+          ))}
+        </div>
+      </section>
 
       <div className={styles.filters} role="group" aria-label="Filter by category">
         <button
           type="button"
-          className={`${ui.button} ${category ? ui.secondary : ''}`}
+          className={styles.pill}
           aria-pressed={!category}
           onClick={() => {
             update({ category: undefined });
           }}
         >
+          <CategoryIcon slug="other" size={18} />
           All
         </button>
         {categories.data?.items.map((c) => (
           <button
             key={c.slug}
             type="button"
-            className={`${ui.button} ${category === c.slug ? '' : ui.secondary}`}
+            className={styles.pill}
+            data-category={c.slug}
             aria-pressed={category === c.slug}
             onClick={() => {
               update({ category: c.slug });
             }}
           >
+            <CategoryIcon slug={c.slug} size={18} />
             {c.name}
           </button>
         ))}
@@ -117,32 +136,40 @@ function ProductCard({ product, available }: { product: Product; available: numb
   const basket = useBasket();
   const outOfStock = available !== undefined && available <= 0;
   return (
-    <li className={styles.card}>
-      <ProductAvatar name={product.name} />
-      <h2 className={styles.cardTitle}>
-        <Link to={`/products/${encodeURIComponent(product.sku)}`}>{product.name}</Link>
-      </h2>
-      <div className={styles.price}>
-        <Price value={product.price} currency={product.currency} />
-      </div>
-      <div>{available !== undefined && <StockBadge available={available} />}</div>
-      <div className={styles.actions}>
-        <button
-          type="button"
-          className={ui.button}
-          disabled={outOfStock}
-          onClick={() => {
-            basket.add({
-              sku: product.sku,
-              name: product.name,
-              unitPrice: product.price,
-              currency: product.currency,
-              quantity: 1,
-            });
-          }}
-        >
-          Add to basket<span className="visually-hidden">: {product.name}</span>
-        </button>
+    <li className={styles.card} data-category={product.category}>
+      <ProductImage sku={product.sku} category={product.category} size="card" />
+      <div className={styles.cardBody}>
+        <div>
+          <CategoryChip slug={product.category} />
+        </div>
+        <h2 className={styles.cardTitle}>
+          <Link to={`/products/${encodeURIComponent(product.sku)}`}>{product.name}</Link>
+        </h2>
+        {product.description && <p className={styles.blurb}>{product.description}</p>}
+        <div className={styles.priceRow}>
+          <span className={styles.price}>
+            <Price value={product.price} currency={product.currency} />
+          </span>
+          {available !== undefined && <StockBadge available={available} />}
+        </div>
+        <div className={styles.actions}>
+          <button
+            type="button"
+            className={ui.button}
+            disabled={outOfStock}
+            onClick={() => {
+              basket.add({
+                sku: product.sku,
+                name: product.name,
+                unitPrice: product.price,
+                currency: product.currency,
+                quantity: 1,
+              });
+            }}
+          >
+            Add to basket<span className="visually-hidden">: {product.name}</span>
+          </button>
+        </div>
       </div>
     </li>
   );

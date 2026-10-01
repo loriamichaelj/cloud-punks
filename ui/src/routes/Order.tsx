@@ -2,6 +2,7 @@ import { Link, useParams } from 'react-router';
 import { useGaveUp, useNotifications, useOrder } from '../api/hooks';
 import { ErrorPanel } from '../components/ErrorPanel';
 import { Loading } from '../components/Loading';
+import { ProductImage } from '../components/ProductImage';
 import { Price, formatPrice } from '../components/Price';
 import { minorToDecimal, parseMinor, timesMinor } from '../lib/money';
 import { isTerminal } from '../lib/polling';
@@ -71,7 +72,19 @@ export function OrderPage() {
                 : 'Confirmed or rejected'}
           </li>
         </ol>
-        <p role="status" aria-live="polite" data-testid="order-status" data-status={o.status}>
+        <p
+          role="status"
+          aria-live="polite"
+          data-testid="order-status"
+          data-status={o.status}
+          className={`${styles.banner} ${
+            o.status === 'CONFIRMED'
+              ? styles.bannerConfirmed
+              : o.status === 'REJECTED'
+                ? styles.bannerRejected
+                : styles.bannerPending
+          }`}
+        >
           <strong>{o.status}</strong>
           <span className="visually-hidden">. </span> {statusText}
         </p>
@@ -108,7 +121,12 @@ export function OrderPage() {
             <tbody>
               {o.items.map((item) => (
                 <tr key={item.sku}>
-                  <td>{item.sku}</td>
+                  <td>
+                    <div className={ui.lineItem}>
+                      <ProductImage sku={item.sku} size="thumb" />
+                      {item.sku}
+                    </div>
+                  </td>
                   <td className={ui.num}>{item.quantity}</td>
                   <td className={ui.num}>
                     <Price value={item.unit_price} currency={o.currency} />

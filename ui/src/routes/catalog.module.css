@@ -1,14 +1,150 @@
+.hero {
+  position: relative;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 24px;
+  padding: 28px 32px;
+  border-radius: var(--radius-lg);
+  color: #fff;
+  background: var(--brand-gradient);
+  box-shadow: var(--shadow-md);
+}
+
+.hero::before,
+.hero::after {
+  content: '';
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.hero::before {
+  width: 260px;
+  height: 260px;
+  right: -60px;
+  top: -110px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.hero::after {
+  width: 160px;
+  height: 160px;
+  right: 190px;
+  bottom: -90px;
+  background: rgba(255, 190, 90, 0.28);
+}
+
+.hero h1 {
+  position: relative;
+  margin: 0 0 6px;
+  font-size: 2.2rem;
+}
+
+.eyebrow {
+  position: relative;
+  margin: 0 0 4px;
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  opacity: 0.9;
+}
+
+.lede {
+  position: relative;
+  margin: 0;
+  max-width: 34ch;
+  font-size: 1.05rem;
+  opacity: 0.95;
+}
+
+.heroArt {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  z-index: 1;
+}
+
+.heroArt img {
+  width: 120px;
+  height: 120px;
+  margin-left: -28px;
+  padding: 10px;
+  object-fit: contain;
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 14px 28px -12px rgba(30, 10, 90, 0.6);
+}
+
+.heroArt img:nth-child(1) {
+  transform: rotate(-8deg) translateY(6px);
+}
+
+.heroArt img:nth-child(2) {
+  transform: translateY(-8px);
+  z-index: 1;
+}
+
+.heroArt img:nth-child(3) {
+  transform: rotate(8deg) translateY(6px);
+}
+
+@media (max-width: 720px) {
+  .hero {
+    grid-template-columns: 1fr;
+    padding: 22px 20px;
+  }
+
+  .heroArt {
+    display: none;
+  }
+}
+
 .filters {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-bottom: var(--gap);
+  margin-bottom: 20px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 6px 16px 6px 12px;
+  border: 1.5px solid var(--cat-tint-a);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--cat-ink);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    transform 0.15s ease;
+}
+
+.pill:hover {
+  background: var(--cat-tint-a);
+  transform: translateY(-1px);
+}
+
+.pill[aria-pressed='true'] {
+  background: var(--cat-solid);
+  border-color: var(--cat-solid);
+  color: #fff;
 }
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: var(--gap);
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 20px;
   list-style: none;
   padding: 0;
   margin: 0 0 var(--gap);
@@ -17,22 +153,27 @@
 .card {
   display: flex;
   flex-direction: column;
-  gap: 8px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: var(--gap);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease;
 }
 
-.avatar {
-  width: 56px;
-  height: 56px;
-  display: grid;
-  place-items: center;
-  border-radius: var(--radius);
-  background: var(--surface-2);
-  color: var(--muted);
-  font-weight: 700;
+.card:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-md);
+}
+
+.cardBody {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px 16px;
 }
 
 .cardTitle {
@@ -40,14 +181,46 @@
   margin: 0;
 }
 
+.cardTitle a {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.cardTitle a:hover {
+  color: var(--accent-strong);
+  text-decoration: underline;
+}
+
+.blurb {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.priceRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 10px;
+}
+
 .price {
-  font-weight: 700;
+  font-size: 1.2rem;
+  font-weight: 800;
+  color: var(--accent-strong);
   font-variant-numeric: tabular-nums;
 }
 
 .actions {
   margin-top: auto;
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+}
+
+.actions > button {
+  flex: 1;
 }

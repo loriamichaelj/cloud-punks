@@ -4,11 +4,12 @@ import { useProduct, useStock } from '../api/hooks';
 import { ErrorPanel } from '../components/ErrorPanel';
 import { Loading } from '../components/Loading';
 import { Price } from '../components/Price';
-import { ProductAvatar } from '../components/ProductAvatar';
+import { CategoryChip, ProductImage } from '../components/ProductImage';
 import { StockBadge } from '../components/StockBadge';
 import { MAX_QUANTITY } from '../lib/basket';
 import { useBasket } from '../state';
 import ui from '../styles/ui.module.css';
+import styles from './product.module.css';
 
 export function ProductPage() {
   const { sku = '' } = useParams();
@@ -58,50 +59,57 @@ export function ProductPage() {
 
   return (
     <>
-      <p>
-        <Link to="/">← Catalog</Link>
-      </p>
-      <h1>{p.name}</h1>
-      <div className={ui.panel}>
-        <ProductAvatar name={p.name} />
-        <p>{p.description ?? 'No description.'}</p>
-        <p>
-          <strong>
-            <Price value={p.price} currency={p.currency} />
-          </strong>{' '}
-          {available !== undefined && <StockBadge available={available} />}
-        </p>
-        {stock.isError && (
-          <p className={`${ui.alert} ${ui.alertWarn}`}>Stock level unavailable right now.</p>
-        )}
-        <form onSubmit={onSubmit} noValidate>
-          <div className={ui.field}>
-            <label htmlFor="quantity">Quantity</label>
-            <input
-              id="quantity"
-              className={ui.input}
-              type="number"
-              inputMode="numeric"
-              min={1}
-              max={MAX_QUANTITY}
-              value={quantity}
-              aria-invalid={!valid}
-              aria-describedby="quantity-hint"
-              onChange={(e) => {
-                setQuantity(e.target.value);
-              }}
-            />
-            <span id="quantity-hint" className={valid ? ui.hint : ui.fieldError}>
-              Between 1 and {MAX_QUANTITY}.
-            </span>
+      <Link to="/" className={styles.back}>
+        ← Catalog
+      </Link>
+      <div className={styles.layout} data-category={p.category}>
+        <ProductImage sku={p.sku} category={p.category} size="large" />
+        <div className={styles.details}>
+          <div>
+            <CategoryChip slug={p.category} />
           </div>
-          <button type="submit" className={ui.button} disabled={outOfStock || !valid}>
-            Add to basket
-          </button>
-        </form>
-        <p role="status" aria-live="polite">
-          {message} {message.startsWith('Added') && <Link to="/basket">View basket</Link>}
-        </p>
+          <h1>{p.name}</h1>
+          <p className={styles.description}>{p.description ?? 'No description.'}</p>
+          <div className={styles.priceLine}>
+            <span className={styles.price}>
+              <Price value={p.price} currency={p.currency} />
+            </span>
+            {available !== undefined && <StockBadge available={available} />}
+          </div>
+          <div className={styles.buy}>
+            {stock.isError && (
+              <p className={`${ui.alert} ${ui.alertWarn}`}>Stock level unavailable right now.</p>
+            )}
+            <form onSubmit={onSubmit} noValidate>
+              <div className={ui.field}>
+                <label htmlFor="quantity">Quantity</label>
+                <input
+                  id="quantity"
+                  className={ui.input}
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  max={MAX_QUANTITY}
+                  value={quantity}
+                  aria-invalid={!valid}
+                  aria-describedby="quantity-hint"
+                  onChange={(e) => {
+                    setQuantity(e.target.value);
+                  }}
+                />
+                <span id="quantity-hint" className={valid ? ui.hint : ui.fieldError}>
+                  Between 1 and {MAX_QUANTITY}.
+                </span>
+              </div>
+              <button type="submit" className={ui.button} disabled={outOfStock || !valid}>
+                Add to basket
+              </button>
+            </form>
+            <p role="status" aria-live="polite">
+              {message} {message.startsWith('Added') && <Link to="/basket">View basket</Link>}
+            </p>
+          </div>
+        </div>
       </div>
     </>
   );

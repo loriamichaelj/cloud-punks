@@ -9,7 +9,8 @@ export default defineConfig({
     // `make ui-dev`: the SPA talks to the Compose stack through the gateway.
     proxy: { '/api': 'http://localhost:8080' },
   },
-  build: { sourcemap: false, target: 'es2022' },
+  // assetsInlineLimit 0: product art stays as cacheable files under /assets, not data: URIs in the JS.
+  build: { sourcemap: false, target: 'es2022', assetsInlineLimit: 0 },
   css: { modules: { localsConvention: 'camelCaseOnly' } },
   test: {
     environment: 'jsdom',

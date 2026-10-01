@@ -57,7 +57,19 @@ export function OrdersPage() {
                         <Link to={`/orders/${o.order_id}`}>{o.order_id}</Link>
                       </td>
                       <td>{new Date(o.created_at).toLocaleString()}</td>
-                      <td>{o.status}</td>
+                      <td>
+                        <span
+                          className={`${ui.pill} ${
+                            o.status === 'CONFIRMED'
+                              ? ui.pillConfirmed
+                              : o.status === 'REJECTED'
+                                ? ui.pillRejected
+                                : ui.pillPending
+                          }`}
+                        >
+                          {o.status}
+                        </span>
+                      </td>
                       <td className={ui.num}>
                         <Price value={o.total_amount} currency={o.currency} />
                       </td>
