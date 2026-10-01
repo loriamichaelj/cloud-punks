@@ -1,6 +1,6 @@
 # Retail Microservices Platform — Design Doc
 
-Author: M.L. · 30 Sep 2026 · Status: v1.4, M0–M4 built (v1.4: inventory API contract and hermetic unit tests; v1.3: product API contract and cache/outage behavior from M3, HTTP client moved to httpx2; v1.2: layout, bootstrap and tooling notes updated from M0–M2; OrbStack sized for an 8 GB Mac; v1.1: facts verified 30 Sep 2026; AWS access is GitHub-OIDC-only, so Phases 2–3 are reordered around a bootstrap workflow and in-VPC runners; bootstrap script and spec gaps fixed)
+Author: M.L. · 30 Sep 2026 · Status: v1.6, M0–M5 built, React UI added to scope as M10 (v1.6: section 15 and ADR-16/17; v1.5: order API contract, outbox relay behavior, test isolation rules and the corrected bus-unavailable drill; v1.4: inventory API contract and hermetic unit tests; v1.3: product API contract and cache/outage behavior from M3, HTTP client moved to httpx2; v1.2: layout, bootstrap and tooling notes updated from M0–M2; OrbStack sized for an 8 GB Mac; v1.1: facts verified 30 Sep 2026; AWS access is GitHub-OIDC-only, so Phases 2–3 are reordered around a bootstrap workflow and in-VPC runners; bootstrap script and spec gaps fixed)
 
 ## 1. Overview
 
@@ -12,12 +12,13 @@ We build a four-service retail order platform that runs end-to-end on localhost 
 - Correct under retries and duplicates: no double reservation, no lost events, no stuck orders.
 - Observable from day one: structured logs with correlation IDs, Prometheus metrics, health endpoints.
 - Cloud-portable: the same container images and env-var contract run on Docker Compose and EKS.
+- The same journey works in a browser: a React single-page app (section 15) on top of the public API, served through the same gateway.
 
 **Non-goals (this week)**
 
 - Payments, carts, auth/login, cancellations, returns, multi-currency.
 - Service mesh, Kafka, GitOps (ArgoCD/Flux) — documented as extensions only.
-- A UI. The API plus an acceptance-test script is the demo surface.
+- Login, payments and server-side carts stay out even with a UI: the UI uses a demo customer id and a client-side basket (section 15). Also out: SSR, PWA/offline, i18n, analytics.
 
 **Build strategy**
 
@@ -25,6 +26,7 @@ We build a four-service retail order platform that runs end-to-end on localhost 
 | --- | --- | --- | --- |
 | 1a — Local (Compose on OrbStack) | Services, data layer, events, tests | Day 1–2 | Acceptance test passes on `make up` |
 | 1b — Local Kubernetes (OrbStack) | Helm chart, probes, HPA, ingress, rollback on the local cluster | Day 3 (morning) | Same test passes via local ingress; `helm rollback` demonstrated |
+| 1c — UI (React) | `ui/` single-page app and nginx image, gateway `/` route, Playwright journeys (M10; section 15) | Day 3 (afternoon) | Browser journeys pass on Compose via `make ui-e2e` (and through Traefik once M9 is done) |
 | 2 — Cloud infra, built through CI | Manual OIDC provider + `gha-bootstrap` role; `bootstrap.yml` (state bucket); minimal `infra.yml`; Terraform, ECR, EKS, in-VPC runners; the 1b chart with dev values. No AWS access exists outside GitHub Actions (ADR-14) | Day 3 | Same test passes against the EKS ingress, run from a workflow |
 | 3 — CI/CD | Full `pr.yml`/`main.yml`/`promote.yml`, scans, promotion, rollback, `infra-destroy.yml` | Day 4 | PR-to-prod pipeline with a demonstrated rollback |
 | 4 — Reliability | Dashboards, SLOs, alarms, failure drills, runbooks | Day 5 | Each drill in section 11 detected and recovered |
@@ -52,6 +54,8 @@ Each decision below is binding for Claude Code; changing one means updating this
 | ADR-13 | PostgreSQL 17 locally, Aurora PostgreSQL in cloud (deviates from the original brief's Aurora/RDS MySQL; that brief is not in this repo) | Transactional DDL (a failed migration rolls back cleanly), `JSONB` for the outbox, partial indexes, `INSERT … ON CONFLICT DO NOTHING` for dedupe, `SKIP LOCKED` | Aurora MySQL 3 (the original brief's default; non-transactional DDL, weaker partial-index story) |
 | ADR-14 | AWS is reached only from GitHub Actions through OIDC role assumption; no IAM users, access keys or local AWS credentials exist. The OIDC provider and the `gha-bootstrap` role are created by hand once; all other roles are Terraform-managed | Removes long-lived credentials entirely; every cloud change is reviewed, logged and reproducible | Local `terraform apply` with SSO or keys (unreviewed changes, credentials on a laptop) |
 | ADR-15 | Jobs that need the EKS API (helm, kubectl, e2e, drills) run on ephemeral self-hosted runners inside the VPC; all other jobs use GitHub-hosted runners | EKS endpoint stays private and the ALB can be internal; Terraform AWS-API calls need no VPC access | Public EKS endpoint with IAM auth (simpler, larger attack surface) |
+| ADR-16 | The UI is a React + TypeScript single-page app built with Vite into static files, served by an unprivileged nginx container (`ui`), and reached through the same gateway/ALB as the API on the same origin (`/` goes to `ui`, `/api/v1/*` to the services) | No CORS and no per-environment API URL in the bundle (it calls relative `/api/v1`), so one image runs on Compose, local Kubernetes and EKS; static files need no Node runtime to operate | Next.js (a Node SSR runtime to run and patch for no benefit here); Create React App (deprecated); S3 + CloudFront (cloud-only, breaks "same image everywhere"; a possible later option); a separate UI origin with CORS |
+| ADR-17 | The UI is a pure client of the public API: no new endpoints, no direct database or AWS access, a client-side basket (not a server cart), and a browser-generated demo customer id that is explicitly not authentication | Keeps the backend contracts as the only source of truth and the non-goals (auth, payments, carts) intact; anything the UI needs that the API cannot do is an API-contract question, not UI logic | Server-side carts and sessions (scope and state to operate); a login form that only pretends |
 
 **Enterprise note:** ADR-04 and ADR-07 are the two that separate a demo from a system you would put your name on. Most event-driven outages in practice are lost or duplicated events, not slow ones.
 
@@ -62,6 +66,8 @@ The customer path is synchronous only up to order acceptance; everything after `
 ```mermaid
 flowchart TB
   client["API client (curl, e2e tests)"] -->|HTTP| gw["Gateway: nginx locally, ALB on EKS"]
+  browser["Browser"] -->|HTTP| gw
+  gw -->|"/ (SPA)"| UIS["UI: static React app, nginx"]
   gw -->|/api/v1/products| P
   gw -->|/api/v1/inventory| I
   gw -->|/api/v1/orders| O
@@ -99,7 +105,8 @@ Order is the only service with both sync dependencies (Product for price, Invent
 | Concern | Local (Phase 1) | AWS (Phase 2+) | What changes |
 | --- | --- | --- | --- |
 | Compute | Docker Compose containers (M0–M8), then OrbStack Kubernetes (M9) | EKS Deployments on managed node groups | Nothing in the image; Helm values |
-| Ingress | nginx gateway on :8080; Traefik in M9 | ALB via AWS Load Balancer Controller | Same path rules in Ingress |
+| Ingress | nginx gateway on :8080; Traefik in M9 | ALB via AWS Load Balancer Controller | Same path rules in Ingress (`/api/v1/*` to the services, everything else to `ui`) |
+| UI | `ui` container (nginx serving static files) behind the gateway | EKS Deployment behind the ALB's default rule, image from ECR | Helm values only |
 | Relational | PostgreSQL 17 container | Aurora PostgreSQL 17, Multi-AZ | `DB_HOST`, secret source |
 | Key-value | LocalStack DynamoDB | DynamoDB on-demand | `AWS_ENDPOINT_URL` unset |
 | Cache | Valkey 9.0 container | ElastiCache for Valkey (TLS) | `CACHE_URL` |
@@ -119,6 +126,7 @@ All services expose JSON over HTTP under `/api/v1`, plus `/health/live`, `/healt
 | inventory-service | Stock levels, reservations | 8002 | DynamoDB `inventory`, `inventory_reservations` | InventoryReserved, InventoryFailed | OrderCreated |
 | order-service | Orders, order items, status | 8003 | PostgreSQL `order_db` (incl. outbox) | OrderCreated, OrderStatusUpdated | InventoryReserved, InventoryFailed |
 | notification-service | Customer notifications (simulated) | 8004 | DynamoDB `notifications` | — | InventoryReserved, InventoryFailed, OrderStatusUpdated |
+| ui | The React single-page app (static files, section 15) | 8005 | — | — | — |
 | gateway (nginx) | Path routing, stands in for ALB | 8080 | — | — | — |
 
 ### Endpoints
@@ -162,6 +170,18 @@ The generated OpenAPI spec at `/openapi.json` is the contract of record; this is
 - **Reserved name:** `availability` cannot be an SKU, since it is the literal name of the batch endpoint and would otherwise match `/{sku}`.
 - **Strong consistency, never cached:** every DynamoDB read uses `ConsistentRead=True` (`GetItem`, and `BatchGetItem` with per-table `ConsistentRead`), and every response under `/api/v1/inventory`, errors included, carries `Cache-Control: no-store`; a cached 404 would outlive the SKU being created.
 - **Store outage:** connection failures, timeouts, throttling and a missing table answer 503 `STORE_UNAVAILABLE` with `Retry-After: 1` (the shared response from `retail_common.errors`). Permission and validation errors from DynamoDB are real bugs and stay 500. The client uses 1 s connect and 2 s read timeouts and at most 2 retries, so a failed request can take about 2 s. `UnprocessedKeys` from a batch read are retried up to 3 rounds, then reported as an outage.
+
+### Order API contract (built in M5)
+
+The generated OpenAPI spec at `/openapi.json` is the contract of record; the Create-order contract below is the original sketch and this is what was built.
+
+- **Order:** `{order_id, customer_id, status, status_reason, total_amount, currency, items: [{sku, quantity, unit_price}], created_at, updated_at}`: a superset of the sketch. Money is a two-decimal string. Items are returned ordered by SKU, not in request order.
+- **Create:** `POST /orders` requires an `Idempotency-Key` header (`[A-Za-z0-9._:-]{1,64}`; a missing or malformed key is 422 `VALIDATION_ERROR`). It answers **202** with the order in `PENDING` and a `Location` header; a replay answers **200**. The body is `{customer_id, items}`: `customer_id` matches `[A-Za-z0-9][A-Za-z0-9._:-]{0,63}`, 1 to 20 items with distinct SKUs, `quantity` a strict integer 1 to 100. Unknown fields are rejected, so a client cannot supply its own price or total.
+- **Order of work:** the key lookup, then prices from the product service (in parallel, carrying the correlation id), then the stock pre-check, then one transaction writing the order, its items and the outbox row. Nothing before that transaction leaves a trace, and no HTTP call is made while a database connection is held.
+- **Idempotency:** the key is unique per customer and never expires. "Same body" ignores item order (the request hash covers the customer plus items sorted by SKU). A replay is answered before any downstream call, so it returns the original order even if prices or stock have since changed, and even if a dependency is down. The same key with a different body is 422 `IDEMPOTENCY_KEY_REUSED`. Concurrent requests with one key create exactly one order (the unique constraint decides; the losers become replays). A failed attempt never consumes the key: retry with the same one.
+- **Errors:** 409 `OUT_OF_STOCK` with `SKU-X: requested 2, available 1` for each failing line (an SKU with no inventory record reports `available 0`); 422 `UNKNOWN_PRODUCT`, `PRODUCT_INACTIVE` (inactive products cannot be ordered) and `MIXED_CURRENCY` (an order has one currency); 503 `UPSTREAM_UNAVAILABLE` with `Retry-After` when the product or inventory service is unreachable, with nothing written; 503 `STORE_UNAVAILABLE` when PostgreSQL is; 404 `ORDER_NOT_FOUND`.
+- **Reads:** `GET /orders/{order_id}` (the id must be a ULID, else 422) and `GET /orders?customer_id=&page=&size=` (`customer_id` required, newest first, `size` 1 to 100, returns `{items, page, size, total}`).
+- **No event bus in the API:** the API process has no bus client at all; a test fails if any module outside `app/relay/` mentions `put_events`, `EventBridgePublisher` or `boto3`.
 
 ### Create-order contract
 
@@ -403,6 +423,15 @@ Implementation notes (`retail_common.events.consumer`, M1):
 - `PutEvents` returns HTTP 200 with partial failures in `FailedEntryCount`; check per entry.
 - Consequence: events can be published more than once (crash between PutEvents and UPDATE). That is why ADR-07 exists.
 
+Implementation notes (`python -m app relay`, M5):
+
+- The claim, the `PutEvents` call and the `UPDATE` share one transaction, so the role's 30 s `idle_in_transaction_session_timeout` bounds how long a hung publish can hold its row locks. A crash rolls everything back and the rows are simply published again.
+- Rows are published oldest first. A row whose payload is not a valid envelope is marked failed (`attempts`, `last_error`) without blocking the rows behind it. A failed batch backs off exponentially from 0.5 s to 10 s instead of hammering a down bus; a pass that published anything goes again immediately.
+- Published rows older than 7 days are deleted in batches of 1,000, at most once a minute.
+- A side server on port 9000 (shared `SideServer` in `libs/common`) serves `/health/live`, `/health/ready` and `/metrics`. **Readiness checks PostgreSQL only**: a bus outage is when the relay must stay in rotation and keep retrying. `outbox_unpublished` and `outbox_oldest_unpublished_age_seconds` are gauges computed from PostgreSQL at scrape time (NaN, not a failed scrape, if the database is down).
+- Known limitation: a row that can never be published keeps being retried forever and takes a slot in every batch. A handful is harmless; more than 50 would starve healthy rows. A maximum-attempts policy belongs with the DLQ-style tooling in M8.
+- Settings are per process, so a missing variable fails only the process that needs it: the API needs the two upstream URLs and no AWS settings; the relay needs AWS and the bus name and no upstream URLs; the `migrate` job needs only the database.
+
 ### Lambda: low-stock-alert
 
 Python 3.13 function triggered directly by EventBridge (not SQS) to show a second integration pattern. For each item with `remaining < LOW_STOCK_THRESHOLD` (default 5), log a structured `low_stock` record and put a `LowStockDetected` CloudWatch metric (EMF log format, so no extra API call). Idempotency is not required: the effect is a log and a metric.
@@ -547,7 +576,8 @@ retail-platform/
 │   ├── order-service/            # app/ + relay entrypoint + migrations/
 │   └── notification-service/     # consumer + small read API
 ├── functions/low-stock-alert/    # Lambda handler + tests
-├── gateway/nginx.conf            # path routing, mirrors ALB Ingress rules
+├── ui/                           # React SPA, an npm project outside the uv workspace (section 15)
+├── gateway/nginx.conf            # path routing, mirrors ALB Ingress rules (/ goes to ui)
 ├── local/
 │   ├── docker-compose.yml
 │   ├── localstack/init/ready.d/10-bootstrap.sh
@@ -580,6 +610,8 @@ Every service's top-level package is named `app`, so two services cannot share o
 | IDs | `python-ulid` |
 | Logging / metrics | structlog, prometheus-client |
 | Tooling | uv, ruff (lint + format), mypy (strict on `libs/common` and `domain/`), pytest, pytest-cov |
+| Frontend | TypeScript (strict), React 19.x, Vite 8, React Router, TanStack Query, CSS Modules; Node 24 LTS, npm + `package-lock.json` (section 15) |
+| Frontend tooling | Vitest, Testing Library, MSW, Playwright (Chromium), openapi-typescript, ESLint (typescript-eslint, react-hooks, jsx-a11y), Prettier |
 | Containers | OrbStack (Docker engine + single-node Kubernetes), Docker Compose v2, docker buildx (multi-arch); base image `python:3.13-slim`, non-root user, multi-stage |
 
 `httpx2` is the Pydantic team's successor to `httpx` (same API for what we use). Starlette's `TestClient` requires it and deprecates `httpx`, so using it for both our outbound client and the tests avoids shipping two HTTP libraries.
@@ -607,6 +639,7 @@ The Dockerfile is production-shaped from day one: multi-stage, `uv sync --frozen
 | order-consumer | order | `consumer` | 9000 | Deployment |
 | notification-service | notification | `api` | 8004 | Deployment |
 | notification-consumer | notification | `consumer` | 9000 | Deployment |
+| ui | `ui` (nginx-unprivileged, static files) | — | 8005 | Deployment (2 replicas, PDB) |
 | gateway | `nginx:1.27-alpine` | — | 8080 | ALB via AWS Load Balancer Controller Ingress |
 | prometheus / grafana | official images | profile `observability` | 9090 / 3000 | kube-prometheus-stack or AMP/AMG |
 
@@ -722,7 +755,7 @@ LocalStack does not enforce IAM, SQS queue policies or Lambda invoke permissions
 
 `up`, `down`, `reset` (drop volumes), `logs s=<svc>`, `seed`, `test` (unit), `itest` (integration), `e2e`, `drill-consumer-down`, `drill-poison`, `lint`, `fmt`, `dlq-peek q=<queue>`, `dlq-redrive q=<queue>`; plus `lock` and `sync` for the uv environment.
 
-Conventions (built in M0–M2): `up` runs `docker compose up -d --build --wait`, so it blocks until PostgreSQL, Valkey and LocalStack (healthy only after the bootstrap finishes) are healthy and fails if a container exits. Images are tagged `retail/<svc>:dev-<git sha>` through `IMAGE_TAG`, never `:latest` (Compose would otherwise tag builds `:latest`), so Compose must be run through `make`. `down`, `reset` and `logs` work even before `LOCALSTACK_AUTH_TOKEN` is set. `seed` runs the `seed` job (Compose profile `tools`). `test` also enforces the 80% coverage gate on `libs/common`. `itest` runs each service's `tests/integration` in-process against the real stores of the running stack (`make up` first; `--env-file .env` supplies the database passwords). Integration tests prefix everything they create with `ITEST-`/`itest-`, clean up after themselves, and use Valkey database 15 so a developer's cache is never touched.
+Conventions (built in M0–M2): `up` runs `docker compose up -d --build --wait`, so it blocks until PostgreSQL, Valkey and LocalStack (healthy only after the bootstrap finishes) are healthy and fails if a container exits. Images are tagged `retail/<svc>:dev-<git sha>` through `IMAGE_TAG`, never `:latest` (Compose would otherwise tag builds `:latest`), so Compose must be run through `make`. `down`, `reset` and `logs` work even before `LOCALSTACK_AUTH_TOKEN` is set. `seed` runs the `seed` job (Compose profile `tools`). `test` also enforces the 80% coverage gate on `libs/common`. `itest` pauses the `order-relay` container for the run (and starts it again even if tests fail), then runs each service's `tests/integration` in-process against the real stores of the running stack (`make up` first; `--env-file .env` supplies the database passwords). Integration tests prefix everything they create with `ITEST-`/`itest-`, clean up after themselves, and use Valkey database 15 so a developer's cache is never touched.
 
 ### OrbStack and local Kubernetes
 
@@ -743,6 +776,7 @@ Rules and gotchas:
 - **Ingress (verified).** OrbStack installs no ingress controller; LoadBalancer services are reachable from the Mac at `*.k8s.orb.local`. Install Traefik with Helm and route host `retail.k8s.orb.local`. `ingressClassName` and annotations are per-env values (`traefik` locally, `alb` on EKS), and paths mirror `gateway/nginx.conf`. Do not use ingress-nginx: it was retired in March 2026 and receives no security fixes.
 - **No cloud identity locally.** No Pod Identity or External Secrets in M9. `values-local.yaml` renders a plain Secret from `.env` with LocalStack `test` credentials; the chart toggles `externalSecret.enabled` and the ServiceAccount role per env.
 - **CPU architecture.** On Apple Silicon, local images are `linux/arm64`. EKS nodes are therefore Graviton (arm64) in this design, and CI builds `linux/arm64,linux/amd64` with `docker buildx`. An amd64-only image on arm64 nodes fails at start with `exec format error`.
+- **Engine restarts.** On an 8 GB Mac the Docker engine itself restarted once mid-run under memory pressure (host at 6.8 GB used, active swap). Only containers with a restart policy come back, so PostgreSQL, Valkey and LocalStack now carry `restart: unless-stopped` like the apps; without it the stack came back half-up. LocalStack's state is in memory, so a restart empties DynamoDB (run `make seed`) and drops queued events. OrbStack's built-in Kubernetes also consumes memory; if the engine is unstable before M9, disable it (`orbctl config set k8s.enable false`) until then.
 - **Resources.** Give the OrbStack VM 6 GB on an 8 GB Mac (`orbctl config set memory_mib 6144`, then `orbctl stop`; it restarts on the next Docker command), or 8 GB or more on a larger machine. The limit is a cap, not a reservation, but equalling the Mac's total RAM risks swapping. The LocalStack Lambda runtime adds a container on top of the stack. Local values request 50m CPU / 128Mi per pod so 13 processes plus Traefik fit. HPA needs metrics-server: install it if `kubectl --context orbstack top nodes` fails.
 - **Context safety.** Every `k8s-*` Make target passes `--kube-context orbstack` / `--context orbstack` explicitly, so a local command can never land on an EKS cluster that happens to be the current context.
 
@@ -757,6 +791,7 @@ Three layers, each runnable alone; Phase 3 CI runs the first two on every PR and
 | Unit | `domain/`, envelope, handlers with fakes | pytest, moto, fakeredis | < 30 s total | ≥ 80% line coverage on `domain/` and `libs/common` |
 | Integration | One service + its real stores | pytest against Compose PostgreSQL/Valkey/LocalStack | < 3 min | All green |
 | End-to-end | Whole platform via gateway | `tests/e2e`, httpx2, polling with timeout | < 2 min | Acceptance + drills below |
+| UI | Components, `ui/src/lib` logic, browser journeys | Vitest + Testing Library + MSW; Playwright (headless Chromium) | < 1 min unit; < 3 min journeys | ≥ 80% lines on `ui/src/lib`; journeys green; axe clean on every screen |
 
 Unit tests that must exist (these catch the real bugs):
 
@@ -767,6 +802,8 @@ Unit tests that must exist (these catch the real bugs):
 - Cache: Valkey down → product read still succeeds from PostgreSQL.
 
 ### Integration tests
+
+**Rules learned in M5.** (1) Integration tests never read, purge or publish to the shared queues or the real `retail-events` bus: SQS counts every receive, five receives move a message to the DLQ (a purge helper did exactly that to a real event), and anything a test publishes would be processed by the inventory consumer as a phantom order. Relay tests create a private bus, rule and queue per session and delete them afterwards. (2) Relay tests need exclusive ownership of the outbox: a session fixture refuses to run if another relay is publishing or foreign rows are pending, and `make itest` pauses the `order-relay` container for the run and starts it again afterwards. (3) Every row a test creates must be identifiable by its cleanup; a test row with a broken payload and a random event id once leaked and starved later runs. (4) Each service's `pyproject.toml` must declare what it imports: the workspace shares one virtual environment, so an undeclared import passes every test and then crashes the container. A test in `libs/common` reads each service's imports and requires them to resolve to a declared dependency or one of its transitive dependencies. (5) The relay's wiring is built by a function that starts nothing, so it is unit-tested; its first real start crashed on a duplicate Prometheus registration that no test had constructed.
 
 Each service's integration suite runs the app in-process against the real Compose stores and is parametrized over cache up and cache down where a cache exists. Beyond happy paths, product-service's suite covers: cache-aside proof (a hit survives a change made behind the cache's back), invalidation, TTLs and tracking-set behavior, Valkey dying mid-flight (a TCP proxy fixture kills established connections, restores them, or accepts and never answers), PostgreSQL unreachable (503 and cached reads survive), and migration 0001 inspected from the catalog (types, identity, partial index, constraints, ownership, and that the app role holds exactly DML). A mutation check, run when the suite was written, confirmed it fails when invalidation or error swallowing is removed.
 
@@ -794,28 +831,34 @@ Inventory's suite adds the consistency proof. LocalStack and moto are always str
 | Consumer down | `docker compose stop inventory-consumer`, place 5 orders | Orders stay PENDING; queue depth 5; `orders_stuck` rises after 5 min | Start consumer → queue drains, all CONFIRMED, no duplicates |
 | Poison message | Publish malformed `OrderCreated` directly to the bus | `events_consumed_total{outcome="poison"}`; message in DLQ after 5 receives | Inspect via `make dlq-peek`; fix; `make dlq-redrive` |
 | Duplicate delivery | Send the same `OrderCreated` envelope twice | `outcome="duplicate"` increments | Stock decremented once |
-| Bus unavailable | Stop LocalStack for 60 s, place an order | `POST /orders` still returns 202 (outbox); `outbox_unpublished` > 0 | LocalStack back → relay drains outbox, order CONFIRMED |
+| Bus unavailable | Make EventBridge unreachable **for the relay only**: run it with `AWS_ENDPOINT_URL_EVENTBRIDGE` pointing at a dead address, then place orders | `POST /orders` still returns 202 (outbox); `outbox_unpublished` > 0, `last_error` set, `events_publish_failures_total` rising; relay stays ready | Relay with a working endpoint → drains the outbox, nothing lost or duplicated, order CONFIRMED |
 | Cache down | Stop Valkey | `cache_errors_total` rises; latency up | Reads still 200; readiness unaffected |
 | DB down | Stop PostgreSQL | order/product `/health/ready` → 503; `/health/live` stays 200 | PostgreSQL back → ready without restarts |
 
 The "Bus unavailable" drill is the one that proves ADR-04. If it fails, the outbox is not actually transactional.
 
+**The drill must isolate the bus.** In LocalStack, EventBridge and DynamoDB share one container, so stopping LocalStack also takes down the inventory store and the pre-check fails first: `POST /orders` answers 503 `UPSTREAM_UNAVAILABLE` and writes nothing, which is a different (also verified) behavior, not the outbox proof. boto3 honors a per-service endpoint variable named after the service *id*: `AWS_ENDPOINT_URL_EVENTBRIDGE`, not `..._EVENTS` (which is silently ignored; a first attempt at this drill passed for exactly that reason), so check `client.meta.endpoint_url` before trusting a drill. Results when run on the real stack: with the bus unreachable, 3 orders returned 202, their rows stayed `published=f` with `attempts=4` and `last_error=EndpointConnectionError`, `outbox_unpublished` read 3, and after the bus returned all 3 were published and the queue grew by exactly 3.
+
 ## 12. Phase 1 milestones (Claude Code work plan)
 
-Ten milestones, each a separate PR-sized unit that leaves `make up` working. Claude Code finishes one, runs its checks, and stops for review before the next.
+Eleven milestones (M0 to M10), each a separate PR-sized unit that leaves `make up` working. Claude Code finishes one, runs its checks, and stops for review before the next.
 
 - [x] **M0 — Scaffold.** Repo tree from section 9, uv workspace, ruff/mypy/pytest config, Makefile, `.env.example`, `CLAUDE.md`, empty service apps returning `/health/live`. *Done when:* `make lint test` passes; `make up` starts four services with 200 on `/health/live`.
 - [x] **M1 — `libs/common`.** Settings, structlog + correlation middleware, metrics middleware, health router, error model, httpx2 client, envelope + v1 schemas, EventBridge publisher, SQS consumer loop. *Done when:* unit tests cover partial `PutEvents` failure, poison vs transient handling, correlation propagation.
 - [x] **M2 — Local infrastructure.** Compose with PostgreSQL, Valkey, LocalStack (auth token in .env), gateway; PostgreSQL init (two DBs; per service an owner role for migrations and an app role with DML only); LocalStack bootstrap (including DynamoDB TTL and a stub `functions/low-stock-alert/handler.py` that M7 replaces); seed script (5 categories, 20 products, stock 10–50 each; the catalog half needs the M3 migration and fails loudly if the schema is missing; stock seeds regardless). *Done when:* `awslocal events list-rules --event-bus-name retail-events` shows 4 rules; tables and queues exist; seed is idempotent.
 - [x] **M3 — Product Service.** Alembic migration, CRUD, cache-aside + invalidation, readiness on PostgreSQL. *Done when:* integration tests pass with Valkey up and down.
 - [x] **M4 — Inventory Service API.** Get stock, batch availability, admin set-stock. *Done when:* strongly consistent reads verified in integration test.
-- [ ] **M5 — Order Service (sync path + outbox).** Migration, create order with price snapshot, idempotency key, pre-check, outbox write in the same transaction, relay process. *Done when:* `POST /orders` → row in `orders` + `outbox`; relay publishes; the "Bus unavailable" drill passes.
+- [x] **M5 — Order Service (sync path + outbox).** Migration (all four order tables, including `processed_events`, which M6 first uses), create order with price snapshot, idempotency key, pre-check, outbox write in the same transaction, relay process. *Done when:* `POST /orders` → row in `orders` + `outbox`; relay publishes; the "Bus unavailable" drill passes.
 - [ ] **M6 — Async flow.** Inventory consumer (transactional reservation, duplicate re-emit), Order consumer (state machine, `processed_events`), outcome → `OrderStatusUpdated` via outbox. *Done when:* acceptance steps 1–8 pass.
 - [ ] **M7 — Notification + Lambda.** Notification consumer + read API; low-stock Lambda with unit test and LocalStack invocation. *Done when:* acceptance steps 1–10 pass; low-stock log visible in LocalStack logs.
 - [ ] **M8 — Hardening.** All failure drills scripted as Make targets and pytest e2e cases; stuck-order sweeper; Prometheus + Grafana profile with one dashboard (RED per service, queue depth, outbox lag); README with run instructions. *Done when:* `make e2e` runs acceptance + all drills green from a clean `make reset && make up`.
 - [ ] **M9 — Local Kubernetes on OrbStack.** Helm library chart `deploy/helm/retail-service` built to the section 13 spec, `values-<svc>-local.yaml`, Traefik ingress mirroring the gateway paths, migration Jobs as `pre-install,pre-upgrade` hooks, HPA on the API services, PDBs, multi-arch `docker buildx` build. *Done when:* `make k8s-deploy k8s-e2e` passes; `kubectl delete pod` on any service recovers with no failed orders; a deliberately broken release (bad readiness path) fails `--atomic`, and `helm rollback` restores a passing e2e.
 
-Phase 1 is complete when M9 is done. Only then start Phase 2 (Terraform, ECR, EKS).
+- [ ] **M10 — UI (React).** `ui/` built to section 15: a Vite + TypeScript SPA with catalog (category filter, pagination, stock badges), product, basket, checkout, live order tracking (polls to `CONFIRMED`/`REJECTED`, shows notifications), my orders, and a demo-tools page behind a build flag; API types generated from committed OpenAPI snapshots; `ui` nginx image; gateway `/` route; `make ui-*` targets. Depends on M7 (order status transitions and notifications must exist). *Done when:* `make lint test` runs and passes the UI checks (eslint, `tsc`, vitest, production build within the bundle budget); after `make reset && make up && make seed` the UI is served at `http://localhost:8080/`; `make ui-e2e` passes every journey in section 15.6 including the async `REJECTED` order and the double-submit idempotency case; if M9 is done, `make k8s-deploy` serves it through Traefik using a `values-ui-local.yaml` for the generic chart.
+
+M10 is sequenced last so the M9 chart exists and the UI deploys as one more instance of it. It may be started as soon as M7 is done; if so it ships with Compose only and gets its Helm values file when M9 completes.
+
+Phase 1 is complete when M10 is done (M9 if the owner defers the UI). Only then start Phase 2 (Terraform, ECR, EKS).
 
 ## 13. Phases 2–4: cloud, CI/CD, reliability
 
@@ -856,16 +899,16 @@ Terraform references the OIDC provider with a `data` source (an account can hold
 | ElastiCache | Valkey 9.0, TLS in transit, AUTH, prod 1 replica Multi-AZ | ElastiCache Serverless is simpler but has a minimum hourly cost — **verify** pricing |
 | DynamoDB | On-demand, PITR on, SSE with KMS, TTL on `ttl` | — |
 | Events | Same names as bootstrap script; SQS SSE; queue policies scoped by `aws:SourceArn`; EventBridge archive | — |
-| ECR | One repo per service, tag immutability, scan on push (Inspector enhanced), lifecycle keep 30 | Tags `sha-<git sha>`; deploy by digest in prod |
+| ECR | One repo per service (including `ui`), tag immutability, scan on push (Inspector enhanced), lifecycle keep 30 | Tags `sha-<git sha>`; deploy by digest in prod |
 
-**Helm:** the M9 library chart, reused unchanged with new values files, `deploy/helm/retail-service` + `values-<service>-<env>.yaml`. The chart renders, per process: Deployment (rolling, `maxUnavailable: 0`, `maxSurge: 25%`), ServiceAccount, Service (APIs only), PodDisruptionBudget (`minAvailable: 1`), HPA (APIs: CPU 70%, min 2, max 6), zone `topologySpreadConstraints`, probes on `/health/live` and `/health/ready`, `securityContext` (`runAsNonRoot`, `readOnlyRootFilesystem`, drop ALL, plus an `emptyDir` mounted at `/tmp`), ExternalSecret, and the migration Job as a `pre-install,pre-upgrade` hook. One shared Ingress (ALB, `scheme: internal` so e2e runs from the in-VPC runners, HTTPS via ACM, `group.name: retail`) mirrors `gateway/nginx.conf` paths. There is no domain yet, so dev serves HTTP on the internal ALB; HTTPS via ACM needs a domain you control plus a Route 53 private zone and is deferred.
+**Helm:** the M9 library chart, reused unchanged with new values files, `deploy/helm/retail-service` + `values-<service>-<env>.yaml`. The chart renders, per process: Deployment (rolling, `maxUnavailable: 0`, `maxSurge: 25%`), ServiceAccount, Service (APIs only), PodDisruptionBudget (`minAvailable: 1`), HPA (APIs: CPU 70%, min 2, max 6), zone `topologySpreadConstraints`, probes on `/health/live` and `/health/ready`, `securityContext` (`runAsNonRoot`, `readOnlyRootFilesystem`, drop ALL, plus an `emptyDir` mounted at `/tmp`), ExternalSecret, and the migration Job as a `pre-install,pre-upgrade` hook. The UI is one more release of the same chart (`values-ui-<env>.yaml`: port 8005, probes on `/healthz`, a writable `emptyDir` for nginx's temp and cache paths). One shared Ingress (ALB, `scheme: internal` so e2e runs from the in-VPC runners, HTTPS via ACM, `group.name: retail`) mirrors `gateway/nginx.conf` paths, with `/` as the default rule to `ui`. There is no domain yet, so dev serves HTTP on the internal ALB; HTTPS via ACM needs a domain you control plus a Route 53 private zone and is deferred.
 
 ### Phase 3 — GitHub Actions (Day 4)
 
 | Workflow | Trigger | Steps |
 | --- | --- | --- |
 | `bootstrap.yml` | `workflow_dispatch`, environment `bootstrap` | Phase 2 step 2: state bucket (AWS CLI), then the `bootstrap/` Terraform stack that creates the `gha-*` roles. Hosted runner, `gha-bootstrap` |
-| `pr.yml` | Pull request (hosted runners only) | Path-filtered matrix: ruff, mypy, pytest (unit + integration via Compose), Docker build, Trivy image + config scan (fail on fixable HIGH/CRITICAL), `terraform fmt -check`, `validate`, tflint, Checkov, `helm lint` + kubeconform, `terraform plan` via `gha-tf-plan` posted as PR comment |
+| `pr.yml` | Pull request (hosted runners only) | Path-filtered matrix: ruff, mypy, pytest (unit + integration via Compose), a `ui/**` job (`npm ci`, eslint, `tsc`, vitest, production build within the bundle budget, Playwright against Compose), Docker build, Trivy image + config scan (fail on fixable HIGH/CRITICAL), `terraform fmt -check`, `validate`, tflint, Checkov, `helm lint` + kubeconform, `terraform plan` via `gha-tf-plan` posted as PR comment |
 | `main.yml` | Merge to `main` | Build once (hosted) → push `sha-<sha>` to ECR → on `retail-vpc` runners: OIDC assume `gha-deploy-dev` → `helm upgrade --install --atomic --wait --timeout 10m` → e2e acceptance against dev |
 | `promote.yml` | Manual / tag | GitHub Environment `prod` with required reviewers → deploy the **same image digest** (never rebuild) on `retail-vpc` runners → smoke test → record release |
 | `infra.yml` | Changes under `infra/` | Plan on PR (hosted); apply on merge per env with environment approval: `platform` stack on hosted runners, then `cluster-addons` on `retail-vpc` runners |
@@ -897,7 +940,7 @@ Runbooks to write, each tied to an alarm: failed deployment/rollback, unhealthy 
 Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not silently diverge.
 
 ## Workflow
-- Work one milestone (M0–M9) at a time. Finish with: make lint test (and itest/e2e when the milestone says so).
+- Work one milestone (M0–M10) at a time. Finish with: make lint test (and itest/e2e when the milestone says so).
 - Stop after each milestone with a summary of what changed, what was verified, and any deviation from DESIGN.md.
 - Ask before adding a dependency, a service, a table, an event type, or changing an API contract.
 - Develop on the `dev` branch; `main` is protected and only takes PRs from `dev`. Commit only when asked, and push or open a PR only when asked.
@@ -907,6 +950,9 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 - `make itest` needs the stack up (`make up`). Integration tests may only touch their own data (`ITEST-`/`itest-` prefixes) and Valkey database 15; never flush database 0 or delete other rows.
 - A test that guards critical behavior (invalidation, error handling, idempotency) must be shown able to fail: break the code once, see the test fail, restore it.
 - Unit tests are hermetic: no real AWS and no LocalStack. Each suite's conftest strips `AWS_ENDPOINT_URL*`/`AWS_PROFILE` and sets dummy credentials; only integration tests may reach LocalStack, and they force its endpoint.
+- Integration tests never read, purge or publish to the shared queues or the real `retail-events` bus (SQS counts every receive; 5 send a message to the DLQ). Use a private bus and queue, and make every row a test creates identifiable for cleanup.
+- Every service declares in its own `pyproject.toml` every package it imports (the shared dev environment hides gaps; a test enforces it).
+- Per-service AWS endpoint overrides use the service id: `AWS_ENDPOINT_URL_EVENTBRIDGE`, `..._SQS`, `..._DYNAMODB` (`..._EVENTS` is silently ignored). Verify `client.meta.endpoint_url` before trusting a failure drill.
 - Every service's package is named `app`, so mypy and pytest run once per service (`make lint test` does this); never run one pytest or mypy over several services.
 
 ## Must
@@ -921,6 +967,7 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 - Structured JSON logs with correlation_id; metric labels use route templates.
 - Migrations: Alembic, backward compatible, forward-only (downgrade raises), run via the migrate command only, as the schema owner role.
 - Stock reads from DynamoDB use `ConsistentRead=True`, and every inventory response (errors included) is `Cache-Control: no-store`.
+- Make every downstream call (HTTP, bus) before opening the write transaction, and never while holding a database connection; the outbox relay's `PutEvents` under `FOR UPDATE SKIP LOCKED` is the one exception.
 - A store that cannot serve a request (down, timeout, pool exhausted) is a 503 with Retry-After and a generic message, never a 500. A cache failure is a miss, never an error.
 
 ## Must not
@@ -929,16 +976,35 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 - Cache inventory/stock data.
 - Use :latest image tags anywhere (Compose, CI, or Helm values).
 - Use KEYS * in Valkey, floats for money, or bare except.
-- Add Kafka, a service mesh, a UI, auth, payments, or GitOps tooling.
-- Write Helm before M8 is done, or Terraform / GitHub Actions before M9 is done.
+- Add Kafka, a service mesh, auth, payments, or GitOps tooling (the UI is in scope as M10; login, payments and server-side carts are not).
+- Write Helm before M8 is done, or Terraform / GitHub Actions before M10 is done.
 - Run kubectl or helm without an explicit --context; local work always targets the orbstack context.
 - Use, request, create or store AWS credentials (no `aws configure`, access keys, or AWS_* secrets in GitHub).
 - Run terraform plan/apply, aws, kubectl or helm against AWS/EKS from the laptop. Locally only: terraform fmt/validate (`init -backend=false`), tflint, checkov, helm lint, kubeconform.
 - Manage the OIDC provider or the `gha-bootstrap` role in Terraform (created by hand; Terraform reads the provider via a data source).
 - Run self-hosted runners for fork PRs, or for any job that is not a deploy/drill/e2e job on main or an approved environment.
+
+## UI (ui/, M10; DESIGN.md section 15)
+- The UI is a pure client of the public `/api/v1` API, same-origin through the gateway: relative URLs only, no hard-coded hosts, no secrets, no AWS or database access. A need the API cannot meet is a question for the owner (the API-contract rule), never a new endpoint added on the side.
+- Money is never a JS `number` or `parseFloat`: parse API decimal strings into integer minor units (`BigInt`) and format by string. Totals computed in the browser are labelled estimates; the server's order response is authoritative.
+- Never cache stock: inventory queries use `staleTime: 0` and `gcTime: 0` and are never persisted.
+- Every order submit sends an `Idempotency-Key` (reused when retrying the same basket, new when the basket changes) and every request sends `X-Correlation-ID`; every error panel shows the `correlation_id`.
+- TypeScript `strict`, no `any`, no `dangerouslySetInnerHTML`, no inline scripts or styles, no external requests (the CSP forbids them). Wrap every `localStorage` access in try/catch.
+- No login, payments or server-side cart. The customer id is a demo label, and the checkout button says there is no payment.
+- Node work goes through `make ui-*` targets; scripts and CI use `npm ci`, never `npm install`; the Node version is pinned in `.nvmrc` and the Dockerfile. `make lint test` must pass the UI checks (eslint, `tsc`, vitest, build within the bundle budget).
+- Ask before adding an npm dependency outside the approved list in DESIGN.md section 15.2.
+- The UI image is built from `ui/` only, multi-stage, non-root, never `:latest`; keep `VITE_DEMO_TOOLS` off in anything that is not local.
 ```
 
 ### Open questions
+
+- [x] A React UI is in scope (decided 1 Oct 2026), as M10 and section 15. Login, payments and server-side carts remain out.
+- [ ] Sequencing: M10 after M9 (the default, so the generic Helm chart takes the UI as another instance), or pulled forward right after M7 so the demo is visual sooner?
+- [ ] Demo-tools page (set stock and price through the unauthenticated admin endpoints): include it behind a build flag that is off in cloud builds (the default)? It makes the out-of-stock and `REJECTED` journeys demonstrable by hand.
+- [ ] API types in the UI: generated from committed OpenAPI snapshots with openapi-typescript (the default; drift fails the build) or hand-written types validated at runtime with zod?
+- [ ] Node: pin 24 LTS (Active LTS today); Node 26 becomes LTS on 28 Oct 2026 — revisit then.
+- [ ] Visual design: none specified. The default is a minimal neutral theme, light and dark through `prefers-color-scheme`, no brand assets, no product images.
+- [ ] Later hosting: serve the static files from S3 + CloudFront instead of a container? Not before the cloud strategy pass.
 
 - [x] Python 3.13 / FastAPI confirmed (30 Sep 2026); ADR-01 stands.
 - [x] LocalStack: free Hobby plan token (non-commercial use), not paid (30 Sep 2026). The token goes in the git-ignored `.env` as `LOCALSTACK_AUTH_TOKEN`. CI use of the Hobby token is unresolved; decide in the pipeline-strategy pass.
@@ -959,8 +1025,108 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 | LocalStack behaviour differs from AWS (IAM not enforced, queue policies ignored) | Works locally, fails silently in cloud | Phase 2 re-runs the full e2e and drills against dev; alarm on `FailedInvocations` |
 | Outbox relay implemented as "publish then mark" outside a lock | Duplicate or skipped events | Unit test for partial failure; `SKIP LOCKED`; idempotent consumers absorb duplicates |
 | Reservation logic conflates duplicate vs out-of-stock cancellations | Oversell or false rejects | Explicit `CancellationReasons` handling + unit tests (section 5) |
-| Scope creep from Day 1–2 into Day 3+ | No cloud deployment by Day 5 | Milestone gates; M9 is the hard stop for Phase 1 |
+| Scope creep from Day 1–2 into Day 3+ | No cloud deployment by Day 5 | Milestone gates; M10 is the hard stop for Phase 1 |
+| UI scope creep (login, payments, carts, pixel polish) | Delays the cloud phase | The non-goals are fixed in section 15; the UI holds no backend logic; M10 has a done-when gate |
+| npm supply-chain compromise | Malicious code in the build or the shipped bundle | Exact versions in the lockfile, `npm ci` only, a short approved dependency list, `npm audit` and Trivy in CI, no secrets anywhere near the build |
+| Playwright and Chromium on top of the stack on an 8 GB Mac | Memory pressure and Docker engine restarts (seen in M5) | Headless Chromium, one worker, run on a freshly started stack with other apps closed; CI runs it on hosted runners |
+| Wrong money or stale stock shown in the UI | Customers see wrong totals or buy what is not there | Integer minor-unit arithmetic with server totals authoritative; stock never cached (`staleTime: 0`, `gcTime: 0`); both covered by tests |
 | Idle AWS resources over nights/weekend | Unexpected bill | Tag everything `project=retail-week3`, AWS Budgets alert, destroy dev via `infra-destroy.yml` when idle |
 | Self-hosted runner on a public repo executes untrusted fork code | Code execution inside the VPC next to the cluster | Runners serve only main/dispatch/tag/environment jobs, never `pull_request`; approval required for outside collaborators; ephemeral single-job runners; instance profile grants SSM only |
 | `gha-bootstrap` can create IAM roles | Effectively admin if the trust is widened or the workflow is edited | Exact `sub` pin to `environment:bootstrap`, required reviewer, `workflow_dispatch` only, branch protection on `.github/` |
 | No local way to run plan/apply/kubectl | Slow feedback; cloud errors surface only in CI | Static checks locally; workflows dump diagnostics on failure; small, frequent infra PRs |
+
+## 15. Frontend UI (React)
+
+Added in v1.6 (1 Oct 2026). Binding decisions are ADR-16 and ADR-17 in section 2. The UI is milestone M10 (section 12).
+
+### 15.1 Scope
+
+A customer can browse the catalog, build a basket, place an order, and watch it move `PENDING → CONFIRMED | REJECTED`, entirely in a browser. It is a pure client of the existing public API (ADR-17): no endpoint was added for it, and it adds no backend behavior.
+
+Still out of scope, even with a UI: login or any notion of identity beyond a demo customer id, payments (the checkout button says so), server-side carts, cancellations and returns, multi-currency, server-side rendering, PWA/offline, i18n, analytics and RUM.
+
+### 15.2 Stack
+
+Versions below were checked on 1 Oct 2026 and are pinned exactly in `package-lock.json` at build time (**verify** the current majors when M10 starts).
+
+| Concern | Choice |
+| --- | --- |
+| Language / UI | TypeScript (`strict`), React 19.x (19.3 at the time of writing) |
+| Build / dev server | Vite 8 (needs Node 20.19+ or 22.12+); built with Node 24 LTS (Node 26 becomes LTS on 28 Oct 2026, revisit) pinned in `.nvmrc` and the Dockerfile |
+| Packages | npm with `package-lock.json`; scripts and CI use `npm ci`, never `npm install` |
+| Routing | React Router, declarative routes |
+| Server state | TanStack Query (fetching, polling, retries); no Redux or other global store |
+| Styling | CSS Modules and CSS variables, light and dark through `prefers-color-scheme`; no UI kit |
+| API types | openapi-typescript, generated from committed OpenAPI snapshots of each service (`make ui-types`; a stale snapshot fails the build) |
+| Tests | Vitest, Testing Library, MSW (component tests); Playwright with Chromium and axe (journeys) |
+| Lint / format | ESLint with typescript-eslint, react-hooks and jsx-a11y; Prettier |
+
+This list is the approved set. Anything else is a "new dependency" and needs asking first (CLAUDE.md).
+
+### 15.3 Screens and the API behind them
+
+| Screen | Route | Calls | Notes |
+| --- | --- | --- | --- |
+| Catalog | `/` | `GET /categories`; `GET /products?category=&page=&size=20`; one `POST /inventory/availability` for the page's SKUs (a page is at most 20 lines, exactly the endpoint's cap) | Category filter and pagination. Stock badge: In stock / "Only N left" (N below 5) / Out of stock (add-to-basket disabled). |
+| Product | `/products/:sku` | `GET /products/{sku}`; `GET /inventory/{sku}` | Quantity 1 to 100; "Add to basket". |
+| Basket | `/basket` | none to submit; `POST /inventory/availability` to warn early | Held in the browser. Edit and remove lines; 20-line cap; the total is labelled an estimate. |
+| Checkout | `/checkout` | `POST /orders` | Shows the demo customer id, the lines and the estimate. The button reads "Place order (demo, no payment)". |
+| Order | `/orders/:id` | `GET /orders/{id}` (polled); `GET /notifications?order_id=` | Status timeline, the reason when `REJECTED`, snapshotted unit prices and the server's authoritative total, and the notifications. |
+| My orders | `/orders` | `GET /orders?customer_id=` | Newest first, paginated. |
+| Demo tools | `/demo` | `PUT /inventory/{sku}`; `PUT /products/{sku}` | Exists only in builds with `VITE_DEMO_TOOLS=true` (off in cloud builds). Labelled as unauthenticated admin endpoints. Makes out-of-stock and `REJECTED` demonstrable by hand. |
+
+### 15.4 Behavior rules
+
+- **Money is never a JS `number`.** API decimal strings are parsed into integer minor units (`BigInt`) for arithmetic and formatted by string handling. Totals computed in the browser are estimates; the order response is authoritative and is what the order screen shows.
+- **Idempotency.** Each checkout attempt gets a UUID `Idempotency-Key`, stored with a fingerprint of the basket. It is reused on retry, refresh, network error and 503, so a double-submit creates one order; a `200` replay is treated as success and opens the order. A changed basket gets a new key (reusing the old one would be 422 `IDEMPOTENCY_KEY_REUSED`).
+- **Errors.** One mapping of the shared error shape `{error: {code, message, correlation_id}}`. 409 `OUT_OF_STOCK` shows the server's per-line message and links back to the basket; 422 `UNKNOWN_PRODUCT` / `PRODUCT_INACTIVE` mark the lines; 503 retries automatically (at most 3 times, honoring `Retry-After`) with the same key, then offers a button. A network failure is shown differently from an API error. Every error panel shows the `correlation_id` with a copy button. No stack traces, no raw server text beyond `message`.
+- **Correlation.** Every request carries `X-Correlation-ID` (one UUID per user action), so a click can be followed through the gateway, all four services and the events.
+- **Order tracking.** `GET /orders/{id}` every 1 s for the first 10 s, then every 2 s, stopping at a terminal status or after 60 s ("still processing, refresh"). Polling pauses while the tab is hidden. The SLO is 30 s (section 7).
+- **Stock is never cached.** Inventory queries use `staleTime: 0` and `gcTime: 0`, refetch on mount and on focus, and are never written to storage. Catalog data may be cached for up to 60 s in memory only, never persisted, consistent with the server's 5-minute tolerance.
+- **Customer identity.** `cust-` plus 8 random hex characters, generated once and kept in `localStorage`; editable and validated against the API's pattern. It is a label, not a credential, and the UI says so.
+- **Storage.** The basket lives under `retail.basket.v1`. Every `localStorage` access is wrapped in try/catch (it can be blocked, full or corrupt) and falls back to an empty basket.
+- **Accessibility.** Semantic landmarks, labelled controls, keyboard operable, focus moved on route changes and errors, status changes announced through `aria-live="polite"`, AA contrast in light and dark, usable from 360 px wide.
+- **No external requests and no inline script or style.** The catalog has no images (initials placeholders), fonts are system fonts, and React's escaping is the only HTML escaping: no `dangerouslySetInnerHTML`.
+
+### 15.5 Build, serve, run
+
+- **Image.** `ui/Dockerfile`, built from `ui/` only (it needs nothing from `libs/`): a Node 24 stage runs `npm ci` and `npm run build`; the final stage is `nginxinc/nginx-unprivileged` at a pinned tag, non-root, listening on 8005, compatible with a read-only root filesystem (writable `emptyDir` for nginx's temp and cache paths in Kubernetes). No `:latest`, tags `dev-<git sha>`. There are no runtime environment variables: the UI is same-origin and calls relative `/api/v1`. The only build-time switch is `VITE_DEMO_TOOLS`.
+- **nginx in the image.** Hashed assets under `/assets/` get `Cache-Control: public, max-age=31536000, immutable`; `index.html` is `no-cache`. Extension-less paths fall back to `index.html` (client-side routing); a missing file with an extension is a real 404. `/healthz` returns 200 and checks nothing external (liveness and readiness are the same: it is static files). Headers: `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`. The UI exposes no `/metrics`: it is the one process without the Prometheus contract, and the gateway's access log is its request telemetry.
+- **Gateway.** `gateway/nginx.conf` keeps every `/api/v1/...` rule and gains `location / { proxy_pass ui:8005 }` resolved per request like the others; an unknown `/api/...` path stays the gateway's JSON 404. Consequence for the M2 gateway check: `/health/live` and `/metrics` no longer 404 at the gateway, they return the SPA's `index.html` (never a service's health or metrics); `/openapi.json` has an extension and still 404s.
+- **Local development.** `make ui-dev` runs Vite on `:5173` with `/api` proxied to `http://localhost:8080`, so the SPA talks to the Compose stack with hot reload.
+- **Compose and Kubernetes.** `ui` is one more service in `local/docker-compose.yml`; the gateway depends on it. In M9/M10 it is one more instance of the generic chart; on EKS the ALB's default rule sends `/` to it (section 13).
+- **Budgets.** Initial JavaScript at most 200 kB gzipped; the production build fails above it.
+
+### 15.6 Testing
+
+| Layer | Scope | Gate |
+| --- | --- | --- |
+| Unit | `ui/src/lib`: money (property-style tests on parsing, addition, formatting), idempotency-key lifecycle, polling schedule, storage fallbacks, correlation ids | at least 80% lines on `ui/src/lib` |
+| Component | Each screen with MSW at the network boundary, using fixtures that match the OpenAPI examples; error mapping; basket behavior; a stock query is re-fetched, never served from cache | green |
+| Journeys | Playwright (headless Chromium, one worker) against the Compose stack after `make reset && make up && make seed` | green, axe reports no serious or critical violations on any screen |
+
+Journeys (`make ui-e2e`): browse, filter and paginate; the basket survives a reload; checkout shows `PENDING` and then `CONFIRMED` while stock drops by exactly the quantity; a synchronous out-of-stock shows the server's message; an **asynchronous** rejection (stop the inventory consumer, place the order, set the stock to zero, start the consumer, as in acceptance step 7) ends `REJECTED` with the reason; double-clicking "Place order" creates one order; stopping product-service shows a retryable catalog error with a correlation id and recovers when it returns; an unreachable gateway shows a network error, not an API error.
+
+### 15.7 Make targets
+
+`ui-install` (`npm ci`), `ui-dev`, `ui-types`, `ui-lint`, `ui-typecheck`, `ui-test`, `ui-build`, `ui-e2e`, plus `openapi` (writes `docs/openapi/<service>.json` from each app). Once `ui/` exists, `make lint` and `make test` also run the UI's lint, type check, unit and component tests and the production build, so one command still gates everything. Node is a prerequisite from M10 on.
+
+### 15.8 Layout
+
+```text
+ui/
+├── package.json, package-lock.json, .nvmrc
+├── tsconfig.json, vite.config.ts, eslint config, index.html
+├── Dockerfile, nginx.conf
+├── src/
+│   ├── main.tsx, App.tsx
+│   ├── routes/        # catalog, product, basket, checkout, order, orders, demo
+│   ├── components/
+│   ├── api/           # client.ts (fetch wrapper, headers, error mapping), generated/ (types)
+│   ├── lib/           # money.ts, idempotency.ts, polling.ts, storage.ts, correlation.ts
+│   └── styles/
+├── e2e/               # Playwright journeys
+└── README.md
+```
+
+OpenAPI snapshots live in `docs/openapi/<service>.json`, produced by `make openapi` (each app's spec is generated from the code, so it cannot be hand-edited out of sync).
