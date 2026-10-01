@@ -1,6 +1,7 @@
 """Test doubles and builders shared by the libs/common tests."""
 
 import json
+import time
 from typing import Any
 
 from botocore.exceptions import ClientError
@@ -85,6 +86,7 @@ class FakeSqs:
         self.receive_error: Exception | None = None
         self.delete_error: Exception | None = None
         self.on_receive: Any = None
+        self.long_poll_s = 0.0  # simulate SQS long polling: an empty receive takes this long
 
     def get_queue_url(self, *, QueueName: str) -> dict[str, str]:
         return {"QueueUrl": f"http://sqs.test/000000000000/{QueueName}"}
@@ -97,6 +99,8 @@ class FakeSqs:
             raise self.receive_error
         batch = self.messages[: kwargs["MaxNumberOfMessages"]]
         self.messages = self.messages[len(batch) :]
+        if not batch and self.long_poll_s:
+            time.sleep(self.long_poll_s)
         return {"Messages": batch} if batch else {}
 
     def delete_message(self, *, QueueUrl: str, ReceiptHandle: str) -> dict[str, Any]:

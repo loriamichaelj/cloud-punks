@@ -26,3 +26,10 @@ class Settings(DatabaseSettings):
 
 class RelaySettings(DatabaseSettings, AwsSettings):
     event_bus_name: str = Field(min_length=1)
+
+
+class ConsumerSettings(DatabaseSettings, AwsSettings):
+    """The consumer reads one queue and writes only to PostgreSQL: its events leave through the
+    outbox, so unlike the inventory consumer it needs no event-bus name."""
+
+    queue_name: str = Field(min_length=1)

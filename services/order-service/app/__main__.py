@@ -1,7 +1,8 @@
 """Process entrypoint: `python -m app <command>`.
 
 One image, several processes (DESIGN.md section 10): ``api`` serves HTTP, ``relay`` publishes the
-outbox, ``migrate`` applies Alembic migrations as the schema owner. ``consumer`` arrives in M6.
+outbox, ``consumer`` applies inventory outcomes to orders, ``migrate`` applies Alembic migrations
+as the schema owner.
 """
 
 import sys
@@ -19,6 +20,10 @@ def main(argv: list[str]) -> int:
         # log_config/access_log off: retail_common owns logging (shared JSON format).
         uvicorn.run(create_app(), host="0.0.0.0", port=PORT, log_config=None, access_log=False)  # noqa: S104
         return 0
+    if command == "consumer":
+        from app.consumer.main import main as consumer_main
+
+        return consumer_main()
     if command == "relay":
         from app.relay.main import main as relay_main
 
@@ -27,7 +32,7 @@ def main(argv: list[str]) -> int:
         from app.migrate import main as migrate_main
 
         return migrate_main()
-    sys.stderr.write(f"unknown command: {command!r} (available: api, relay, migrate)\n")
+    sys.stderr.write(f"unknown command: {command!r} (available: api, consumer, relay, migrate)\n")
     return 2
 
 

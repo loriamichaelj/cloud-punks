@@ -135,6 +135,7 @@ def wipe(engine: Engine) -> None:
             text("DELETE FROM outbox WHERE payload->'data'->>'customer_id' LIKE :m"), {"m": MARKER}
         )
         connection.execute(text("DELETE FROM outbox WHERE event_id LIKE '01ITEST%'"))
+        connection.execute(text("DELETE FROM processed_events WHERE event_id LIKE '01TEST%'"))
         connection.execute(
             text(
                 "DELETE FROM order_items WHERE order_id IN (SELECT order_id FROM orders WHERE customer_id LIKE :m)"

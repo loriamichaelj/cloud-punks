@@ -114,6 +114,25 @@ services:
       localstack: { condition: service_healthy }
     ports: ["8002:8002"]
 
+  # The inventory consumer: reserves stock for OrderCreated and answers with InventoryReserved or
+  # InventoryFailed. Same image, own command; health and metrics on the side port 9000.
+  inventory-consumer:
+    <<: *svc
+    image: retail/inventory-service:${IMAGE_TAG:?use make up}
+    build: { context: .., dockerfile: services/inventory-service/Dockerfile }
+    command: ["consumer"]
+    # The consumer finishes its current 20 s long poll before it exits. Killed mid-poll, the
+    # abandoned request can still be handed a message, which then stays invisible until its
+    # visibility timeout (60 s) runs out: orders would stall for a minute at every restart.
+    stop_grace_period: 30s
+    environment:
+      <<: *env
+      SERVICE_NAME: inventory-consumer
+      QUEUE_NAME: inventory-order-events
+      EVENT_BUS_NAME: retail-events
+    depends_on:
+      localstack: { condition: service_healthy }
+
   # One-shot: applies Alembic migrations as the schema owner, then exits (ADR-11).
   order-migrate:
     <<: *svc
@@ -165,6 +184,29 @@ services:
       DB_NAME: order_db
       DB_USER: order_app
       DB_PASSWORD: ${ORDER_APP_PASSWORD:?set it in .env}
+    depends_on:
+      order-migrate: { condition: service_completed_successfully }
+      localstack: { condition: service_healthy }
+
+  # The order consumer: applies inventory outcomes to orders (PENDING -> CONFIRMED or REJECTED).
+  # Its status events leave through the outbox, so the relay above publishes them.
+  order-consumer:
+    <<: *svc
+    image: retail/order-service:${IMAGE_TAG:?use make up}
+    build: { context: .., dockerfile: services/order-service/Dockerfile }
+    command: ["consumer"]
+    # The consumer finishes its current 20 s long poll before it exits. Killed mid-poll, the
+    # abandoned request can still be handed a message, which then stays invisible until its
+    # visibility timeout (60 s) runs out: orders would stall for a minute at every restart.
+    stop_grace_period: 30s
+    environment:
+      <<: *env
+      SERVICE_NAME: order-consumer
+      DB_HOST: postgres
+      DB_NAME: order_db
+      DB_USER: order_app
+      DB_PASSWORD: ${ORDER_APP_PASSWORD:?set it in .env}
+      QUEUE_NAME: order-inventory-events
     depends_on:
       order-migrate: { condition: service_completed_successfully }
       localstack: { condition: service_healthy }

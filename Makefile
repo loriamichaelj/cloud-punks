@@ -16,10 +16,10 @@ export IMAGE_TAG
 
 RUN = uv run --frozen --no-sync
 
-.PHONY: help lock sync fmt lint test itest up down reset logs seed
+.PHONY: help lock sync fmt lint test itest e2e up down reset logs seed
 
 help:
-	@echo "Targets: lock sync fmt lint test itest up down reset logs s=<service> seed"
+	@echo "Targets: lock sync fmt lint test itest e2e up down reset logs s=<service> seed"
 
 .env:
 	cp .env.example .env
@@ -72,6 +72,11 @@ itest: sync
 	done; \
 	if [ "$$relay_was_running" != "0" ]; then echo "starting order-relay again"; $(COMPOSE_NOAUTH) start order-relay >/dev/null; fi; \
 	exit $$status
+
+# End-to-end acceptance test through the gateway against the running stack (`make up seed`
+# first). E2E_COMPOSE lets the drills stop and start a consumer container.
+e2e: sync
+	E2E_COMPOSE="$(COMPOSE)" PYTHONPATH=tests/e2e $(RUN) pytest tests/e2e -q
 
 # --wait blocks until postgres, valkey and localstack (whose healthcheck waits for the bootstrap
 # script) are healthy, and fails if a container exits, e.g. LocalStack without a token.

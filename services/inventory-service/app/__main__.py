@@ -15,7 +15,11 @@ def main(argv: list[str]) -> int:
         # log_config/access_log off: retail_common owns logging (shared JSON format).
         uvicorn.run(create_app(), host="0.0.0.0", port=PORT, log_config=None, access_log=False)  # noqa: S104
         return 0
-    sys.stderr.write(f"unknown command: {command!r} (available: api)\n")
+    if command == "consumer":
+        from app.consumer.main import main as consumer_main
+
+        return consumer_main()
+    sys.stderr.write(f"unknown command: {command!r} (available: api, consumer)\n")
     return 2
 
 

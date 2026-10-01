@@ -88,12 +88,36 @@ def _wipe(dynamodb: Any) -> None:
             dynamodb.delete_item(TableName="inventory", Key={"sku": item["sku"]})
 
 
+ORDER_PREFIX = "01TEST"  # a valid ULID prefix (Crockford has no 'I'), so test orders are findable
+
+
+def _wipe_reservations(dynamodb: Any) -> None:
+    pages = dynamodb.get_paginator("scan").paginate(
+        TableName="inventory_reservations",
+        FilterExpression="begins_with(order_id, :p)",
+        ExpressionAttributeValues={":p": {"S": ORDER_PREFIX}},
+        ProjectionExpression="order_id",
+        ConsistentRead=True,
+    )
+    for page in pages:
+        for item in page["Items"]:
+            dynamodb.delete_item(
+                TableName="inventory_reservations", Key={"order_id": item["order_id"]}
+            )
+
+
+def new_order_id() -> str:
+    return ORDER_PREFIX + uuid.uuid4().hex[:20].upper()
+
+
 @pytest.fixture(autouse=True)
 def _clean(dynamodb: Any, recorder: ReadRecorder) -> Iterator[None]:
     _wipe(dynamodb)
+    _wipe_reservations(dynamodb)
     recorder.reads.clear()
     yield
     _wipe(dynamodb)
+    _wipe_reservations(dynamodb)
 
 
 @pytest.fixture

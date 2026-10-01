@@ -320,19 +320,20 @@ def test_readiness_follows_postgres_and_liveness_never_does() -> None:
 
 
 def test_the_request_handlers_can_never_publish_an_event() -> None:
-    """CLAUDE.md: never call PutEvents from a request handler. Everything outside the relay
-    package must be free of event-bus code; events leave only through the outbox."""
+    """CLAUDE.md: never call PutEvents from a request handler. Outside the relay package there is
+    no event-bus code at all; events leave only through the outbox. The consumer package may
+    import boto3 (it reads an SQS queue) but still may not publish."""
     app_dir = Path(__file__).resolve().parents[2] / "app"
-    offenders = [
-        str(path.relative_to(app_dir))
-        for path in app_dir.rglob("*.py")
-        if "relay" not in path.relative_to(app_dir).parts
-        and re.search(
-            r"^\s*(import|from)\s+(boto3|botocore)|put_events|EventBridgePublisher",
-            path.read_text(),
-            re.MULTILINE,
-        )
-    ]
+    publishing = re.compile(r"put_events|EventBridgePublisher")
+    aws_import = re.compile(r"^\s*(import|from)\s+(boto3|botocore)", re.MULTILINE)
+    offenders = []
+    for path in app_dir.rglob("*.py"):
+        parts = path.relative_to(app_dir).parts
+        if "relay" in parts:
+            continue
+        text = path.read_text()
+        if publishing.search(text) or ("consumer" not in parts and aws_import.search(text)):
+            offenders.append(str(path.relative_to(app_dir)))
     assert offenders == []
 
 

@@ -9,3 +9,7 @@ class StockNotFound(Exception):
 
 class StoreUnavailable(Exception):
     """DynamoDB cannot serve the request right now (down, throttled, timed out)."""
+
+
+class InvalidOrder(Exception):
+    """An OrderCreated event that can never be reserved (e.g. the same SKU on two lines)."""

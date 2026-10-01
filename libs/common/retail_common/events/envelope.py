@@ -65,11 +65,17 @@ class Envelope(BaseModel):
         causation_id: str | None = None,
         schema_version: str = SCHEMA_VERSION_V1,
         occurred_at: datetime | None = None,
+        event_id: str | None = None,
     ) -> Self:
-        """Build an envelope; the correlation id defaults to the current request/event context."""
+        """Build an envelope; the correlation id defaults to the current request/event context.
+
+        ``event_id`` and ``occurred_at`` are normally generated. Pass them only to *re-emit* an
+        event that was already created (a stored outcome being published again): consumers
+        deduplicate on ``event_id``, so a re-emission must carry the original one.
+        """
         payload = data.model_dump(mode="json") if isinstance(data, BaseModel) else data
         return cls(
-            event_id=new_event_id(),
+            event_id=event_id or new_event_id(),
             event_type=event_type,
             schema_version=schema_version,
             occurred_at=occurred_at or datetime.now(UTC),

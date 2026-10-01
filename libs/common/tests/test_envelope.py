@@ -151,3 +151,24 @@ def test_envelopes_are_immutable() -> None:
     envelope = make_envelope()
     with pytest.raises(ValidationError, match="frozen"):
         envelope.event_type = "Other"  # type: ignore[misc]
+
+
+def test_a_re_emitted_event_keeps_its_original_id_and_timestamp() -> None:
+    """A stored outcome published again must be the *same* event, or consumers cannot dedupe it."""
+    original = make_envelope()
+
+    again = Envelope.create(
+        event_type=original.event_type,
+        producer=original.producer,
+        data=original.data,
+        correlation_id=original.correlation_id,
+        event_id=original.event_id,
+        occurred_at=original.occurred_at,
+    )
+
+    assert again == original
+    assert again.model_dump_json() == original.model_dump_json()
+
+
+def test_without_an_explicit_id_every_envelope_still_gets_a_fresh_one() -> None:
+    assert make_envelope().event_id != make_envelope().event_id

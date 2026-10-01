@@ -59,7 +59,7 @@ def ping(client: Any, table: str = INVENTORY_TABLE) -> None:
 
 
 @contextmanager
-def _store_errors() -> Iterator[None]:
+def store_errors() -> Iterator[None]:
     try:
         yield
     except (BotoConnectionError, HTTPClientError) as exc:
@@ -88,7 +88,7 @@ class DynamoInventoryRepository:
         self._table = table
 
     def get(self, sku: str) -> StockItem | None:
-        with _store_errors():
+        with store_errors():
             response = self._client.get_item(
                 TableName=self._table, Key={"sku": {"S": sku}}, ConsistentRead=True
             )
@@ -108,7 +108,7 @@ class DynamoInventoryRepository:
                 }
             }
             for attempt in range(MAX_UNPROCESSED_ROUNDS):
-                with _store_errors():
+                with store_errors():
                     response = self._client.batch_get_item(RequestItems=request)
                 for raw in response.get("Responses", {}).get(self._table, []):
                     item = _to_item(raw)
@@ -124,7 +124,7 @@ class DynamoInventoryRepository:
 
     def set_available(self, sku: str, available: int) -> StockItem:
         now = datetime.now(UTC).isoformat(timespec="milliseconds")
-        with _store_errors():
+        with store_errors():
             response = self._client.update_item(
                 TableName=self._table,
                 Key={"sku": {"S": sku}},
