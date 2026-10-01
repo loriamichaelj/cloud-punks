@@ -27,7 +27,7 @@ We build a four-service retail order platform that runs end-to-end on localhost 
 | 1a — Local (Compose on OrbStack) | Services, data layer, events, tests | Day 1–2 | Acceptance test passes on `make up` |
 | 1b — UI (React) | `ui/` single-page app and nginx image, gateway `/` route, Playwright journeys (M8; section 15) | Day 2 (late) | Browser journeys pass on Compose via `make ui-e2e` |
 | 1c — Local Kubernetes (OrbStack) | Helm chart for every process including the UI, probes, HPA, ingress, rollback on the local cluster | Day 3 (morning) | Same test (API acceptance and UI journeys) passes via local ingress; `helm rollback` demonstrated |
-| 2 — Cloud infra, built through CI | Manual OIDC provider + `gha-bootstrap` role; `bootstrap.yml` (state bucket); minimal `infra.yml`; Terraform, ECR, EKS, in-VPC runners; the 1b chart with dev values. No AWS access exists outside GitHub Actions (ADR-14) | Day 3 | Same test passes against the EKS ingress, run from a workflow |
+| 2 — Cloud infra, built through CI | Manual OIDC provider + `cloudbatch818-loria-retail-bootstrap` role; `bootstrap.yml` (state bucket); minimal `infra.yml`; Terraform, ECR, EKS, in-VPC runners; the 1b chart with dev values. No AWS access exists outside GitHub Actions (ADR-14) | Day 3 | Same test passes against the EKS ingress, run from a workflow |
 | 3 — CI/CD | Full `pr.yml`/`main.yml`/`promote.yml`, scans, promotion, rollback, `infra-destroy.yml` | Day 4 | PR-to-prod pipeline with a demonstrated rollback |
 | 4 — Reliability | Dashboards, SLOs, alarms, failure drills, runbooks | Day 5 | Each drill in section 11 detected and recovered |
 
@@ -52,7 +52,7 @@ Each decision below is binding for Claude Code; changing one means updating this
 | ADR-11 | Schema migrations run as a separate one-shot process, never at app startup | N replicas racing migrations; later maps to a Helm pre-upgrade Job | Migrate on boot (race, slow readiness) |
 | ADR-12 | Valkey 9.0 locally and on ElastiCache | ElastiCache now offers Valkey at lower cost than Redis OSS; wire-compatible with `redis-py` | Redis OSS 7 (fine, pricier on ElastiCache) |
 | ADR-13 | PostgreSQL 17 locally, Amazon RDS for PostgreSQL 17 in cloud (changed from Aurora on 1 Oct 2026 to cut cost and moving parts; deviates from the original brief's Aurora/RDS MySQL; that brief is not in this repo) | Transactional DDL (a failed migration rolls back cleanly), `JSONB` for the outbox, partial indexes, `INSERT … ON CONFLICT DO NOTHING` for dedupe, `SKIP LOCKED` | Aurora MySQL 3 (the original brief's default; non-transactional DDL, weaker partial-index story) |
-| ADR-14 | AWS is reached only from GitHub Actions through OIDC role assumption; no IAM users, access keys or local AWS credentials exist. The OIDC provider and the `gha-bootstrap` role are created by hand once; all other roles are Terraform-managed | Removes long-lived credentials entirely; every cloud change is reviewed, logged and reproducible | Local `terraform apply` with SSO or keys (unreviewed changes, credentials on a laptop) |
+| ADR-14 | AWS is reached only from GitHub Actions through OIDC role assumption; no IAM users, access keys or local AWS credentials exist. The OIDC provider and the `cloudbatch818-loria-retail-bootstrap` role are created by hand once; all other roles are Terraform-managed | Removes long-lived credentials entirely; every cloud change is reviewed, logged and reproducible | Local `terraform apply` with SSO or keys (unreviewed changes, credentials on a laptop) |
 | ADR-15 | Jobs that need the EKS API (helm, kubectl, e2e, drills) run on ephemeral self-hosted runners inside the VPC; all other jobs use GitHub-hosted runners | EKS endpoint stays private and the ALB can be internal; Terraform AWS-API calls need no VPC access | Public EKS endpoint with IAM auth (simpler, larger attack surface) |
 | ADR-16 | The UI is a React + TypeScript single-page app built with Vite into static files, served by an unprivileged nginx container (`ui`), and reached through the same gateway/ALB as the API on the same origin (`/` goes to `ui`, `/api/v1/*` to the services) | No CORS and no per-environment API URL in the bundle (it calls relative `/api/v1`), so one image runs on Compose, local Kubernetes and EKS; static files need no Node runtime to operate | Next.js (a Node SSR runtime to run and patch for no benefit here); Create React App (deprecated); S3 + CloudFront (cloud-only, breaks "same image everywhere"; a possible later option); a separate UI origin with CORS |
 | ADR-17 | The UI is a pure client of the public API: no new endpoints, no direct database or AWS access, a client-side basket (not a server cart), and a browser-generated demo customer id that is explicitly not authentication | Keeps the backend contracts as the only source of truth and the non-goals (auth, payments, carts) intact; anything the UI needs that the API cannot do is an API-contract question, not UI logic | Server-side carts and sessions (scope and state to operate); a login form that only pretends |
@@ -700,7 +700,7 @@ These are contracts Phase 1 must not violate, not a full spec; each phase gets i
 
 Bring-up order:
 
-1. **Manual, once, by the owner (console or CloudShell):** create the IAM OIDC provider `token.actions.githubusercontent.com` (audience `sts.amazonaws.com`) and the role `gha-bootstrap`. Trust: `aud = sts.amazonaws.com` and `sub = repo:<org>/<repo>:environment:bootstrap`. Permissions: S3 on the state bucket, and IAM create/update on `role/gha-*` and `policy/gha-*`. Create the GitHub Environment `bootstrap` (required reviewer) and set `AWS_ROLE_ARN_BOOTSTRAP` and `AWS_REGION`. Nothing else is created by hand. Because this role can mint roles it is effectively admin; the pinned `sub`, the reviewer gate, and `workflow_dispatch`-only trigger are its controls.
+1. **Manual, once, by the owner (console or CloudShell):** create the IAM OIDC provider `token.actions.githubusercontent.com` (audience `sts.amazonaws.com`) and the role `cloudbatch818-loria-retail-bootstrap`. Trust: `aud = sts.amazonaws.com` and `sub = repo:<org>/<repo>:environment:bootstrap`. Permissions: S3 on the state bucket, and IAM create/update on `role/cloudbatch818-*` and `policy/cloudbatch818-*`, with an explicit Deny on IAM actions against its own role (its name matches the prefix, so the Allow would otherwise cover it). Create the GitHub Environment `bootstrap` (required reviewer, deployment branch limited to `dev`) and set `AWS_ROLE_ARN_BOOTSTRAP` and `AWS_REGION`. Nothing else is created by hand. Because this role can mint roles it is effectively admin; the pinned `sub`, the reviewer gate, and `workflow_dispatch`-only trigger are its controls.
 2. **`bootstrap.yml` (`workflow_dispatch`, environment `bootstrap`), job 1:** idempotent AWS CLI calls (not Terraform; there is no state to start from) create `retail-tfstate-<account-id>-<region>` with versioning, SSE, all public access blocked, a TLS-only bucket policy and noncurrent-version expiry. **Job 2:** `terraform apply` of `infra/terraform/bootstrap/` (state key `bootstrap/terraform.tfstate`), which uses the `github-oidc` module to create the roles in the table below.
 3. **`infra.yml` on GitHub-hosted runners** applies `envs/<env>/platform` (network, eks, data, events, ecr, runners). The EKS endpoint is private, but creating the cluster only needs the AWS API, so hosted runners suffice.
 4. **`infra.yml` on the in-VPC runners** applies `envs/<env>/cluster-addons` (AWS Load Balancer Controller, External Secrets Operator, namespace, `ExternalSecret`/ingress class). Terraform's `helm`/`kubernetes` providers need the private API, so this stack cannot run on hosted runners.
@@ -708,14 +708,14 @@ Bring-up order:
 
 | Role | Trust `sub` | Permissions | Used by |
 | --- | --- | --- | --- |
-| `gha-bootstrap` (manual) | `environment:bootstrap` | State bucket S3; IAM on `gha-*` | `bootstrap.yml` |
-| `gha-tf-plan` | `pull_request` | ReadOnlyAccess, state read, write `*.tflock` only | `pr.yml` plan (hosted). Fork PRs get no OIDC token, so they get no role |
-| `gha-tf-apply-<env>` | `environment:<env>` | Broad (accepted least-privilege gap for this week, recorded here) | `infra.yml` apply |
-| `gha-deploy-<env>` | `environment:<env>` | ECR push/pull, `eks:DescribeCluster`; EKS access entry with `AmazonEKSEditPolicy` scoped to namespace `retail` | `main.yml`, `promote.yml`, drills (runners) |
+| `cloudbatch818-loria-retail-bootstrap` (manual) | `environment:bootstrap` | State bucket S3; IAM on `cloudbatch818-*` | `bootstrap.yml` |
+| `cloudbatch818-tf-plan` | `pull_request` | ReadOnlyAccess, state read, write `*.tflock` only | `pr.yml` plan (hosted). Fork PRs get no OIDC token, so they get no role |
+| `cloudbatch818-tf-apply-<env>` | `environment:<env>` | Broad service access (accepted least-privilege gap for this week, recorded here); IAM limited to `cloudbatch818-retail-*` so it cannot edit the CI roles; state limited to `<env>/*` | `infra.yml` apply |
+| `cloudbatch818-deploy-<env>` | `environment:<env>` | ECR push/pull, `eks:DescribeCluster`; EKS access entry with `AmazonEKSEditPolicy` scoped to namespace `retail` | `main.yml`, `promote.yml`, drills (runners) |
 
-Terraform references the OIDC provider with a `data` source (an account can hold one provider per URL) and never manages `gha-bootstrap`. Tear-down is `infra-destroy.yml` (manual, environment-gated); `bootstrap` resources are never destroyed by it.
+Terraform references the OIDC provider with a `data` source (an account can hold one provider per URL) and never manages `cloudbatch818-loria-retail-bootstrap`. Tear-down is `infra-destroy.yml` (manual, environment-gated); `bootstrap` resources are never destroyed by it.
 
-**In-VPC runners (`modules/runners`).** Ephemeral EC2 runners (arm64, private-app subnets, one job each via `--ephemeral`), label `retail-vpc`, in a runner group limited to this repo. Their instance profile grants nothing beyond SSM; jobs get AWS access only through OIDC, never the instance role. The runner registration credential is a GitHub App key or fine-grained token held in Secrets Manager (a GitHub credential, not an AWS one). Mechanism (EC2 ASG with JIT registration vs actions-runner-controller on a dedicated node group) is chosen in the Phase 2 design pass — **verify**. **The repo is public, so:** self-hosted jobs run only for `push` to `main`, `workflow_dispatch`, tags, and approved environments — never `pull_request`; enable "Require approval for all outside collaborators"; fork PRs never reach these runners.
+**In-VPC runners (`modules/runners`).** Ephemeral EC2 runners (arm64, private-app subnets, one job each via `--ephemeral`), label `retail-vpc`, in a runner group limited to this repo. Their instance profile grants nothing beyond SSM; jobs get AWS access only through OIDC, never the instance role. The runner registration credential is a GitHub App key or fine-grained token held in Secrets Manager (a GitHub credential, not an AWS one). Mechanism (EC2 ASG with JIT registration vs actions-runner-controller on a dedicated node group) is chosen in the Phase 2 design pass — **verify**. **The repo is public, so:** self-hosted jobs run only for `push` to `dev` (the default branch), `workflow_dispatch`, tags, and approved environments — never `pull_request`; enable "Require approval for all outside collaborators"; fork PRs never reach these runners.
 
 **Terraform layout:** `infra/terraform/{bootstrap,modules/{network,eks,data,events,ecr,github-oidc,runners,observability},envs/{dev,prod}/{platform,cluster-addons}}`. Remote state in the bootstrap bucket with native locking (`use_lockfile = true`, Terraform ≥ 1.11, where S3 locking is GA); DynamoDB state locking is deprecated. Pin provider versions; one state per env and stack.
 
@@ -737,14 +737,14 @@ Terraform references the OIDC provider with a `data` source (an account can hold
 
 | Workflow | Trigger | Steps |
 | --- | --- | --- |
-| `bootstrap.yml` | `workflow_dispatch`, environment `bootstrap` | Phase 2 step 2: state bucket (AWS CLI), then the `bootstrap/` Terraform stack that creates the `gha-*` roles. Hosted runner, `gha-bootstrap` |
-| `pr.yml` | Pull request (hosted runners only) | Path-filtered matrix: ruff, mypy, pytest (unit + integration via Compose), a `ui/**` job (`npm ci`, eslint, `tsc`, vitest, production build within the bundle budget, Playwright against Compose), Docker build, Trivy image + config scan (fail on fixable HIGH/CRITICAL), `terraform fmt -check`, `validate`, tflint, Checkov, `helm lint` + kubeconform, `terraform plan` via `gha-tf-plan` posted as PR comment |
-| `main.yml` | Merge to `main` | Build once (hosted) → push `sha-<sha>` to ECR → on `retail-vpc` runners: OIDC assume `gha-deploy-dev` → `helm upgrade --install --atomic --wait --timeout 10m` → e2e acceptance against dev |
+| `bootstrap.yml` | `workflow_dispatch`, environment `bootstrap` | Phase 2 step 2: state bucket (AWS CLI), then the `bootstrap/` Terraform stack that creates the `cloudbatch818-*` roles. Hosted runner, `cloudbatch818-loria-retail-bootstrap` |
+| `pr.yml` | Pull request (hosted runners only) | Path-filtered matrix: ruff, mypy, pytest (unit + integration via Compose), a `ui/**` job (`npm ci`, eslint, `tsc`, vitest, production build within the bundle budget, Playwright against Compose), Docker build, Trivy image + config scan (fail on fixable HIGH/CRITICAL), `terraform fmt -check`, `validate`, tflint, Checkov, `helm lint` + kubeconform, `terraform plan` via `cloudbatch818-tf-plan` posted as PR comment |
+| `main.yml` | Push to `dev` | Build once (hosted) → push `sha-<sha>` to ECR → on `retail-vpc` runners: OIDC assume `cloudbatch818-deploy-dev` → `helm upgrade --install --atomic --wait --timeout 10m` → e2e acceptance against dev |
 | `promote.yml` | Manual / tag | GitHub Environment `prod` with required reviewers → deploy the **same image digest** (never rebuild) on `retail-vpc` runners → smoke test → record release |
 | `infra.yml` | Changes under `infra/` | Plan on PR (hosted); apply on merge per env with environment approval: `platform` stack on hosted runners, then `cluster-addons` on `retail-vpc` runners |
 | `infra-destroy.yml` | `workflow_dispatch`, environment-gated | Destroys an env (cluster-addons first, then platform); never touches `bootstrap`. Supports the idle-cost rule in §14 |
 
-Non-negotiables: each OIDC trust policy is pinned to an exact `sub` (`environment:<env>` or `pull_request`; never a wildcard or `ref:*`); third-party actions pinned by commit SHA; branch protection with required checks; no long-lived AWS keys in GitHub; self-hosted runners never serve `pull_request` or fork code (public repo). Rollback = `helm rollback <release> <revision>` or redeploy the previous digest; works only because migrations are expand/contract (section 5).
+Non-negotiables: each OIDC trust policy is pinned to an exact `sub` (`environment:<env>` or `pull_request`; never a wildcard or `ref:*`); third-party actions pinned by commit SHA; branch protection with required checks (none on `dev` for now, so the `dev` push and the environment gates are the only controls); no long-lived AWS keys in GitHub; self-hosted runners never serve `pull_request` or fork code (public repo). Rollback = `helm rollback <release> <revision>` or redeploy the previous digest; works only because migrations are expand/contract (section 5).
 
 ### Phase 4 — Observability and reliability (Day 5)
 
@@ -757,7 +757,7 @@ Non-negotiables: each OIDC trust policy is pinned to an exact `sub` (`environmen
 
 Alarms (page vs ticket decided in the Phase 4 pass): SQS `ApproximateAgeOfOldestMessage` > 120 s; any DLQ `ApproximateNumberOfMessagesVisible` > 0; `outbox_oldest_unpublished_age_seconds` > 60; ALB 5xx rate and p95 `TargetResponseTime`; RDS CPU, `DatabaseConnections`, `FreeableMemory`, `FreeStorageSpace`; MaximumUsedTransactionIDs > 1 billion (wraparound risk); replica lag if a replica exists; pod restarts > 3 in 10 min; EventBridge rule `FailedInvocations` > 0. Logs via Fluent Bit (Container Insights) to CloudWatch; metrics via kube-prometheus-stack or Amazon Managed Service for Prometheus + Grafana.
 
-The failure drills in section 11 run on EKS as `workflow_dispatch` jobs on the `retail-vpc` runners using `gha-deploy-<env>` (for example `kubectl scale deploy/inventory-consumer --replicas=0`); there is no laptop access to the cluster.
+The failure drills in section 11 run on EKS as `workflow_dispatch` jobs on the `retail-vpc` runners using `cloudbatch818-deploy-<env>` (for example `kubectl scale deploy/inventory-consumer --replicas=0`); there is no laptop access to the cluster.
 
 Runbooks to write, each tied to an alarm: failed deployment/rollback, unhealthy pods, database connectivity, stuck queue/DLQ redrive, outbox lag.
 
@@ -773,7 +773,7 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 - Work one milestone (M0–M10) at a time. Finish with: make lint test (and itest/e2e when the milestone says so).
 - Stop after each milestone with a summary of what changed, what was verified, and any deviation from DESIGN.md.
 - Ask before adding a dependency, a service, a table, an event type, or changing an API contract.
-- Develop on `dev`; `main` only takes PRs from `dev`. Commit, push and open PRs only when asked. No AI attribution in commits or PRs.
+- `dev` is the only branch and the default (no `main`, no branch protection for now). Develop and push on it; PRs only when asked. Commit, push and open PRs only when asked. No AI attribution in commits or PRs.
 - Record a changed API contract in the same change (`make openapi` for the generated spec; baseline in DESIGN.md).
 - Run lint, test, up, down, seed, logs and the local cluster (`k8s-*`) through `make` (Compose needs its `IMAGE_TAG` and `--env-file .env`).
 - Unit tests are hermetic (no AWS, no LocalStack). Integration tests touch only their own data and never the shared queues or the real `retail-events` bus.
@@ -809,7 +809,7 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 - Write Terraform or GitHub Actions before M10 is done.
 - Run kubectl or helm without an explicit --context (local work targets `orbstack`).
 - Use, request, create or store AWS credentials, or run terraform plan/apply, aws, kubectl or helm against AWS/EKS from the laptop (locally only: terraform fmt/validate, tflint, checkov, helm lint, kubeconform).
-- Manage the OIDC provider or the `gha-bootstrap` role in Terraform, or run self-hosted runners for fork PRs.
+- Manage the OIDC provider or the `cloudbatch818-loria-retail-bootstrap` role in Terraform, or run self-hosted runners for fork PRs.
 
 ```
 
@@ -839,8 +839,8 @@ Decided questions are recorded in `docs/adr/README.md`.
 | Playwright and Chromium on top of the stack on an 8 GB Mac | Memory pressure and Docker engine restarts (seen in M5) | Headless Chromium, one worker, run on a freshly started stack with other apps closed; CI runs it on hosted runners |
 | Wrong money or stale stock shown in the UI | Customers see wrong totals or buy what is not there | Integer minor-unit arithmetic with server totals authoritative; stock never cached (`staleTime: 0`, `gcTime: 0`); both covered by tests |
 | Idle AWS resources over nights/weekend | Unexpected bill | Tag everything `project=retail-week3`, AWS Budgets alert, destroy dev via `infra-destroy.yml` when idle |
-| Self-hosted runner on a public repo executes untrusted fork code | Code execution inside the VPC next to the cluster | Runners serve only main/dispatch/tag/environment jobs, never `pull_request`; approval required for outside collaborators; ephemeral single-job runners; instance profile grants SSM only |
-| `gha-bootstrap` can create IAM roles | Effectively admin if the trust is widened or the workflow is edited | Exact `sub` pin to `environment:bootstrap`, required reviewer, `workflow_dispatch` only, branch protection on `.github/` |
+| Self-hosted runner on a public repo executes untrusted fork code | Code execution inside the VPC next to the cluster | Runners serve only push-to-`dev`/dispatch/tag/environment jobs, never `pull_request`; approval required for outside collaborators; ephemeral single-job runners; instance profile grants SSM only |
+| `cloudbatch818-loria-retail-bootstrap` can create IAM roles | Effectively admin if the trust is widened or the workflow is edited | Exact `sub` pin to `environment:bootstrap`, required reviewer, `workflow_dispatch` only, the `bootstrap` environment accepts only the `dev` branch (branch protection on `.github/` is not set up yet) |
 | No local way to run plan/apply/kubectl | Slow feedback; cloud errors surface only in CI | Static checks locally; workflows dump diagnostics on failure; small, frequent infra PRs |
 
 ## 15. Frontend UI (React)
