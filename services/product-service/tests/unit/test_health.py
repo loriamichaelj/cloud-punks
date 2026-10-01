@@ -1,8 +1,10 @@
+from fakes import FakeCache, FakeRepository, make_settings
 from fastapi.testclient import TestClient
 
-from app.main import app
+from app.main import create_app
 from retail_common.logging import CORRELATION_HEADER
 
+app = create_app(make_settings(), repository=FakeRepository(), cache=FakeCache())
 client = TestClient(app)
 
 
@@ -10,12 +12,6 @@ def test_live_returns_200() -> None:
     response = client.get("/health/live")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
-
-
-def test_ready_is_200_while_the_service_has_no_required_stores() -> None:
-    response = client.get("/health/ready")
-    assert response.status_code == 200
-    assert response.json()["status"] == "ready"
 
 
 def test_metrics_are_exposed_with_route_templates() -> None:

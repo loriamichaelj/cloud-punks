@@ -15,13 +15,25 @@ from prometheus_client import (
     CONTENT_TYPE_LATEST,
     CollectorRegistry,
     Counter,
+    GCCollector,
     Histogram,
+    PlatformCollector,
+    ProcessCollector,
     generate_latest,
 )
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 UNMATCHED_ROUTE = "unmatched"
 METRICS_PATH = "/metrics"
+
+
+def build_registry() -> CollectorRegistry:
+    """A fresh registry with the standard process, platform and GC collectors."""
+    registry = CollectorRegistry()
+    ProcessCollector(registry=registry)
+    PlatformCollector(registry=registry)
+    GCCollector(registry=registry)
+    return registry
 
 
 class HttpMetrics:

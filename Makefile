@@ -16,10 +16,10 @@ export IMAGE_TAG
 
 RUN = uv run --frozen --no-sync
 
-.PHONY: help lock sync fmt lint test up down reset logs seed
+.PHONY: help lock sync fmt lint test itest up down reset logs seed
 
 help:
-	@echo "Targets: lock sync fmt lint test up down reset logs s=<service> seed"
+	@echo "Targets: lock sync fmt lint test itest up down reset logs s=<service> seed"
 
 .env:
 	cp .env.example .env
@@ -52,6 +52,17 @@ test: sync
 	@for s in $(SERVICES); do \
 		echo "pytest $$s"; \
 		PYTHONPATH=services/$$s $(RUN) pytest services/$$s/tests/unit -q || exit 1; \
+	done
+
+# Integration tests run each service in-process against the real stores of the running stack
+# (`make up` first). `--env-file .env` supplies the database passwords to the tests.
+itest: sync
+	@for s in $(SERVICES); do \
+		if ls services/$$s/tests/integration/test_*.py >/dev/null 2>&1; then \
+			echo "pytest integration $$s"; \
+			PYTHONPATH=services/$$s:services/$$s/tests/integration $(RUN) --env-file .env \
+				pytest services/$$s/tests/integration -q -m integration || exit 1; \
+		fi; \
 	done
 
 # --wait blocks until postgres, valkey and localstack (whose healthcheck waits for the bootstrap

@@ -7,6 +7,7 @@ dependencies = []
 
 [dependency-groups]
 dev = [
+    "fakeredis",
     "httpx",
     "moto[events,sqs]",
     "mypy",
@@ -29,7 +30,7 @@ target-version = "py313"
 select = ["E", "W", "F", "I", "B", "UP", "SIM", "BLE", "S", "DTZ", "PT", "RUF"]
 
 [tool.ruff.lint.per-file-ignores]
-"**/tests/**" = ["S101"]
+"**/tests/**" = ["S101", "S105", "S106"]  # asserts and fake credentials in tests
 
 [tool.ruff.lint.isort]
 known-first-party = ["retail_common", "app"]

@@ -63,6 +63,24 @@ services:
       interval: 5s
       retries: 30
 
+  # One-shot: applies Alembic migrations as the schema owner, then exits (ADR-11). On
+  # Kubernetes this becomes a pre-install,pre-upgrade Helm hook Job.
+  product-migrate:
+    <<: *svc
+    image: retail/product-service:${IMAGE_TAG:?use make up}
+    build: { context: .., dockerfile: services/product-service/Dockerfile }
+    command: ["migrate"]
+    restart: "no"
+    environment:
+      <<: *env
+      SERVICE_NAME: product-migrate
+      DB_HOST: postgres
+      DB_NAME: product_db
+      DB_USER: product_owner
+      DB_PASSWORD: ${PRODUCT_OWNER_PASSWORD:?set it in .env}
+    depends_on:
+      postgres: { condition: service_healthy }
+
   product-service:
     <<: *svc
     image: retail/product-service:${IMAGE_TAG:?use make up}
@@ -71,6 +89,13 @@ services:
     environment:
       <<: *env
       SERVICE_NAME: product-service
+      DB_HOST: postgres
+      DB_NAME: product_db
+      DB_USER: product_app
+      DB_PASSWORD: ${PRODUCT_APP_PASSWORD:?set it in .env}
+    # Valkey is deliberately not a dependency: the cache is optional at runtime.
+    depends_on:
+      product-migrate: { condition: service_completed_successfully }
     ports: ["8001:8001"]
 
   inventory-service:
@@ -126,6 +151,7 @@ services:
       DB_USER: product_app
       DB_PASSWORD: ${PRODUCT_APP_PASSWORD:?set it in .env}
     depends_on:
+      product-migrate: { condition: service_completed_successfully }
       postgres: { condition: service_healthy }
       localstack: { condition: service_healthy }
 

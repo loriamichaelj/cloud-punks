@@ -1,6 +1,6 @@
 # Retail Microservices Platform — Design Doc
 
-Author: M.L. · 30 Sep 2026 · Status: v1.2, M0–M2 built (v1.2: layout, bootstrap and tooling notes updated from M0–M2; OrbStack sized for an 8 GB Mac; v1.1: facts verified 30 Sep 2026; AWS access is GitHub-OIDC-only, so Phases 2–3 are reordered around a bootstrap workflow and in-VPC runners; bootstrap script and spec gaps fixed)
+Author: M.L. · 30 Sep 2026 · Status: v1.3, M0–M3 built (v1.3: product API contract and cache/outage behavior from M3; v1.2: layout, bootstrap and tooling notes updated from M0–M2; OrbStack sized for an 8 GB Mac; v1.1: facts verified 30 Sep 2026; AWS access is GitHub-OIDC-only, so Phases 2–3 are reordered around a bootstrap workflow and in-VPC runners; bootstrap script and spec gaps fixed)
 
 ## 1. Overview
 
@@ -137,6 +137,19 @@ All services expose JSON over HTTP under `/api/v1`, plus `/health/live`, `/healt
 | order | `GET /api/v1/orders/{order_id}` | Order with items and status | — |
 | order | `GET /api/v1/orders?customer_id=` | Orders for a customer | Newest first, paginated |
 | notification | `GET /api/v1/notifications?order_id=` | Notifications for an order | For demo and test assertions |
+
+### Product API contract (built in M3)
+
+The generated OpenAPI spec at `/openapi.json` is the contract of record; this is its summary.
+
+- **Product:** `{sku, name, description, category, price, currency, active, created_at, updated_at}`. `category` is the category *slug*. `price` is a decimal string with exactly two decimals (`"19.90"`), normalized on input and output so the wire format never depends on which adapter produced the value. Timestamps are UTC ISO 8601.
+- **List:** `GET /products?category=&page=&size=` returns `{items, page, size, total}`, `page >= 1`, `1 <= size <= 100` (default 1 and 20), ordered by SKU, **active products only**. Categories return `{items: [{slug, name}]}`. An unknown `category` filter returns an empty page.
+- **Detail:** `GET /products/{sku}` also returns inactive products (with `active: false`); the order service decides what to do with them. Unknown SKU: 404 `PRODUCT_NOT_FOUND`.
+- **Create:** `POST /products` takes `{sku, name, description?, category, price, currency?}` and returns 201. SKU `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, category `^[a-z0-9][a-z0-9-]{0,63}$`, currency `^[A-Z]{3}$` (default `USD`). Duplicate SKU: 409 `SKU_EXISTS` (never overwrites). Unknown category: 422 `UNKNOWN_CATEGORY`.
+- **Update:** `PUT /products/{sku}` replaces every mutable field (`name, description, category, price, currency, active`); `sku` is immutable and may not appear in the body. Unknown SKU: 404.
+- **Validation:** unknown request fields are rejected (422) so typos surface. `price` must be a JSON *string*; a JSON number is rejected, because it would pass through a float on the way in. At most two decimals, `0 <= price < 10^8`. Validation errors name the field and rule but never echo the submitted value.
+- **Store outage:** when PostgreSQL cannot serve a request (down, dropped connection, the role's 5 s `statement_timeout`, exhausted pool) the service answers 503 `STORE_UNAVAILABLE` with `Retry-After: 1` and a generic message, never a 500. The shared HTTP client retries 503 but not 500, so callers back off correctly. Cached reads still succeed.
+- There is no authentication this week (non-goal), so the "admin" endpoints are open.
 
 ### Create-order contract
 
@@ -290,6 +303,14 @@ Reservation is one `TransactWriteItems` call: a `Put` on `inventory_reservations
 | `categories:v1` | Categories JSON | 3600 s | Delete on category change |
 
 Cache is optional at runtime: a Valkey error logs a warning, increments `cache_errors_total`, and falls through to PostgreSQL. The service must stay ready with the cache down. Never use `KEYS *` for invalidation; it blocks Valkey on large keyspaces.
+
+Implementation notes (M3):
+
+- Writes commit to PostgreSQL first and invalidate afterwards. `PUT` deletes `product:v1:{sku}` and every tracked list key; `POST` deletes the list keys. The remaining race (a reader that loaded the old row just before the write) is bounded by the TTL, which the design accepts.
+- Only pages 1 to 50 are cached, so a client walking pages cannot grow the key space or the tracking set without bound. The tracking set has a 3600 s TTL refreshed on every add, so it always outlives the 300 s entries it tracks, and the key is added to it *before* being written.
+- Invalidation reads and deletes the tracking set in one `MULTI/EXEC`, then deletes the keys in chunks of 500; it never scans.
+- Sockets use 0.25 s connect and read timeouts, so a hung Valkey costs a request fractions of a second. Errors are counted in `cache_errors_total{keyspace}` and are not counted as misses. A corrupt or foreign-version entry is dropped and treated as a miss.
+- Category rows are written only by the seed and migrations, which bypass the cache: after `make seed` a cached category list or page can lag by up to its TTL. A fresh `make up` starts with an empty cache.
 
 ## 6. Event design
 
@@ -687,7 +708,7 @@ LocalStack does not enforce IAM, SQS queue policies or Lambda invoke permissions
 
 `up`, `down`, `reset` (drop volumes), `logs s=<svc>`, `seed`, `test` (unit), `itest` (integration), `e2e`, `drill-consumer-down`, `drill-poison`, `lint`, `fmt`, `dlq-peek q=<queue>`, `dlq-redrive q=<queue>`; plus `lock` and `sync` for the uv environment.
 
-Conventions (built in M0–M2): `up` runs `docker compose up -d --build --wait`, so it blocks until PostgreSQL, Valkey and LocalStack (healthy only after the bootstrap finishes) are healthy and fails if a container exits. Images are tagged `retail/<svc>:dev-<git sha>` through `IMAGE_TAG`, never `:latest` (Compose would otherwise tag builds `:latest`), so Compose must be run through `make`. `down`, `reset` and `logs` work even before `LOCALSTACK_AUTH_TOKEN` is set. `seed` runs the `seed` job (Compose profile `tools`). `test` also enforces the 80% coverage gate on `libs/common`.
+Conventions (built in M0–M2): `up` runs `docker compose up -d --build --wait`, so it blocks until PostgreSQL, Valkey and LocalStack (healthy only after the bootstrap finishes) are healthy and fails if a container exits. Images are tagged `retail/<svc>:dev-<git sha>` through `IMAGE_TAG`, never `:latest` (Compose would otherwise tag builds `:latest`), so Compose must be run through `make`. `down`, `reset` and `logs` work even before `LOCALSTACK_AUTH_TOKEN` is set. `seed` runs the `seed` job (Compose profile `tools`). `test` also enforces the 80% coverage gate on `libs/common`. `itest` runs each service's `tests/integration` in-process against the real stores of the running stack (`make up` first; `--env-file .env` supplies the database passwords). Integration tests prefix everything they create with `ITEST-`/`itest-`, clean up after themselves, and use Valkey database 15 so a developer's cache is never touched.
 
 ### OrbStack and local Kubernetes
 
@@ -731,6 +752,10 @@ Unit tests that must exist (these catch the real bugs):
 - Outbox relay: partial `PutEvents` failure marks only successful rows published.
 - Cache: Valkey down → product read still succeeds from PostgreSQL.
 
+### Integration tests
+
+Each service's integration suite runs the app in-process against the real Compose stores and is parametrized over cache up and cache down where a cache exists. Beyond happy paths, product-service's suite covers: cache-aside proof (a hit survives a change made behind the cache's back), invalidation, TTLs and tracking-set behavior, Valkey dying mid-flight (a TCP proxy fixture kills established connections, restores them, or accepts and never answers), PostgreSQL unreachable (503 and cached reads survive), and migration 0001 inspected from the catalog (types, identity, partial index, constraints, ownership, and that the app role holds exactly DML). A mutation check, run when the suite was written, confirmed it fails when invalidation or error swallowing is removed.
+
 ### Acceptance test (steps 1–10)
 
 1. `GET /api/v1/products` returns seeded products; second call of `GET /api/v1/products/{sku}` is a cache hit (`cache_hits_total` increments).
@@ -763,8 +788,8 @@ Ten milestones, each a separate PR-sized unit that leaves `make up` working. Cla
 
 - [x] **M0 — Scaffold.** Repo tree from section 9, uv workspace, ruff/mypy/pytest config, Makefile, `.env.example`, `CLAUDE.md`, empty service apps returning `/health/live`. *Done when:* `make lint test` passes; `make up` starts four services with 200 on `/health/live`.
 - [x] **M1 — `libs/common`.** Settings, structlog + correlation middleware, metrics middleware, health router, error model, httpx client, envelope + v1 schemas, EventBridge publisher, SQS consumer loop. *Done when:* unit tests cover partial `PutEvents` failure, poison vs transient handling, correlation propagation.
-- [x] **M2 — Local infrastructure.** Compose with PostgreSQL, Valkey, LocalStack (auth token in .env), gateway; PostgreSQL init (two DBs; per service an owner role for migrations and an app role with DML only); LocalStack bootstrap (including DynamoDB TTL and a stub `functions/low-stock-alert/handler.py` that M7 replaces); seed script (5 categories, 20 products, stock 10–50 each; the catalog half skips with a warning until M3's migration creates the tables, stock seeds immediately). *Done when:* `awslocal events list-rules --event-bus-name retail-events` shows 4 rules; tables and queues exist; seed is idempotent.
-- [ ] **M3 — Product Service.** Alembic migration, CRUD, cache-aside + invalidation, readiness on PostgreSQL. *Done when:* integration tests pass with Valkey up and down.
+- [x] **M2 — Local infrastructure.** Compose with PostgreSQL, Valkey, LocalStack (auth token in .env), gateway; PostgreSQL init (two DBs; per service an owner role for migrations and an app role with DML only); LocalStack bootstrap (including DynamoDB TTL and a stub `functions/low-stock-alert/handler.py` that M7 replaces); seed script (5 categories, 20 products, stock 10–50 each; the catalog half needs the M3 migration and fails loudly if the schema is missing; stock seeds regardless). *Done when:* `awslocal events list-rules --event-bus-name retail-events` shows 4 rules; tables and queues exist; seed is idempotent.
+- [x] **M3 — Product Service.** Alembic migration, CRUD, cache-aside + invalidation, readiness on PostgreSQL. *Done when:* integration tests pass with Valkey up and down.
 - [ ] **M4 — Inventory Service API.** Get stock, batch availability, admin set-stock. *Done when:* strongly consistent reads verified in integration test.
 - [ ] **M5 — Order Service (sync path + outbox).** Migration, create order with price snapshot, idempotency key, pre-check, outbox write in the same transaction, relay process. *Done when:* `POST /orders` → row in `orders` + `outbox`; relay publishes; the "Bus unavailable" drill passes.
 - [ ] **M6 — Async flow.** Inventory consumer (transactional reservation, duplicate re-emit), Order consumer (state machine, `processed_events`), outcome → `OrderStatusUpdated` via outbox. *Done when:* acceptance steps 1–8 pass.
@@ -860,19 +885,23 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 - Develop on the `dev` branch; `main` is protected and only takes PRs from `dev`. Commit only when asked, and push or open a PR only when asked.
 - No AI attribution in commits or PRs (no Co-Authored-By or "Generated with" lines).
 - Run lint, test, up, down, seed and logs through `make`: Compose needs the Makefile's `IMAGE_TAG` and `--env-file .env`.
+- Record a new or changed API contract in docs/DESIGN.md in the same change.
+- `make itest` needs the stack up (`make up`). Integration tests may only touch their own data (`ITEST-`/`itest-` prefixes) and Valkey database 15; never flush database 0 or delete other rows.
+- A test that guards critical behavior (invalidation, error handling, idempotency) must be shown able to fail: break the code once, see the test fail, restore it.
 - Every service's package is named `app`, so mypy and pytest run once per service (`make lint test` does this); never run one pytest or mypy over several services.
 
 ## Must
 - Domain code has no I/O imports (boto3, sqlalchemy, httpx, redis).
 - Every consumer is idempotent on event_id; dedupe happens in the same transaction as the business write.
 - Order events go through the outbox. Never call PutEvents from a request handler.
-- Money: Decimal, strings in JSON. NUMERIC(10,2) for prices, NUMERIC(12,2) for order totals. IDs: ULID.
+- Money: Decimal, strings in JSON. NUMERIC(10,2) for prices, NUMERIC(12,2) for order totals. API input rejects JSON numbers for money; output always has exactly two decimals. IDs: ULID.
 - AWS clients are built from env only; no endpoint URLs or credentials in code.
 - Cloud AWS access exists only through GitHub Actions OIDC: workflows assume a role by ARN (stored as a GitHub variable, not a secret) with `permissions: id-token: write` and least-privilege per-purpose roles.
 - Workflows that touch EKS run on the ephemeral self-hosted runners in the VPC; everything else runs on GitHub-hosted runners.
 - Liveness checks nothing external. Readiness checks required stores only.
 - Structured JSON logs with correlation_id; metric labels use route templates.
-- Migrations: Alembic, backward compatible, run via the migrate command only.
+- Migrations: Alembic, backward compatible, forward-only (downgrade raises), run via the migrate command only, as the schema owner role.
+- A store that cannot serve a request (down, timeout, pool exhausted) is a 503 with Retry-After and a generic message, never a 500. A cache failure is a miss, never an error.
 
 ## Must not
 - Commit secrets or .env. Use .env.example.

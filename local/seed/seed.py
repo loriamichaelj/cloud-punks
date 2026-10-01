@@ -28,8 +28,8 @@ _log = structlog.get_logger("seed")
 CATALOG_TABLES = ("categories", "products")
 
 
-def seed_catalog(conninfo: str) -> dict[str, int] | None:
-    """Insert categories and products. Returns counts, or ``None`` if the schema is missing."""
+def seed_catalog(conninfo: str) -> dict[str, int]:
+    """Insert categories and products; raises if the schema has not been migrated."""
     with psycopg.connect(conninfo) as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT bool_and(to_regclass(%s || t) IS NOT NULL) FROM unnest(%s::text[]) AS t",
@@ -37,10 +37,10 @@ def seed_catalog(conninfo: str) -> dict[str, int] | None:
         )
         row = cur.fetchone()
         if not (row and row[0]):
-            # The tables come from the product-service Alembic migration (M3), which this script
-            # must not replace. Until then there is nothing to seed.
-            _log.warning("catalog_skipped", reason="product_db schema not migrated yet")
-            return None
+            # The tables come from the product-service migration (`product-migrate`), which this
+            # script must not replace.
+            msg = "product_db has no catalog tables; run `make up` so product-migrate applies them"
+            raise RuntimeError(msg)
 
         categories = 0
         for slug, name in CATEGORIES:
@@ -101,7 +101,7 @@ def main() -> int:
 
     catalog = seed_catalog(conninfo)
     stock = seed_stock(dynamodb)
-    _log.info("seed_complete", **(catalog or {"catalog": "skipped"}), **stock)
+    _log.info("seed_complete", **catalog, **stock)
     return 0
 
 

@@ -3,9 +3,12 @@ name = "product-service"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
+    "alembic",
     "fastapi",
     "psycopg[binary]",
+    "redis",
     "retail-common",
+    "sqlalchemy",
     "uvicorn",
 ]
 

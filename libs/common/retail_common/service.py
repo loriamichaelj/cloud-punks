@@ -11,13 +11,19 @@ from collections.abc import Sequence
 from typing import Any
 
 from fastapi import FastAPI
-from prometheus_client import CollectorRegistry, GCCollector, PlatformCollector, ProcessCollector
+from prometheus_client import CollectorRegistry
 
 from retail_common.config import BaseServiceSettings
 from retail_common.errors import install_error_handlers
 from retail_common.health import ReadinessCheck, build_health_router
 from retail_common.logging import CorrelationMiddleware, configure_logging
-from retail_common.metrics import EventMetrics, HttpMetrics, MetricsMiddleware, build_metrics_router
+from retail_common.metrics import (
+    EventMetrics,
+    HttpMetrics,
+    MetricsMiddleware,
+    build_metrics_router,
+    build_registry,
+)
 
 
 def create_service_app(
@@ -30,10 +36,7 @@ def create_service_app(
     configure_logging(settings.service_name, settings.environment, settings.log_level)
 
     if registry is None:
-        registry = CollectorRegistry()
-        ProcessCollector(registry=registry)
-        PlatformCollector(registry=registry)
-        GCCollector(registry=registry)
+        registry = build_registry()
 
     app = FastAPI(title=settings.service_name, **fastapi_kwargs)
     app.state.settings = settings
