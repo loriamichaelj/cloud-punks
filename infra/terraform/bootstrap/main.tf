@@ -5,8 +5,8 @@ locals {
   env        = var.target_environment
   prefix     = "cloudbatch818"
 
-  sub_pull_request = "repo:${var.github_repository}:pull_request"
-  sub_environment  = "repo:${var.github_repository}:environment:${local.env}"
+  sub_pull_request = "${var.oidc_subject_prefix}:pull_request"
+  sub_environment  = "${var.oidc_subject_prefix}:environment:${local.env}"
 
   bucket_arn = "arn:aws:s3:::${var.state_bucket_name}"
 }

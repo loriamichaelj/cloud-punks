@@ -2,9 +2,14 @@ variable "aws_region" {
   type = string
 }
 
-variable "github_repository" {
-  description = "owner/repo, as in github.repository. Used to build the exact OIDC sub claims."
+variable "oidc_subject_prefix" {
+  description = "Start of every OIDC sub claim for this repository. With immutable subjects it is repo:<owner>@<owner id>/<repo>@<repo id>; see the repository's actions/oidc/customization/sub."
   type        = string
+
+  validation {
+    condition     = startswith(var.oidc_subject_prefix, "repo:")
+    error_message = "The prefix must start with repo:."
+  }
 }
 
 variable "state_bucket_name" {

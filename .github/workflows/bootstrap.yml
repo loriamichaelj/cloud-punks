@@ -106,7 +106,8 @@ jobs:
       TF_IN_AUTOMATION: "true"
       TF_INPUT: "false"
       TF_VAR_aws_region: ${{ vars.AWS_REGION }}
-      TF_VAR_github_repository: ${{ github.repository }}
+      # Immutable subject claims (the repo's OIDC setting): names plus numeric IDs.
+      TF_VAR_oidc_subject_prefix: repo:${{ github.repository_owner }}@${{ github.repository_owner_id }}/${{ github.event.repository.name }}@${{ github.repository_id }}
       TF_VAR_state_bucket_name: ${{ needs.state-bucket.outputs.bucket }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
