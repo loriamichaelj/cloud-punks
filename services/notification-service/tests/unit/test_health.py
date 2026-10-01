@@ -1,9 +1,10 @@
+from fakes import FakeStore, make_settings
 from fastapi.testclient import TestClient
 
-from app.main import app
+from app.main import create_app
 from retail_common.logging import CORRELATION_HEADER
 
-client = TestClient(app)
+client = TestClient(create_app(make_settings(), store=FakeStore()))
 
 
 def test_live_returns_200() -> None:
@@ -12,7 +13,7 @@ def test_live_returns_200() -> None:
     assert response.json() == {"status": "ok"}
 
 
-def test_ready_is_200_while_the_service_has_no_required_stores() -> None:
+def test_ready_is_200_when_there_are_no_probes_to_fail() -> None:
     response = client.get("/health/ready")
     assert response.status_code == 200
     assert response.json()["status"] == "ready"
@@ -27,4 +28,4 @@ def test_metrics_are_exposed_with_route_templates() -> None:
 def test_a_correlation_id_is_echoed_and_the_service_name_is_its_own() -> None:
     response = client.get("/health/live", headers={CORRELATION_HEADER: "corr-1"})
     assert response.headers[CORRELATION_HEADER] == "corr-1"
-    assert app.title == "notification-service"
+    assert client.app.title == "notification-service"  # type: ignore[attr-defined]

@@ -1,10 +1,12 @@
-"""The acceptance test (DESIGN.md section 11, steps 1 to 8; 9 and 10 arrive with M7 and M9).
+"""The acceptance test (DESIGN.md section 11, steps 1 to 10)."""
 
-Step 6 needs the notification service's consumer, so it is not here until M7.
-"""
-
+import json
+import os
 import re
+import uuid
+from typing import Any
 
+import boto3
 import httpx2
 import pytest
 from conftest import (
@@ -12,12 +14,28 @@ from conftest import (
     SKU_A,
     SKU_B,
     compose,
+    notification_types,
     place_order,
     set_stock,
     stock,
     wait_for,
     wait_for_status,
 )
+
+
+def _client(service: str) -> Any:
+    """LocalStack with dummy credentials, whatever the shell exports (this suite never reaches AWS)."""
+    return boto3.client(
+        service,
+        region_name="us-east-1",
+        endpoint_url=os.environ.get("E2E_AWS_ENDPOINT", "http://localhost:4566"),
+        aws_access_key_id="test",
+        aws_secret_access_key="test",
+    )
+
+
+def _logs() -> Any:
+    return _client("logs")
 
 
 def cache_hits(keyspace: str) -> float:
@@ -59,6 +77,12 @@ def test_steps_2_to_5_and_8_an_order_is_confirmed_reserves_stock_and_is_idempote
     confirmed = wait_for_status(http, order_id, "CONFIRMED")
     assert confirmed["status_reason"] is None
 
+    # step 6: one notification per event, in the order the events happened
+    wait_for(
+        "both notifications",
+        lambda: notification_types(http, order_id) == ["InventoryReserved", "OrderStatusUpdated"],
+    )
+
     # step 5: exactly two units, moved from available to reserved
     after = stock(http, SKU_A)
     assert (after["available"], after["reserved"]) == (18, start["reserved"] + 2)
@@ -98,6 +122,10 @@ def test_step_7_an_order_the_inventory_later_cannot_fill_is_rejected_asynchronou
     rejected = wait_for_status(http, order_id, "REJECTED")
 
     assert rejected["status_reason"] == "OUT_OF_STOCK"
+    wait_for(
+        "the rejection notifications",
+        lambda: notification_types(http, order_id) == ["InventoryFailed", "OrderStatusUpdated"],
+    )
     assert stock(http, SKU_B)["available"] == 0  # nothing was taken
 
 
@@ -122,3 +150,92 @@ def test_stock_is_never_oversold_by_a_burst_of_orders(
     after = stock(http, SKU_A)
     assert after["available"] == 4 - confirmed * quantity
     assert after["reserved"] == before["reserved"] + confirmed * quantity
+
+
+def test_notifications_for_an_unknown_order_are_an_empty_list(http: httpx2.Client) -> None:
+    response = http.get("/api/v1/notifications", params={"order_id": "01J9Z6R0C4ZZZZZZZZZZZZZZZZ"})
+    assert (response.status_code, response.json()) == (200, {"items": []})
+
+
+def test_a_low_stock_reservation_triggers_the_lambda(http: httpx2.Client, customer: str) -> None:
+    """Stock 3, order 1: 2 remain, below the threshold of 5. The Lambda logs a `low_stock` record
+    (EMF) that LocalStack's CloudWatch Logs keeps."""
+    set_stock(http, SKU_A, 3)
+    order_id = place_order(http, customer, SKU_A, 1).json()["order_id"]
+    wait_for_status(http, order_id, "CONFIRMED")
+
+    def logged() -> str | None:
+        events = _logs().filter_log_events(logGroupName="/aws/lambda/low-stock-alert")["events"]
+        return next((e["message"] for e in events if order_id in e["message"]), None)
+
+    record = json.loads(wait_for("the low_stock log record", logged, timeout_s=30))
+    assert (record["event"], record["sku"], record["remaining"]) == ("low_stock", SKU_A, 2)
+    assert record["LowStockDetected"] == 1
+
+
+def test_step_9_every_process_is_ready_and_no_dead_letters_exist(http: httpx2.Client) -> None:
+    for port in (8001, 8002, 8003, 8004):
+        assert httpx2.get(f"http://localhost:{port}/health/ready", timeout=5).status_code == 200
+    states = json.loads("[" + ",".join(compose("ps", "--format", "json").splitlines()) + "]")
+    unhealthy = {
+        s["Service"]: s["Health"]
+        for s in states
+        if s.get("Health") not in ("healthy", "") or s.get("State") != "running"
+        if not s["Service"].endswith("-migrate")
+    }
+    assert unhealthy == {}
+
+    sqs = _client("sqs")
+    depth = {
+        queue: int(
+            sqs.get_queue_attributes(
+                QueueUrl=sqs.get_queue_url(QueueName=queue)["QueueUrl"],
+                AttributeNames=[
+                    "ApproximateNumberOfMessages",
+                    "ApproximateNumberOfMessagesNotVisible",
+                ],
+            )["Attributes"]["ApproximateNumberOfMessages"]
+        )
+        for queue in (
+            "inventory-order-events-dlq",
+            "order-inventory-events-dlq",
+            "notification-events-dlq",
+        )
+    }
+    assert depth == {q: 0 for q in depth}
+
+
+def test_step_10_one_correlation_id_runs_through_every_service(
+    http: httpx2.Client, customer: str
+) -> None:
+    correlation_id = f"e2e-corr-{uuid.uuid4().hex[:12]}"
+    set_stock(http, SKU_A, 20)
+    created = http.post(
+        "/api/v1/orders",
+        json={"customer_id": customer, "items": [{"sku": SKU_A, "quantity": 1}]},
+        headers={"Idempotency-Key": f"e2e-{uuid.uuid4()}", "X-Correlation-ID": correlation_id},
+    )
+    order_id = created.json()["order_id"]
+    wait_for_status(http, order_id, "CONFIRMED")
+    wait_for(
+        "the status notification",
+        lambda: "OrderStatusUpdated" in notification_types(http, order_id),
+    )
+    expected = {
+        "order-service",  # the request itself
+        "inventory-service",  # the availability pre-check
+        "inventory-consumer",  # the reservation
+        "order-consumer",  # the status change
+        "notification-consumer",  # both notifications
+    }
+
+    def services_that_logged() -> set[str] | None:
+        logs = compose("logs", "--no-color", "--since", "2m")
+        seen = {
+            line.split("|", 1)[0].strip().removesuffix("-1").removeprefix("retail-")
+            for line in logs.splitlines()
+            if correlation_id in line
+        }
+        return seen if expected <= seen else None
+
+    assert wait_for("the correlation id in every service's logs", services_that_logged)

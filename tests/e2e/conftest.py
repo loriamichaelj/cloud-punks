@@ -96,7 +96,17 @@ def wait_for_status(http: httpx2.Client, order_id: str, wanted: str) -> dict[str
     return result
 
 
-def compose(*args: str) -> None:
+def compose(*args: str) -> str:
+    """Run a docker compose command (needs ``make e2e``) and return its stdout."""
     if not COMPOSE:
         pytest.skip("E2E_COMPOSE is not set: run through `make e2e`")
-    subprocess.run([*shlex.split(COMPOSE), *args], check=True, capture_output=True, timeout=120)  # noqa: S603
+    done = subprocess.run(  # noqa: S603
+        [*shlex.split(COMPOSE), *args], check=True, capture_output=True, text=True, timeout=120
+    )
+    return done.stdout
+
+
+def notification_types(http: httpx2.Client, order_id: str) -> list[str]:
+    response = http.get("/api/v1/notifications", params={"order_id": order_id})
+    assert response.status_code == 200, response.text
+    return [item["type"] for item in response.json()["items"]]
