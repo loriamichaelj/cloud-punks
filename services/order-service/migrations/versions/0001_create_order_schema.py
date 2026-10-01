@@ -45,7 +45,7 @@ def upgrade() -> None:
         "orders",
         ["customer_id", sa.text("created_at DESC")],
     )
-    # Powers the stuck-order sweeper (M8): PENDING orders are few; the old ones are the interest.
+    # Powers the stuck-order sweeper (M9): PENDING orders are few; the old ones are the interest.
     op.create_index(
         "ix_orders_pending_created",
         "orders",

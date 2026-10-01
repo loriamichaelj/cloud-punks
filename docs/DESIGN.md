@@ -1,6 +1,6 @@
 # Retail Microservices Platform — Design Doc
 
-Author: M.L. · 30 Sep 2026 · Status: v1.6, M0–M5 built, React UI added to scope as M10 (v1.6: section 15 and ADR-16/17; v1.5: order API contract, outbox relay behavior, test isolation rules and the corrected bus-unavailable drill; v1.4: inventory API contract and hermetic unit tests; v1.3: product API contract and cache/outage behavior from M3, HTTP client moved to httpx2; v1.2: layout, bootstrap and tooling notes updated from M0–M2; OrbStack sized for an 8 GB Mac; v1.1: facts verified 30 Sep 2026; AWS access is GitHub-OIDC-only, so Phases 2–3 are reordered around a bootstrap workflow and in-VPC runners; bootstrap script and spec gaps fixed)
+Author: M.L. · 30 Sep 2026 · Status: v1.7, M0–M5 built; the React UI is M8 (after M7), hardening M9, local Kubernetes M10 (v1.7: milestones renumbered; v1.6: section 15 and ADR-16/17; v1.5: order API contract, outbox relay behavior, test isolation rules and the corrected bus-unavailable drill; v1.4: inventory API contract and hermetic unit tests; v1.3: product API contract and cache/outage behavior from M3, HTTP client moved to httpx2; v1.2: layout, bootstrap and tooling notes updated from M0–M2; OrbStack sized for an 8 GB Mac; v1.1: facts verified 30 Sep 2026; AWS access is GitHub-OIDC-only, so Phases 2–3 are reordered around a bootstrap workflow and in-VPC runners; bootstrap script and spec gaps fixed)
 
 ## 1. Overview
 
@@ -25,8 +25,8 @@ We build a four-service retail order platform that runs end-to-end on localhost 
 | Phase | Scope | Plan day | Exit criterion |
 | --- | --- | --- | --- |
 | 1a — Local (Compose on OrbStack) | Services, data layer, events, tests | Day 1–2 | Acceptance test passes on `make up` |
-| 1b — Local Kubernetes (OrbStack) | Helm chart, probes, HPA, ingress, rollback on the local cluster | Day 3 (morning) | Same test passes via local ingress; `helm rollback` demonstrated |
-| 1c — UI (React) | `ui/` single-page app and nginx image, gateway `/` route, Playwright journeys (M10; section 15) | Day 3 (afternoon) | Browser journeys pass on Compose via `make ui-e2e` (and through Traefik once M9 is done) |
+| 1b — UI (React) | `ui/` single-page app and nginx image, gateway `/` route, Playwright journeys (M8; section 15) | Day 2 (late) | Browser journeys pass on Compose via `make ui-e2e` |
+| 1c — Local Kubernetes (OrbStack) | Helm chart for every process including the UI, probes, HPA, ingress, rollback on the local cluster | Day 3 (morning) | Same test (API acceptance and UI journeys) passes via local ingress; `helm rollback` demonstrated |
 | 2 — Cloud infra, built through CI | Manual OIDC provider + `gha-bootstrap` role; `bootstrap.yml` (state bucket); minimal `infra.yml`; Terraform, ECR, EKS, in-VPC runners; the 1b chart with dev values. No AWS access exists outside GitHub Actions (ADR-14) | Day 3 | Same test passes against the EKS ingress, run from a workflow |
 | 3 — CI/CD | Full `pr.yml`/`main.yml`/`promote.yml`, scans, promotion, rollback, `infra-destroy.yml` | Day 4 | PR-to-prod pipeline with a demonstrated rollback |
 | 4 — Reliability | Dashboards, SLOs, alarms, failure drills, runbooks | Day 5 | Each drill in section 11 detected and recovered |
@@ -104,8 +104,8 @@ Order is the only service with both sync dependencies (Product for price, Invent
 
 | Concern | Local (Phase 1) | AWS (Phase 2+) | What changes |
 | --- | --- | --- | --- |
-| Compute | Docker Compose containers (M0–M8), then OrbStack Kubernetes (M9) | EKS Deployments on managed node groups | Nothing in the image; Helm values |
-| Ingress | nginx gateway on :8080; Traefik in M9 | ALB via AWS Load Balancer Controller | Same path rules in Ingress (`/api/v1/*` to the services, everything else to `ui`) |
+| Compute | Docker Compose containers (M0–M9), then OrbStack Kubernetes (M10) | EKS Deployments on managed node groups | Nothing in the image; Helm values |
+| Ingress | nginx gateway on :8080; Traefik in M10 | ALB via AWS Load Balancer Controller | Same path rules in Ingress (`/api/v1/*` to the services, everything else to `ui`) |
 | UI | `ui` container (nginx serving static files) behind the gateway | EKS Deployment behind the ALB's default rule, image from ECR | Helm values only |
 | Relational | PostgreSQL 17 container | Aurora PostgreSQL 17, Multi-AZ | `DB_HOST`, secret source |
 | Key-value | LocalStack DynamoDB | DynamoDB on-demand | `AWS_ENDPOINT_URL` unset |
@@ -429,7 +429,7 @@ Implementation notes (`python -m app relay`, M5):
 - Rows are published oldest first. A row whose payload is not a valid envelope is marked failed (`attempts`, `last_error`) without blocking the rows behind it. A failed batch backs off exponentially from 0.5 s to 10 s instead of hammering a down bus; a pass that published anything goes again immediately.
 - Published rows older than 7 days are deleted in batches of 1,000, at most once a minute.
 - A side server on port 9000 (shared `SideServer` in `libs/common`) serves `/health/live`, `/health/ready` and `/metrics`. **Readiness checks PostgreSQL only**: a bus outage is when the relay must stay in rotation and keep retrying. `outbox_unpublished` and `outbox_oldest_unpublished_age_seconds` are gauges computed from PostgreSQL at scrape time (NaN, not a failed scrape, if the database is down).
-- Known limitation: a row that can never be published keeps being retried forever and takes a slot in every batch. A handful is harmless; more than 50 would starve healthy rows. A maximum-attempts policy belongs with the DLQ-style tooling in M8.
+- Known limitation: a row that can never be published keeps being retried forever and takes a slot in every batch. A handful is harmless; more than 50 would starve healthy rows. A maximum-attempts policy belongs with the DLQ-style tooling in M9.
 - Settings are per process, so a missing variable fails only the process that needs it: the API needs the two upstream URLs and no AWS settings; the relay needs AWS and the bus name and no upstream URLs; the `migrate` job needs only the database.
 
 ### Lambda: low-stock-alert
@@ -585,7 +585,7 @@ retail-platform/
 │   ├── seed/                     # catalog.py (data) + seed.py; shipped in the product image
 │   └── observability/ (prometheus.yml, grafana/)
 ├── tests/e2e/                    # acceptance + failure drills (pytest)
-├── deploy/helm/                  # M9 (placeholder until then)
+├── deploy/helm/                  # M10 (placeholder until then)
 ├── infra/terraform/              # Phase 2 (placeholder)
 ├── .github/workflows/            # Phases 2–3 (placeholder): bootstrap, infra, infra-destroy, pr, main, promote
 ├── Makefile
@@ -759,24 +759,24 @@ Conventions (built in M0–M2): `up` runs `docker compose up -d --build --wait`,
 
 ### OrbStack and local Kubernetes
 
-OrbStack is the local runtime for both local stages: its Docker engine runs Compose (M0–M8), and its built-in single-node Kubernetes cluster runs the Helm chart (M9) before anything touches EKS. That makes Helm, probes, HPA and rollback free to rehearse, which is where most first EKS deployments fail.
+OrbStack is the local runtime for both local stages: its Docker engine runs Compose (M0–M9), and its built-in single-node Kubernetes cluster runs the Helm chart (M10) before anything touches EKS. That makes Helm, probes, HPA and rollback free to rehearse, which is where most first EKS deployments fail.
 
 | Stage | Apps run in | Backing services run in | Ingress | Purpose |
 | --- | --- | --- | --- | --- |
-| Compose (M0–M8) | Compose containers | Compose | nginx gateway :8080 | Fast inner loop |
-| Local Kubernetes (M9) | OrbStack Kubernetes, namespace `retail` | Compose, outside the cluster | Traefik | Rehearse Helm, probes, HPA, rollback |
+| Compose (M0–M9) | Compose containers | Compose | nginx gateway :8080 | Fast inner loop |
+| Local Kubernetes (M10) | OrbStack Kubernetes, namespace `retail` | Compose, outside the cluster | Traefik | Rehearse Helm, probes, HPA, rollback |
 | EKS (Phase 2) | EKS, namespace `retail` | Aurora, ElastiCache, DynamoDB, EventBridge/SQS | ALB | Production shape |
 
-PostgreSQL, Valkey and LocalStack stay outside the cluster in M9 on purpose. That matches EKS, where data lives in managed services, and keeps stateful workloads out of Kubernetes.
+PostgreSQL, Valkey and LocalStack stay outside the cluster in M10 on purpose. That matches EKS, where data lives in managed services, and keeps stateful workloads out of Kubernetes.
 
 Rules and gotchas:
 
 - **No registry needed locally (verified).** OrbStack's Kubernetes uses the same container engine as Docker, so images from `docker build` are available to pods without a push. Tag `dev-<git sha>` and set `imagePullPolicy: IfNotPresent` in local values; `:latest` makes Kubernetes always try to pull.
 - **Pods reach Compose through the host.** Compose publishes 5432, 6379 and 4566 on the Mac. `host.docker.internal` is documented for Docker containers; confirm it also resolves from pods before building on it: `kubectl --context orbstack run nettest --rm -it --restart=Never --image=busybox:1.37 -- nc -z -w 2 host.docker.internal 5432`. Then create `ExternalName` Services `postgres`, `valkey` and `localstack` in namespace `retail` pointing at that host, so pods keep the same `DB_HOST=postgres` as Compose.
 - **Ingress (verified).** OrbStack installs no ingress controller; LoadBalancer services are reachable from the Mac at `*.k8s.orb.local`. Install Traefik with Helm and route host `retail.k8s.orb.local`. `ingressClassName` and annotations are per-env values (`traefik` locally, `alb` on EKS), and paths mirror `gateway/nginx.conf`. Do not use ingress-nginx: it was retired in March 2026 and receives no security fixes.
-- **No cloud identity locally.** No Pod Identity or External Secrets in M9. `values-local.yaml` renders a plain Secret from `.env` with LocalStack `test` credentials; the chart toggles `externalSecret.enabled` and the ServiceAccount role per env.
+- **No cloud identity locally.** No Pod Identity or External Secrets in M10. `values-local.yaml` renders a plain Secret from `.env` with LocalStack `test` credentials; the chart toggles `externalSecret.enabled` and the ServiceAccount role per env.
 - **CPU architecture.** On Apple Silicon, local images are `linux/arm64`. EKS nodes are therefore Graviton (arm64) in this design, and CI builds `linux/arm64,linux/amd64` with `docker buildx`. An amd64-only image on arm64 nodes fails at start with `exec format error`.
-- **Engine restarts.** On an 8 GB Mac the Docker engine itself restarted once mid-run under memory pressure (host at 6.8 GB used, active swap). Only containers with a restart policy come back, so PostgreSQL, Valkey and LocalStack now carry `restart: unless-stopped` like the apps; without it the stack came back half-up. LocalStack's state is in memory, so a restart empties DynamoDB (run `make seed`) and drops queued events. OrbStack's built-in Kubernetes also consumes memory; if the engine is unstable before M9, disable it (`orbctl config set k8s.enable false`) until then.
+- **Engine restarts.** On an 8 GB Mac the Docker engine itself restarted once mid-run under memory pressure (host at 6.8 GB used, active swap). Only containers with a restart policy come back, so PostgreSQL, Valkey and LocalStack now carry `restart: unless-stopped` like the apps; without it the stack came back half-up. LocalStack's state is in memory, so a restart empties DynamoDB (run `make seed`) and drops queued events. OrbStack's built-in Kubernetes also consumes memory; if the engine is unstable before M10, disable it (`orbctl config set k8s.enable false`) until then.
 - **Resources.** Give the OrbStack VM 6 GB on an 8 GB Mac (`orbctl config set memory_mib 6144`, then `orbctl stop`; it restarts on the next Docker command), or 8 GB or more on a larger machine. The limit is a cap, not a reservation, but equalling the Mac's total RAM risks swapping. The LocalStack Lambda runtime adds a container on top of the stack. Local values request 50m CPU / 128Mi per pod so 13 processes plus Traefik fit. HPA needs metrics-server: install it if `kubectl --context orbstack top nodes` fails.
 - **Context safety.** Every `k8s-*` Make target passes `--kube-context orbstack` / `--context orbstack` explicitly, so a local command can never land on an EKS cluster that happens to be the current context.
 
@@ -851,18 +851,18 @@ Eleven milestones (M0 to M10), each a separate PR-sized unit that leaves `make u
 - [x] **M5 — Order Service (sync path + outbox).** Migration (all four order tables, including `processed_events`, which M6 first uses), create order with price snapshot, idempotency key, pre-check, outbox write in the same transaction, relay process. *Done when:* `POST /orders` → row in `orders` + `outbox`; relay publishes; the "Bus unavailable" drill passes.
 - [ ] **M6 — Async flow.** Inventory consumer (transactional reservation, duplicate re-emit), Order consumer (state machine, `processed_events`), outcome → `OrderStatusUpdated` via outbox. *Done when:* acceptance steps 1–8 pass.
 - [ ] **M7 — Notification + Lambda.** Notification consumer + read API; low-stock Lambda with unit test and LocalStack invocation. *Done when:* acceptance steps 1–10 pass; low-stock log visible in LocalStack logs.
-- [ ] **M8 — Hardening.** All failure drills scripted as Make targets and pytest e2e cases; stuck-order sweeper; Prometheus + Grafana profile with one dashboard (RED per service, queue depth, outbox lag); README with run instructions. *Done when:* `make e2e` runs acceptance + all drills green from a clean `make reset && make up`.
-- [ ] **M9 — Local Kubernetes on OrbStack.** Helm library chart `deploy/helm/retail-service` built to the section 13 spec, `values-<svc>-local.yaml`, Traefik ingress mirroring the gateway paths, migration Jobs as `pre-install,pre-upgrade` hooks, HPA on the API services, PDBs, multi-arch `docker buildx` build. *Done when:* `make k8s-deploy k8s-e2e` passes; `kubectl delete pod` on any service recovers with no failed orders; a deliberately broken release (bad readiness path) fails `--atomic`, and `helm rollback` restores a passing e2e.
+- [ ] **M8 — UI (React).** `ui/` built to section 15: a Vite + TypeScript SPA with catalog (category filter, pagination, stock badges), product, basket, checkout, live order tracking (polls to `CONFIRMED`/`REJECTED`, shows notifications), my orders, and a demo-tools page behind a build flag; API types generated from committed OpenAPI snapshots; `ui` nginx image; gateway `/` route; `make ui-*` targets. Depends on M7 (order status transitions and notifications must exist). *Done when:* `make lint test` runs and passes the UI checks (eslint, `tsc`, vitest, production build within the bundle budget); after `make reset && make up && make seed` the UI is served at `http://localhost:8080/`; `make ui-e2e` passes every journey in section 15.6 including the async `REJECTED` order and the double-submit idempotency case; its Helm values (`values-ui-local.yaml`) and Traefik route arrive with M10.
+- [ ] **M9 — Hardening.** All failure drills scripted as Make targets and pytest e2e cases; stuck-order sweeper; Prometheus + Grafana profile with one dashboard (RED per service, queue depth, outbox lag); README with run instructions. *Done when:* `make e2e` runs acceptance + all drills green from a clean `make reset && make up`, and `make ui-e2e` passes on the same clean start.
+- [ ] **M10 — Local Kubernetes on OrbStack.** Helm library chart `deploy/helm/retail-service` built to the section 13 spec, `values-<svc>-local.yaml` (including `values-ui-local.yaml`), Traefik ingress mirroring the gateway paths, migration Jobs as `pre-install,pre-upgrade` hooks, HPA on the API services, PDBs, multi-arch `docker buildx` build. *Done when:* `make k8s-deploy k8s-e2e` passes (API acceptance and the UI journeys); `kubectl delete pod` on any service recovers with no failed orders; a deliberately broken release (bad readiness path) fails `--atomic`, and `helm rollback` restores a passing e2e.
 
-- [ ] **M10 — UI (React).** `ui/` built to section 15: a Vite + TypeScript SPA with catalog (category filter, pagination, stock badges), product, basket, checkout, live order tracking (polls to `CONFIRMED`/`REJECTED`, shows notifications), my orders, and a demo-tools page behind a build flag; API types generated from committed OpenAPI snapshots; `ui` nginx image; gateway `/` route; `make ui-*` targets. Depends on M7 (order status transitions and notifications must exist). *Done when:* `make lint test` runs and passes the UI checks (eslint, `tsc`, vitest, production build within the bundle budget); after `make reset && make up && make seed` the UI is served at `http://localhost:8080/`; `make ui-e2e` passes every journey in section 15.6 including the async `REJECTED` order and the double-submit idempotency case; if M9 is done, `make k8s-deploy` serves it through Traefik using a `values-ui-local.yaml` for the generic chart.
 
-M10 is sequenced last so the M9 chart exists and the UI deploys as one more instance of it. It may be started as soon as M7 is done; if so it ships with Compose only and gets its Helm values file when M9 completes.
+M8 deliberately sits right after M7, which it needs (order status transitions and notifications), and before hardening and Kubernetes: it is the first real client of the APIs, and it touches the gateway, Compose, the clean-start e2e and the Helm chart, so building it first means M9 and M10 include it instead of reopening them.
 
-Phase 1 is complete when M10 is done (M9 if the owner defers the UI). Only then start Phase 2 (Terraform, ECR, EKS).
+Phase 1 is complete when M10 (local Kubernetes) is done. Only then start Phase 2 (Terraform, ECR, EKS).
 
 ## 13. Phases 2–4: cloud, CI/CD, reliability
 
-These are contracts Phase 1 must not violate, not a full spec; each phase gets its own design pass before build. Items marked **verify** depend on current AWS versions or pricing. **Provisional:** the cloud, pipeline and Terraform strategy is revisited with the owner after M9 and before any Phase 2 work; the remote repo holds the dev environment only.
+These are contracts Phase 1 must not violate, not a full spec; each phase gets its own design pass before build. Items marked **verify** depend on current AWS versions or pricing. **Provisional:** the cloud, pipeline and Terraform strategy is revisited with the owner after M10 and before any Phase 2 work; the remote repo holds the dev environment only.
 
 ### Phase 2 — Bootstrap, Terraform, ECR, EKS, Helm, all through CI (Day 3)
 
@@ -901,7 +901,7 @@ Terraform references the OIDC provider with a `data` source (an account can hold
 | Events | Same names as bootstrap script; SQS SSE; queue policies scoped by `aws:SourceArn`; EventBridge archive | — |
 | ECR | One repo per service (including `ui`), tag immutability, scan on push (Inspector enhanced), lifecycle keep 30 | Tags `sha-<git sha>`; deploy by digest in prod |
 
-**Helm:** the M9 library chart, reused unchanged with new values files, `deploy/helm/retail-service` + `values-<service>-<env>.yaml`. The chart renders, per process: Deployment (rolling, `maxUnavailable: 0`, `maxSurge: 25%`), ServiceAccount, Service (APIs only), PodDisruptionBudget (`minAvailable: 1`), HPA (APIs: CPU 70%, min 2, max 6), zone `topologySpreadConstraints`, probes on `/health/live` and `/health/ready`, `securityContext` (`runAsNonRoot`, `readOnlyRootFilesystem`, drop ALL, plus an `emptyDir` mounted at `/tmp`), ExternalSecret, and the migration Job as a `pre-install,pre-upgrade` hook. The UI is one more release of the same chart (`values-ui-<env>.yaml`: port 8005, probes on `/healthz`, a writable `emptyDir` for nginx's temp and cache paths). One shared Ingress (ALB, `scheme: internal` so e2e runs from the in-VPC runners, HTTPS via ACM, `group.name: retail`) mirrors `gateway/nginx.conf` paths, with `/` as the default rule to `ui`. There is no domain yet, so dev serves HTTP on the internal ALB; HTTPS via ACM needs a domain you control plus a Route 53 private zone and is deferred.
+**Helm:** the M10 library chart, reused unchanged with new values files, `deploy/helm/retail-service` + `values-<service>-<env>.yaml`. The chart renders, per process: Deployment (rolling, `maxUnavailable: 0`, `maxSurge: 25%`), ServiceAccount, Service (APIs only), PodDisruptionBudget (`minAvailable: 1`), HPA (APIs: CPU 70%, min 2, max 6), zone `topologySpreadConstraints`, probes on `/health/live` and `/health/ready`, `securityContext` (`runAsNonRoot`, `readOnlyRootFilesystem`, drop ALL, plus an `emptyDir` mounted at `/tmp`), ExternalSecret, and the migration Job as a `pre-install,pre-upgrade` hook. The UI is one more release of the same chart (`values-ui-<env>.yaml`: port 8005, probes on `/healthz`, a writable `emptyDir` for nginx's temp and cache paths). One shared Ingress (ALB, `scheme: internal` so e2e runs from the in-VPC runners, HTTPS via ACM, `group.name: retail`) mirrors `gateway/nginx.conf` paths, with `/` as the default rule to `ui`. There is no domain yet, so dev serves HTTP on the internal ALB; HTTPS via ACM needs a domain you control plus a Route 53 private zone and is deferred.
 
 ### Phase 3 — GitHub Actions (Day 4)
 
@@ -976,15 +976,15 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 - Cache inventory/stock data.
 - Use :latest image tags anywhere (Compose, CI, or Helm values).
 - Use KEYS * in Valkey, floats for money, or bare except.
-- Add Kafka, a service mesh, auth, payments, or GitOps tooling (the UI is in scope as M10; login, payments and server-side carts are not).
-- Write Helm before M8 is done, or Terraform / GitHub Actions before M10 is done.
+- Add Kafka, a service mesh, auth, payments, or GitOps tooling (the UI is in scope as M8; login, payments and server-side carts are not).
+- Write Helm before M9 is done, or Terraform / GitHub Actions before M10 is done.
 - Run kubectl or helm without an explicit --context; local work always targets the orbstack context.
 - Use, request, create or store AWS credentials (no `aws configure`, access keys, or AWS_* secrets in GitHub).
 - Run terraform plan/apply, aws, kubectl or helm against AWS/EKS from the laptop. Locally only: terraform fmt/validate (`init -backend=false`), tflint, checkov, helm lint, kubeconform.
 - Manage the OIDC provider or the `gha-bootstrap` role in Terraform (created by hand; Terraform reads the provider via a data source).
 - Run self-hosted runners for fork PRs, or for any job that is not a deploy/drill/e2e job on main or an approved environment.
 
-## UI (ui/, M10; DESIGN.md section 15)
+## UI (ui/, M8; DESIGN.md section 15)
 - The UI is a pure client of the public `/api/v1` API, same-origin through the gateway: relative URLs only, no hard-coded hosts, no secrets, no AWS or database access. A need the API cannot meet is a question for the owner (the API-contract rule), never a new endpoint added on the side.
 - Money is never a JS `number` or `parseFloat`: parse API decimal strings into integer minor units (`BigInt`) and format by string. Totals computed in the browser are labelled estimates; the server's order response is authoritative.
 - Never cache stock: inventory queries use `staleTime: 0` and `gcTime: 0` and are never persisted.
@@ -998,8 +998,8 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 
 ### Open questions
 
-- [x] A React UI is in scope (decided 1 Oct 2026), as M10 and section 15. Login, payments and server-side carts remain out.
-- [ ] Sequencing: M10 after M9 (the default, so the generic Helm chart takes the UI as another instance), or pulled forward right after M7 so the demo is visual sooner?
+- [x] A React UI is in scope (decided 1 Oct 2026), as M8 and section 15. Login, payments and server-side carts remain out.
+- [x] Sequencing: the UI is M8, right after M7 (decided 1 Oct 2026), before hardening and Kubernetes. It is the first real client of the APIs, so contract gaps surface while changing them is cheap, and M9 (drills, clean-start e2e) and M10 (the chart and ingress) cover the UI from the start instead of reopening the gateway, Compose, e2e and Helm later.
 - [ ] Demo-tools page (set stock and price through the unauthenticated admin endpoints): include it behind a build flag that is off in cloud builds (the default)? It makes the out-of-stock and `REJECTED` journeys demonstrable by hand.
 - [ ] API types in the UI: generated from committed OpenAPI snapshots with openapi-typescript (the default; drift fails the build) or hand-written types validated at runtime with zod?
 - [ ] Node: pin 24 LTS (Active LTS today); Node 26 becomes LTS on 28 Oct 2026 — revisit then.
@@ -1015,7 +1015,7 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 - [x] EKS access: self-hosted ephemeral runners in the VPC, private endpoint (decided 30 Sep 2026). Repo is public, so the runner restrictions in section 13 apply.
 - [x] No domain yet (30 Sep 2026): dev uses HTTP on the internal ALB; HTTPS/ACM is deferred until a domain exists.
 - [x] Runner mechanism: EC2 Auto Scaling group with ephemeral, JIT-registered runners (30 Sep 2026).
-- [ ] Pipeline, cloud and Terraform strategy: deliberately deferred until M9 is done locally. Section 13 is provisional until then.
+- [ ] Pipeline, cloud and Terraform strategy: deliberately deferred until M10 is done locally. Section 13 is provisional until then.
 - [ ] Budget ceiling for the week's AWS spend (EKS control plane, NAT, Aurora, ElastiCache run 24/7). Decides single-NAT, instance sizes, and whether to `terraform destroy` nightly.
 
 ### Risks
@@ -1026,7 +1026,7 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 | Outbox relay implemented as "publish then mark" outside a lock | Duplicate or skipped events | Unit test for partial failure; `SKIP LOCKED`; idempotent consumers absorb duplicates |
 | Reservation logic conflates duplicate vs out-of-stock cancellations | Oversell or false rejects | Explicit `CancellationReasons` handling + unit tests (section 5) |
 | Scope creep from Day 1–2 into Day 3+ | No cloud deployment by Day 5 | Milestone gates; M10 is the hard stop for Phase 1 |
-| UI scope creep (login, payments, carts, pixel polish) | Delays the cloud phase | The non-goals are fixed in section 15; the UI holds no backend logic; M10 has a done-when gate |
+| UI scope creep (login, payments, carts, pixel polish) | Delays the cloud phase | The non-goals are fixed in section 15; the UI holds no backend logic; M8 has a done-when gate |
 | npm supply-chain compromise | Malicious code in the build or the shipped bundle | Exact versions in the lockfile, `npm ci` only, a short approved dependency list, `npm audit` and Trivy in CI, no secrets anywhere near the build |
 | Playwright and Chromium on top of the stack on an 8 GB Mac | Memory pressure and Docker engine restarts (seen in M5) | Headless Chromium, one worker, run on a freshly started stack with other apps closed; CI runs it on hosted runners |
 | Wrong money or stale stock shown in the UI | Customers see wrong totals or buy what is not there | Integer minor-unit arithmetic with server totals authoritative; stock never cached (`staleTime: 0`, `gcTime: 0`); both covered by tests |
@@ -1037,7 +1037,7 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 
 ## 15. Frontend UI (React)
 
-Added in v1.6 (1 Oct 2026). Binding decisions are ADR-16 and ADR-17 in section 2. The UI is milestone M10 (section 12).
+Added in v1.6 (1 Oct 2026). Binding decisions are ADR-16 and ADR-17 in section 2. The UI is milestone M8 (section 12).
 
 ### 15.1 Scope
 
@@ -1047,7 +1047,7 @@ Still out of scope, even with a UI: login or any notion of identity beyond a dem
 
 ### 15.2 Stack
 
-Versions below were checked on 1 Oct 2026 and are pinned exactly in `package-lock.json` at build time (**verify** the current majors when M10 starts).
+Versions below were checked on 1 Oct 2026 and are pinned exactly in `package-lock.json` at build time (**verify** the current majors when M8 starts).
 
 | Concern | Choice |
 | --- | --- |
@@ -1094,7 +1094,7 @@ This list is the approved set. Anything else is a "new dependency" and needs ask
 - **nginx in the image.** Hashed assets under `/assets/` get `Cache-Control: public, max-age=31536000, immutable`; `index.html` is `no-cache`. Extension-less paths fall back to `index.html` (client-side routing); a missing file with an extension is a real 404. `/healthz` returns 200 and checks nothing external (liveness and readiness are the same: it is static files). Headers: `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`. The UI exposes no `/metrics`: it is the one process without the Prometheus contract, and the gateway's access log is its request telemetry.
 - **Gateway.** `gateway/nginx.conf` keeps every `/api/v1/...` rule and gains `location / { proxy_pass ui:8005 }` resolved per request like the others; an unknown `/api/...` path stays the gateway's JSON 404. Consequence for the M2 gateway check: `/health/live` and `/metrics` no longer 404 at the gateway, they return the SPA's `index.html` (never a service's health or metrics); `/openapi.json` has an extension and still 404s.
 - **Local development.** `make ui-dev` runs Vite on `:5173` with `/api` proxied to `http://localhost:8080`, so the SPA talks to the Compose stack with hot reload.
-- **Compose and Kubernetes.** `ui` is one more service in `local/docker-compose.yml`; the gateway depends on it. In M9/M10 it is one more instance of the generic chart; on EKS the ALB's default rule sends `/` to it (section 13).
+- **Compose and Kubernetes.** `ui` is one more service in `local/docker-compose.yml`; the gateway depends on it. In M10 it is one more instance of the generic chart; on EKS the ALB's default rule sends `/` to it (section 13).
 - **Budgets.** Initial JavaScript at most 200 kB gzipped; the production build fails above it.
 
 ### 15.6 Testing
@@ -1109,7 +1109,7 @@ Journeys (`make ui-e2e`): browse, filter and paginate; the basket survives a rel
 
 ### 15.7 Make targets
 
-`ui-install` (`npm ci`), `ui-dev`, `ui-types`, `ui-lint`, `ui-typecheck`, `ui-test`, `ui-build`, `ui-e2e`, plus `openapi` (writes `docs/openapi/<service>.json` from each app). Once `ui/` exists, `make lint` and `make test` also run the UI's lint, type check, unit and component tests and the production build, so one command still gates everything. Node is a prerequisite from M10 on.
+`ui-install` (`npm ci`), `ui-dev`, `ui-types`, `ui-lint`, `ui-typecheck`, `ui-test`, `ui-build`, `ui-e2e`, plus `openapi` (writes `docs/openapi/<service>.json` from each app). Once `ui/` exists, `make lint` and `make test` also run the UI's lint, type check, unit and component tests and the production build, so one command still gates everything. Node is a prerequisite from M8 on.
 
 ### 15.8 Layout
 

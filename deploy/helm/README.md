@@ -1,3 +1,3 @@
 # Helm
 
-Placeholder. The `retail-service` library chart is built in M9.
+Placeholder. The `retail-service` library chart is built in M10.

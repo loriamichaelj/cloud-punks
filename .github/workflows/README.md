@@ -1,3 +1,3 @@
 # Workflows
 
-Placeholder. Pipelines are designed after M9.
+Placeholder. Pipelines are designed after M10.
