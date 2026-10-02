@@ -1,27 +1,27 @@
-name: state-bucket
+name: "AWS: state bucket"
 
 # Creates (or re-asserts the settings of) the Terraform state bucket
 # loria-retail-tfstate-<account-id>-<region>. Idempotent: safe to run again.
-# Run it alone from the Actions tab, or let bootstrap.yml call it first.
+# Run it first: aws-ci-roles.yml expects the bucket to exist. No other
+# workflow calls this one.
 on:
   workflow_dispatch:
-  workflow_call:
-    outputs:
-      bucket:
-        description: State bucket name
-        value: ${{ jobs.state-bucket.outputs.bucket }}
+
+run-name: aws-state-bucket
 
 permissions:
   contents: read
   id-token: write
+
+concurrency:
+  group: aws-state-bucket
+  cancel-in-progress: false
 
 jobs:
   state-bucket:
     runs-on: ubuntu-latest
     environment: bootstrap
     timeout-minutes: 10
-    outputs:
-      bucket: ${{ steps.bucket.outputs.name }}
     steps:
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:

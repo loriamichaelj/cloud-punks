@@ -1,25 +1,15 @@
-name: infra-create
+name: "Platform: destroy"
 
-# dev/platform stack (network, ecr, eks), created from workflow_dispatch only.
-# Jobs run as cloudbatch818-loria-retail-tf-dev, each approved by the
-# `dev` environment's required reviewer. Pick an action:
-#   plan   the `plan` job only: print the plan, change nothing.
-#   apply  `plan`, then `apply` after a second approval, applying exactly the
-#          saved plan.
-# Apply is manual on purpose: it creates a cluster that costs money.
-# Tearing the stack down is infra-destroy.yml.
+# Tears down the dev/platform stack (network, ecr, eks). Two jobs as
+# cloudbatch818-loria-retail-tf-dev, each approved by the `dev`
+# environment's required reviewer: `plan` runs `terraform plan -destroy`,
+# saves it to the state bucket and prints it; `destroy` runs only after a
+# second approval and applies exactly that saved plan.
+# It never touches the bootstrap stack, the state bucket or the CI roles.
 on:
   workflow_dispatch:
-    inputs:
-      action:
-        description: What to do with the dev/platform stack
-        type: choice
-        options:
-          - plan
-          - apply
-        default: plan
 
-run-name: infra-create ${{ inputs.action }}
+run-name: platform-destroy
 
 permissions:
   contents: read
@@ -35,10 +25,9 @@ defaults:
   run:
     working-directory: infra/terraform/envs/dev/platform
 
-# Runs queue behind each other, and behind infra-destroy.yml, so two never
-# plan or apply the same stack at once.
+# Shares platform-create's group so the two never touch the stack at once.
 concurrency:
-  group: infra-dev-platform
+  group: platform-dev
   cancel-in-progress: false
 
 jobs:
@@ -77,7 +66,7 @@ jobs:
         id: plan
         run: |
           set +e
-          terraform plan -detailed-exitcode -lock-timeout=5m -no-color -out=tfplan
+          terraform plan -destroy -detailed-exitcode -lock-timeout=5m -no-color -out=tfplan
           code=$?
           set -e
           # 0 = no changes, 2 = changes, anything else is an error.
@@ -88,11 +77,9 @@ jobs:
 
       - name: Plan summary
         if: always()
-        env:
-          ACTION: ${{ inputs.action }}
         run: |
           {
-            echo "### terraform ${ACTION}: dev/platform"
+            echo "### terraform destroy: dev/platform"
             echo '```'
             terraform show -no-color tfplan 2>&1 | head -c 100000 || echo "no plan was produced"
             echo '```'
@@ -102,10 +89,10 @@ jobs:
       # bucket (dev/*), not to a workflow artifact on a public repo.
       - name: Save the plan
         id: save
-        if: steps.plan.outputs.has_changes == 'true' && inputs.action != 'plan'
+        if: steps.plan.outputs.has_changes == 'true'
         run: |
           account_id=$(aws sts get-caller-identity --query Account --output text)
-          key="dev/plans/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tfplan"
+          key="dev/plans/destroy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tfplan"
           aws s3 cp tfplan "s3://loria-retail-tfstate-${account_id}-${TF_VAR_aws_region}/${key}"
           echo "plan_key=${key}" >> "$GITHUB_OUTPUT"
           echo "plan_sha256=$(sha256sum tfplan | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
@@ -114,9 +101,9 @@ jobs:
         if: failure()
         run: terraform state list || true
 
-  apply:
+  destroy:
     needs: plan
-    if: inputs.action != 'plan' && needs.plan.outputs.has_changes == 'true'
+    if: needs.plan.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
     environment: dev
     timeout-minutes: 90
@@ -153,15 +140,15 @@ jobs:
           echo "${PLAN_SHA256}  tfplan" | sha256sum --check
 
       # A saved plan is refused if the state changed since it was made.
-      - name: Apply
+      - name: Destroy
         run: terraform apply -lock-timeout=5m -no-color tfplan
 
-      - name: Outputs
+      - name: Remaining resources
         run: |
           {
-            echo "### Outputs"
-            echo '```json'
-            terraform output -json
+            echo "### Resources left in dev/platform state"
+            echo '```'
+            terraform state list || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 

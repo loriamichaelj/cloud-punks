@@ -8,7 +8,7 @@ terraform {
     }
   }
 
-  # Bucket, key and region come from -backend-config in infra-create.yml and infra-destroy.yml.
+  # Bucket, key and region come from -backend-config in platform-create.yml and platform-destroy.yml.
   backend "s3" {
     use_lockfile = true
     encrypt      = true

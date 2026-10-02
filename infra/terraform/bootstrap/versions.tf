@@ -8,7 +8,7 @@ terraform {
     }
   }
 
-  # Bucket, key and region come from -backend-config in bootstrap.yml.
+  # Bucket, key and region come from -backend-config in aws-ci-roles.yml.
   backend "s3" {
     use_lockfile = true
     encrypt      = true

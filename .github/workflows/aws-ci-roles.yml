@@ -1,24 +1,23 @@
-name: bootstrap
+name: "AWS: CI roles"
 
-# Calls state-bucket.yml, then creates the cloudbatch818-loria-* roles.
+# Creates the cloudbatch818-loria-* CI roles with the bootstrap Terraform stack.
+# Needs the state bucket from aws-state-bucket.yml; it calls no other workflow.
 # Manual only; the `bootstrap` environment's required reviewer is the gate.
 on:
   workflow_dispatch:
+
+run-name: aws-ci-roles
 
 permissions:
   contents: read
   id-token: write
 
 concurrency:
-  group: bootstrap
+  group: aws-ci-roles
   cancel-in-progress: false
 
 jobs:
-  state-bucket:
-    uses: ./.github/workflows/state-bucket.yml
-
   roles:
-    needs: state-bucket
     runs-on: ubuntu-latest
     environment: bootstrap
     timeout-minutes: 20
@@ -31,7 +30,6 @@ jobs:
       TF_VAR_aws_region: ${{ vars.AWS_REGION }}
       # Immutable subject claims (the repo's OIDC setting): names plus numeric IDs.
       TF_VAR_oidc_subject_prefix: repo:${{ github.repository_owner }}@${{ github.repository_owner_id }}/${{ github.event.repository.name }}@${{ github.repository_id }}
-      TF_VAR_state_bucket_name: ${{ needs.state-bucket.outputs.bucket }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -46,6 +44,17 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN_BOOTSTRAP }}
           aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Find the state bucket
+        run: |
+          set -euo pipefail
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          bucket="loria-retail-tfstate-${account_id}-${TF_VAR_aws_region}"
+          if ! aws s3api head-bucket --bucket "$bucket"; then
+            echo "State bucket ${bucket} is missing or not accessible: run aws-state-bucket first" >&2
+            exit 1
+          fi
+          echo "TF_VAR_state_bucket_name=${bucket}" >> "$GITHUB_ENV"
 
       - name: Init
         run: |
