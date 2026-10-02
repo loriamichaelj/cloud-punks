@@ -1,0 +1,87 @@
+name: "App: images"
+
+# Builds the five application images and pushes them to ECR as
+# loria-retail/<name>:sha-<git sha>, as cloudbatch818-loria-retail-deploy-dev.
+# Manual only; the `dev` environment's required reviewer approves the run.
+# One job, so one approval covers all five images.
+#
+# Images are built natively for arm64 (the EKS nodes are Graviton) on a hosted
+# arm64 runner. ECR tags are immutable, so an image whose tag already exists is
+# not rebuilt; its existing digest is reported instead.
+on:
+  workflow_dispatch:
+
+run-name: app-images
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: app-images
+  cancel-in-progress: false
+
+jobs:
+  build-push:
+    runs-on: ubuntu-24.04-arm
+    environment: dev
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_DEPLOY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to ECR
+        run: |
+          set -euo pipefail
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          registry="${account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          echo "REGISTRY=${registry}" >> "$GITHUB_ENV"
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin "$registry"
+
+      - name: Build and push
+        run: |
+          set -euo pipefail
+          tag="sha-${GITHUB_SHA}"
+          summary="$(mktemp)"
+          {
+            echo "### Images pushed as \`${tag}\`"
+            echo
+            echo "| Repository | Digest | Result |"
+            echo "| --- | --- | --- |"
+          } > "$summary"
+
+          # repo, Dockerfile, build context
+          build_push() {
+            repo="loria-retail/$1"
+            image="${REGISTRY}/${repo}"
+            if digest=$(aws ecr describe-images --repository-name "$repo" \
+                --image-ids "imageTag=${tag}" \
+                --query 'imageDetails[0].imageDigest' --output text 2>/dev/null); then
+              echo "${repo}:${tag} already exists, not rebuilding"
+              result="already existed"
+            else
+              docker buildx build --platform linux/arm64 --provenance=false --push \
+                -f "$2" -t "${image}:${tag}" --metadata-file "meta-$1.json" "$3"
+              digest=$(jq -r '."containerimage.digest"' "meta-$1.json")
+              result="pushed"
+            fi
+            echo "| \`${repo}\` | \`${digest}\` | ${result} |" >> "$summary"
+          }
+
+          # The service images build from the repo root so libs/common is included.
+          build_push product       services/product-service/Dockerfile       .
+          build_push inventory     services/inventory-service/Dockerfile     .
+          build_push order         services/order-service/Dockerfile         .
+          build_push notification  services/notification-service/Dockerfile  .
+          # The UI builds from ui/ only. VITE_DEMO_TOOLS stays at its default, false.
+          build_push ui            ui/Dockerfile                             ui
+
+          cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+          cat "$summary"
