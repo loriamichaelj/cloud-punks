@@ -24,6 +24,7 @@ The OIDC provider and the `cloudbatch818-loria-retail-bootstrap` role are create
 | `data/` | RDS for PostgreSQL 17, ElastiCache for Valkey (TLS), the three DynamoDB tables, one KMS key |
 | `events/` | The EventBridge bus, three routing rules, queues with DLQs (SSE, `aws:SourceArn` queue policies), the 7-day archive, and the low-stock Lambda with its log group, role, dead-letter queue, rule, target and invoke permission |
 | `runners/` | One ephemeral in-VPC GitHub runner (label `retail-vpc`): launch template, Auto Scaling group of one, instance role, security group, and the empty Secrets Manager secret for its token |
+| `monitoring/` | One SNS topic and 17 CloudWatch alarms on AWS's own metrics: each dead-letter queue above 0 (the three plus the Lambda's), the oldest message in each queue over 120 s, EventBridge `FailedInvocations` per rule, Lambda errors, and RDS CPU, connections, freeable memory, free storage and transaction-ID wraparound. With an address, an email subscription and a monthly Budgets alert |
 | `pod-identity-role/` | One IAM role for one Kubernetes service account through EKS Pod Identity, plus the association |
 | `github-oidc/` | One IAM role trusting one exact GitHub OIDC `sub` |
 
@@ -49,6 +50,12 @@ Everything created is prefixed `loria-` (bucket, VPC, cluster `loria-retail-dev`
 ## Checks
 
 `pr.yml` runs `terraform fmt -check`, `validate` for the three stacks, tflint (`.tflint.hcl`, with the AWS ruleset) and Checkov on every pull request. Checkov exceptions are inline `#checkov:skip=ID:reason` lines next to the resource; Checkov resolves modules with the caller's variables, so run it over `envs/` as well as `modules/`. There is no `terraform plan` on pull requests.
+
+## Alarms and the budget (Phase 4, P4.1)
+
+The `monitoring` module is applied by `platform-create.yml`. Two things come first: run `bootstrap-ci-roles.yml` once so the `tf-dev` role may manage Budgets (`budgets:*`), and set the `dev` **environment secret** `ALARM_EMAIL` to the address that should hear about alarms (a secret, so it is masked in logs and never in the repository). Without the secret the topic and alarms are still created, with no subscription and no budget. After the first apply AWS emails a confirmation link to that address; click it, or nothing is delivered. The budget is limited to resources tagged `Project=retail-platform`, so the `Project` cost-allocation tag must be activated in Billing, Cost allocation tags (AWS shows the tag there only after it has seen it on a resource, and activation can take a day); until then the budget sees no cost. Thresholds are variables of the module.
+
+Not here yet: the ALB alarms (5xx rate, p95 `TargetResponseTime`). The controller creates the ALB from the Ingress, after this stack, so its CloudWatch dimension (`app/<name>/<id>`) does not exist at plan time. Pod-restart, outbox-age and `orders_stuck` alerts come with the metrics stack (P4.3 and P4.4).
 
 ## Known gaps and choices to revisit
 

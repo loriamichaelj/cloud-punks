@@ -68,3 +68,10 @@ output "low_stock_log_group_name" {
   value = module.events.low_stock_log_group_name
 }
 
+output "alarm_topic_arn" {
+  value = module.monitoring.topic_arn
+}
+
+output "alarm_names" {
+  value = module.monitoring.alarm_names
+}

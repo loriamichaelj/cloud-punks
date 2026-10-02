@@ -40,3 +40,12 @@ output "postgres_security_group_id" {
   description = "Allow more clients in with aws_vpc_security_group_ingress_rule (the runner does, for db_init)."
   value       = aws_security_group.postgres.id
 }
+
+output "db_identifier" {
+  description = "The RDS instance identifier, for the CloudWatch alarms."
+  value       = aws_db_instance.this.identifier
+}
+
+output "db_allocated_storage_gib" {
+  value = aws_db_instance.this.allocated_storage
+}

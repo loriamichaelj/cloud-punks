@@ -40,3 +40,16 @@ output "low_stock_dlq_arn" {
   description = "For the DLQ alarms."
   value       = aws_sqs_queue.low_stock_dlq.arn
 }
+
+output "rule_names" {
+  description = "Route name => EventBridge rule name, for the FailedInvocations alarms."
+  value       = { for k, r in aws_cloudwatch_event_rule.route : k => r.name }
+}
+
+output "low_stock_rule_name" {
+  value = aws_cloudwatch_event_rule.low_stock.name
+}
+
+output "low_stock_dlq_name" {
+  value = aws_sqs_queue.low_stock_dlq.name
+}

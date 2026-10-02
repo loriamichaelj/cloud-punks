@@ -81,3 +81,23 @@ resource "aws_vpc_security_group_ingress_rule" "postgres_from_runner" {
   from_port                    = 5432
   to_port                      = 5432
 }
+
+module "monitoring" {
+  source = "../../../modules/monitoring"
+
+  name        = var.cluster_name
+  alarm_email = var.alarm_email
+
+  monthly_budget_usd = var.monthly_budget_usd
+
+  event_bus_name          = module.events.bus_name
+  queue_names             = module.events.queue_names
+  dlq_names               = module.events.dlq_names
+  rule_names              = module.events.rule_names
+  low_stock_function_name = module.events.low_stock_function_name
+  low_stock_rule_name     = module.events.low_stock_rule_name
+  low_stock_dlq_name      = module.events.low_stock_dlq_name
+
+  db_identifier            = module.data.db_identifier
+  db_allocated_storage_gib = module.data.db_allocated_storage_gib
+}

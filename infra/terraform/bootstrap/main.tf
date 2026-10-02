@@ -40,6 +40,7 @@ data "aws_iam_policy_document" "tf" {
       "acm:*",
       "application-autoscaling:*",
       "autoscaling:*",
+      "budgets:*",
       "cloudwatch:*",
       "dynamodb:*",
       "ec2:*",

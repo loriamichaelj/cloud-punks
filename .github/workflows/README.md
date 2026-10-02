@@ -6,7 +6,7 @@ Every workflow is independent: none calls another, each has its own concurrency 
 | --- | --- | --- | --- | --- |
 | `bootstrap-state-bucket.yml` | `workflow_dispatch` | `bootstrap` | `cloudbatch818-loria-retail-bootstrap` (`AWS_ROLE_ARN_BOOTSTRAP`) | `bootstrap-state-bucket` |
 | `bootstrap-ci-roles.yml` | `workflow_dispatch` | `bootstrap` | `cloudbatch818-loria-retail-bootstrap` (`AWS_ROLE_ARN_BOOTSTRAP`) | `bootstrap-ci-roles` |
-| `platform-create.yml` | `workflow_dispatch` with an `action` choice: `plan` (print the plan) or `apply` (plan, then apply after a second approval) | `dev` | `cloudbatch818-loria-retail-tf-dev` (`AWS_ROLE_ARN_TF`) | `platform-dev` |
+| `platform-create.yml` | `workflow_dispatch` with an `action` choice: `plan` (print the plan) or `apply` (plan, then apply after a second approval; the plan reads the `dev` environment secret `ALARM_EMAIL` for the alarm and budget email) | `dev` | `cloudbatch818-loria-retail-tf-dev` (`AWS_ROLE_ARN_TF`) | `platform-dev` |
 | `platform-destroy.yml` | `workflow_dispatch` (a saved `plan -destroy`, then a second approval to apply it) | `dev` | `cloudbatch818-loria-retail-tf-dev` (`AWS_ROLE_ARN_TF`) | `platform-dev` |
 | `addons-create.yml` | `workflow_dispatch` with an `action` choice: `plan` or `apply` (plan, then apply after a second approval). Runs on the `retail-vpc` runner | `dev` | `cloudbatch818-loria-retail-tf-dev` (`AWS_ROLE_ARN_TF`) | `platform-dev` |
 | `addons-destroy.yml` | `workflow_dispatch` (a saved `plan -destroy`, then a second approval). Runs on the `retail-vpc` runner | `dev` | `cloudbatch818-loria-retail-tf-dev` (`AWS_ROLE_ARN_TF`) | `platform-dev` |

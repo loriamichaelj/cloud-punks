@@ -81,6 +81,11 @@ jobs:
 
       - name: Plan
         id: plan
+        env:
+          # Where alarm and budget notifications go: the dev environment secret ALARM_EMAIL. Empty (the secret
+          # is not set) means no email subscription and no budget; the alarms and the topic are still created.
+          # The variable is sensitive, so the plan shows it as (sensitive value).
+          TF_VAR_alarm_email: ${{ secrets.ALARM_EMAIL }}
         run: |
           set +e
           terraform plan -detailed-exitcode -lock-timeout=5m -no-color -out=tfplan

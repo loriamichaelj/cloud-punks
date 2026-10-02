@@ -52,3 +52,16 @@ variable "github_repository" {
   type        = string
   default     = "loriamichaelj/retail-platform"
 }
+
+variable "alarm_email" {
+  description = "Where alarms and budget warnings go. The dev environment secret ALARM_EMAIL, passed by platform-create.yml; empty means no subscription and no budget."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "monthly_budget_usd" {
+  description = "Monthly cost ceiling for the Budgets alert (DESIGN.md section 13, Phase 4)."
+  type        = number
+  default     = 350
+}
