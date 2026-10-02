@@ -1,0 +1,185 @@
+name: "Promote"
+
+# Deploys an image already tested in dev to stage or prod, by digest. The target is the branch the
+# workflow runs from: run it from `stage` and it deploys to the `stage` environment, from `prod` to
+# `prod`. Nothing else picks the environment.
+#
+# Those branches accept changes only through a reviewed pull request (never a direct push), and the
+# `stage` and `prod` GitHub Environments accept only their own branch and need a reviewer. So a
+# promotion is: pull request dev -> stage (or stage -> prod), reviewer merges, this workflow runs from
+# that branch, reviewer approves the environment.
+#
+# NOT DEPLOYED, NOT PROVEN. Only dev exists. The `check` job stops the run until the target environment
+# has been provisioned (a cluster, a deploy role in `AWS_ROLE_ARN_DEPLOY`, per-environment Helm values
+# and a runner that can reach its cluster API). Nothing here has run against a cluster.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag already tested in dev, sha-<40 hex chars>"
+        type: string
+        required: true
+
+run-name: promote ${{ github.ref_name }} ${{ inputs.tag }}
+
+permissions:
+  contents: read
+  id-token: write
+
+# One promotion at a time per environment, and never alongside a dev deploy.
+concurrency:
+  group: promote-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  NAMESPACE: retail
+  HELM_CHART: deploy/helm/retail-service
+  HELM_VALUES: deploy/helm/values
+  TARGET: ${{ github.ref_name }}
+  TAG: ${{ inputs.tag }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref_name }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Check the request and the environment
+        env:
+          DEPLOY_ROLE: ${{ vars.AWS_ROLE_ARN_DEPLOY }}
+        run: |
+          set -euo pipefail
+          case "$TARGET" in
+            stage|prod) ;;
+            *) echo "promote runs from the stage or prod branch, not ${TARGET}" >&2; exit 1 ;;
+          esac
+          if ! [[ "$TAG" =~ ^sha-[0-9a-f]{40}$ ]]; then
+            echo "the tag must look like sha-<40 hex chars>, got: ${TAG}" >&2
+            exit 1
+          fi
+          # The image must come from code this branch holds: what was reviewed into the branch.
+          if ! git merge-base --is-ancestor "${TAG#sha-}" HEAD; then
+            echo "commit ${TAG#sha-} is not in the history of ${TARGET}: promote it by pull request first" >&2
+            exit 1
+          fi
+          if [ -z "$DEPLOY_ROLE" ]; then
+            echo "the ${TARGET} environment is not provisioned: it has no AWS_ROLE_ARN_DEPLOY variable" >&2
+            exit 1
+          fi
+          missing=0
+          for f in common secrets product-service inventory-service order-service inventory-consumer order-relay order-consumer notification-service notification-consumer ui ingress; do
+            [ -f "${HELM_VALUES}/values-${f}-${TARGET}.yaml" ] || { echo "missing ${HELM_VALUES}/values-${f}-${TARGET}.yaml" >&2; missing=1; }
+          done
+          exit "$missing"
+
+  deploy:
+    needs: check
+    # The cluster API is private, so this runs on an in-VPC runner of the target environment.
+    runs-on: [self-hosted, retail-vpc]
+    environment: ${{ github.ref_name }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_DEPLOY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      # Deploy what ECR holds under the tag now, pinned by digest: the tag is immutable, but the digest
+      # is what the cluster verifies, and it is what the run summary records.
+      - name: Resolve the image digests
+        run: |
+          set -euo pipefail
+          : > digests.env
+          echo "### promote \`${TAG}\` to \`${TARGET}\`" >> "$GITHUB_STEP_SUMMARY"
+          for r in product inventory order notification ui; do
+            digest=$(aws ecr describe-images --repository-name "loria-retail/${r}" \
+              --image-ids "imageTag=${TAG}" --query 'imageDetails[0].imageDigest' --output text)
+            if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "loria-retail/${r}:${TAG} is not in ECR" >&2
+              exit 1
+            fi
+            echo "DIGEST_${r}=${digest}" >> digests.env
+            echo "- ${r}: \`${digest}\`" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Deploy the releases
+        env:
+          EKS_CLUSTER_PREFIX: loria-retail
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source digests.env
+          cluster="${EKS_CLUSTER_PREFIX}-${TARGET}"
+          aws eks update-kubeconfig --name "$cluster" --alias "$cluster" --region "$AWS_REGION"
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          registry="${account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          helm_cmd=(helm --kube-context "$cluster" --namespace "$NAMESPACE")
+          kube=(kubectl --context "$cluster" --namespace "$NAMESPACE")
+
+          echo "== secrets"
+          "${helm_cmd[@]}" upgrade --install --wait --timeout 5m \
+            secrets "$HELM_CHART" -f "${HELM_VALUES}/values-secrets-${TARGET}.yaml"
+
+          for pair in \
+            product-service:product inventory-service:inventory order-service:order \
+            inventory-consumer:inventory order-relay:order order-consumer:order \
+            notification-service:notification notification-consumer:notification; do
+            release="${pair%%:*}"
+            image="${pair##*:}"
+            var="DIGEST_${image}"
+            echo "== ${release}"
+            "${helm_cmd[@]}" upgrade --install --rollback-on-failure --wait --timeout 10m \
+              "$release" "$HELM_CHART" \
+              -f "${HELM_VALUES}/values-common-${TARGET}.yaml" -f "${HELM_VALUES}/values-${release}-${TARGET}.yaml" \
+              --set "image.repository=${registry}/loria-retail/${image}" --set "image.digest=${!var}"
+          done
+
+          echo "== ui"
+          "${helm_cmd[@]}" upgrade --install --rollback-on-failure --wait --timeout 10m \
+            ui "$HELM_CHART" -f "${HELM_VALUES}/values-ui-${TARGET}.yaml" \
+            --set "image.repository=${registry}/loria-retail/ui" --set "image.digest=${DIGEST_ui}"
+
+          echo "== gateway (the shared Ingress)"
+          "${helm_cmd[@]}" upgrade --install --rollback-on-failure --wait --timeout 5m \
+            gateway "$HELM_CHART" -f "${HELM_VALUES}/values-ingress-${TARGET}.yaml"
+
+          "${kube[@]}" get pods
+
+      # A smoke test, not the acceptance suite: that writes test orders, which a real environment
+      # should not receive. Orders are placed in dev before the promotion.
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          cluster="loria-retail-${TARGET}"
+          host=""
+          for _ in $(seq 1 60); do
+            host=$(kubectl --context "$cluster" --namespace "$NAMESPACE" get ingress gateway \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+            [ -n "$host" ] && break
+            sleep 10
+          done
+          [ -n "$host" ] || { echo "the Ingress has no ALB address after 10 minutes" >&2; exit 1; }
+          code=""
+          for _ in $(seq 1 60); do
+            code=$(curl -s -m 5 -o /dev/null -w '%{http_code}' "http://${host}/" || true)
+            [ "$code" = "200" ] && break
+            sleep 10
+          done
+          [ "$code" = "200" ] || { echo "the storefront answered ${code:-nothing} after 10 minutes" >&2; exit 1; }
+          echo "- the storefront answers 200" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Show cluster state on failure
+        if: failure()
+        run: |
+          cluster="loria-retail-${TARGET}"
+          kubectl --context "$cluster" --namespace "$NAMESPACE" get pods,events || true
+          helm --kube-context "$cluster" --namespace "$NAMESPACE" list || true

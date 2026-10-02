@@ -1,0 +1,152 @@
+name: "App: rollback"
+
+# Puts one release, or every application release, back on an earlier Helm revision in dev. It builds
+# and pushes nothing: Helm keeps the earlier revision's manifests, and its images are still in ECR
+# (immutable tags, keep 30).
+#
+# A rollback changes what runs, not the database. Migrations are forward-only and backward compatible
+# (CLAUDE.md), so the previous release must run on the schema the newer one migrated; if a change was
+# not backward compatible, fix forward with app-deploy instead.
+#
+# Needs the `dev` approval and the retail-vpc runner. `release: all` puts every release back one
+# revision, which is right when they were last deployed together by app-deploy. To go back further, or
+# to one specific revision, roll back one release at a time with `revision`.
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Release to roll back, or all"
+        type: choice
+        required: true
+        default: all
+        options:
+          - all
+          - product-service
+          - inventory-service
+          - order-service
+          - inventory-consumer
+          - order-relay
+          - order-consumer
+          - notification-service
+          - notification-consumer
+          - ui
+      revision:
+        description: "Helm revision to go back to (a single release only). Empty: the previous revision"
+        type: string
+        required: false
+        default: ""
+
+run-name: app-rollback ${{ inputs.release }} ${{ inputs.revision }}
+
+permissions:
+  contents: read
+  id-token: write
+
+# Shares the group with app-deploy and the rest so a rollback and a deploy never overlap.
+concurrency:
+  group: app-dev
+  cancel-in-progress: false
+
+env:
+  EKS_CLUSTER: loria-retail-dev
+  NAMESPACE: retail
+
+jobs:
+  rollback:
+    # The cluster API is private, so this runs on the in-VPC runners.
+    runs-on: [self-hosted, retail-vpc]
+    environment: dev
+    timeout-minutes: 60
+    env:
+      INPUT_RELEASE: ${{ inputs.release }}
+      INPUT_REVISION: ${{ inputs.revision }}
+    steps:
+      - name: Check the request
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != "refs/heads/dev" ]; then
+            echo "app-rollback runs from the dev branch only, not ${GITHUB_REF}" >&2
+            exit 1
+          fi
+          if [ -n "$INPUT_REVISION" ]; then
+            if [ "$INPUT_RELEASE" = "all" ]; then
+              echo "a revision names one release's history: pick a release, or leave the revision empty" >&2
+              exit 1
+            fi
+            if ! [[ "$INPUT_REVISION" =~ ^[1-9][0-9]{0,3}$ ]]; then
+              echo "the revision must be a positive number, got: ${INPUT_REVISION}" >&2
+              exit 1
+            fi
+          fi
+          echo "### app-rollback: \`${INPUT_RELEASE}\` ${INPUT_REVISION:+to revision ${INPUT_REVISION}}" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_DEPLOY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Roll back
+        run: |
+          set -euo pipefail
+          # Always name the context explicitly.
+          aws eks update-kubeconfig --name "$EKS_CLUSTER" --alias "$EKS_CLUSTER" --region "$AWS_REGION"
+          helm_cmd=(helm --kube-context "$EKS_CLUSTER" --namespace "$NAMESPACE")
+          kube=(kubectl --context "$EKS_CLUSTER" --namespace "$NAMESPACE")
+
+          if [ "$INPUT_RELEASE" = "all" ]; then
+            # Dependents first would not matter here: no release waits for another at run time.
+            releases="product-service inventory-service order-service inventory-consumer order-relay order-consumer notification-service notification-consumer ui"
+          else
+            releases="$INPUT_RELEASE"
+          fi
+
+          echo "== before"
+          "${kube[@]}" get deploy -o custom-columns='NAME:.metadata.name,IMAGE:.spec.template.spec.containers[0].image'
+
+          # Check every release has a revision to go back to before changing any of them.
+          for r in $releases; do
+            echo "== history ${r}"
+            "${helm_cmd[@]}" history "$r" --max 5
+            current=$("${helm_cmd[@]}" history "$r" --max 1 -o json | jq -r '.[0].revision')
+            target="${INPUT_REVISION:-$((current - 1))}"
+            if [ "$target" -lt 1 ] || [ "$target" -ge "$current" ]; then
+              echo "${r} is at revision ${current}: revision ${target} is not an earlier one" >&2
+              exit 1
+            fi
+          done
+
+          for r in $releases; do
+            echo "== rollback ${r}"
+            if [ -n "$INPUT_REVISION" ]; then
+              "${helm_cmd[@]}" rollback "$r" "$INPUT_REVISION" --wait --timeout 10m
+            else
+              "${helm_cmd[@]}" rollback "$r" --wait --timeout 10m
+            fi
+          done
+
+          echo "== after"
+          "${kube[@]}" get deploy -o custom-columns='NAME:.metadata.name,IMAGE:.spec.template.spec.containers[0].image,READY:.status.readyReplicas'
+          "${kube[@]}" get deploy -o custom-columns='NAME:.metadata.name,IMAGE:.spec.template.spec.containers[0].image' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Show cluster state on failure
+        if: failure()
+        run: |
+          kubectl --context "$EKS_CLUSTER" --namespace "$NAMESPACE" get pods,events || true
+          helm --kube-context "$EKS_CLUSTER" --namespace "$NAMESPACE" list || true
+
+      # The same acceptance suite as app-deploy would need the checkout and port-forwards; a rollback
+      # only checks that the storefront still answers. Run app-verify afterwards to compare digests.
+      - name: Check the storefront answers
+        run: |
+          set -euo pipefail
+          host=$(kubectl --context "$EKS_CLUSTER" --namespace "$NAMESPACE" get ingress gateway \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          [ -n "$host" ] || { echo "the gateway Ingress has no address" >&2; exit 1; }
+          code=""
+          for _ in $(seq 1 30); do
+            code=$(curl -s -m 5 -o /dev/null -w '%{http_code}' "http://${host}/" || true)
+            [ "$code" = "200" ] && break
+            sleep 10
+          done
+          [ "$code" = "200" ] || { echo "the storefront answered ${code:-nothing} after 5 minutes" >&2; exit 1; }
+          echo "- the storefront answers 200" >> "$GITHUB_STEP_SUMMARY"

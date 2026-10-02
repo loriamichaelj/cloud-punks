@@ -1,0 +1,274 @@
+name: "PR: checks"
+
+# The automatic gate for every pull request into dev, stage or prod. It runs by itself, on GitHub's
+# hosted runners, with a read-only token, no secrets and no AWS access (and so no OIDC token): a pull
+# request is untrusted code, and a fork's can read nothing. It never touches the dev environment or the
+# self-hosted runner. Its only output is pass or fail checks on the PR.
+#
+#   detect         decides from the changed files which of the checks below this change needs.
+#   code           `make lint test`: ruff, mypy per service, the OpenAPI and UI checks, Helm lint and
+#                  kubeconform over every values file, and every unit test with the coverage gates.
+#   images         builds each of the five images and scans it with Trivy (fixable HIGH and CRITICAL fail).
+#   terraform      fmt, validate, tflint and Checkov over infra/terraform. No `terraform plan`: that needs
+#                  AWS, and runs only in platform-create.yml behind the dev approval.
+#   config-scan    Trivy over Dockerfiles, Helm and Terraform for misconfigurations.
+#   workflows      actionlint over .github/workflows.
+#   ci             the one check branch protection requires. It fails if any job above failed or was
+#                  cancelled; a job skipped because nothing it covers changed is fine.
+#
+# Integration tests, the failure drills and the browser journeys need LocalStack and a secret, so they stay
+# local (`make itest`, `make e2e`, `make ui-e2e`). The cloud acceptance suite in app-deploy.yml covers that
+# layer against real AWS, after a deploy.
+on:
+  pull_request:
+    branches: [dev, stage, prod]
+
+run-name: pr ${{ github.event.pull_request.number }}
+
+permissions:
+  contents: read
+
+# A newer push to the same pull request replaces the run in progress.
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  TRIVY_VERSION: v0.75.0
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.flags.outputs.code }}
+      images: ${{ steps.flags.outputs.images }}
+      infra: ${{ steps.flags.outputs.infra }}
+      config: ${{ steps.flags.outputs.config }}
+      workflows: ${{ steps.flags.outputs.workflows }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Decide which checks this change needs
+        id: flags
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # Three dots: what the pull request changed since it branched, not what the base gained since.
+          changed=$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}")
+          echo "Changed files:"
+          while IFS= read -r file; do echo "  ${file}"; done <<<"$changed"
+
+          any() { echo "$changed" | grep -Eq "$1" && echo true || echo false; }
+
+          # Changing this file changes how everything is checked, so it checks everything.
+          if echo "$changed" | grep -Fxq ".github/workflows/pr.yml"; then everything=true; else everything=false; fi
+
+          # Anything except docs, markdown and the workflows themselves can break the code checks.
+          if echo "$changed" | grep -Evq '^(docs/|\.github/)|\.md$'; then code=true; else code=false; fi
+          images=$(any '^(services/|libs/|ui/|pyproject\.toml$|uv\.lock$|local/seed/|\.dockerignore$|\.trivyignore\.yaml$)')
+          infra=$(any '^(infra/|\.tflint\.hcl$)')
+          config=$(any '^(infra/|deploy/|ui/Dockerfile$|services/[^/]+/Dockerfile$|\.trivyignore\.yaml$)')
+          workflows=$(any '^\.github/')
+
+          if [ "$everything" = true ]; then code=true; images=true; infra=true; config=true; workflows=true; fi
+          {
+            echo "code=${code}"
+            echo "images=${images}"
+            echo "infra=${infra}"
+            echo "config=${config}"
+            echo "workflows=${workflows}"
+          } | tee -a "$GITHUB_OUTPUT"
+
+  code:
+    needs: detect
+    if: needs.detect.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      # Same uv version as the Dockerfiles.
+      - name: Install uv
+        run: python -m pip install --disable-pip-version-check uv==0.12.15
+
+      # k8s-lint validates the rendered manifests with kubeconform when it is installed.
+      - name: Install kubeconform
+        run: |
+          set -euo pipefail
+          curl -fsSLo kubeconform.tgz https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz
+          echo "9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883  kubeconform.tgz" | sha256sum -c -
+          tar -xzf kubeconform.tgz kubeconform
+          sudo install -m 0755 kubeconform /usr/local/bin/kubeconform
+
+      - name: Lint and unit tests
+        env:
+          UV_PYTHON_DOWNLOADS: never
+        run: make lint test
+
+  images:
+    needs: detect
+    if: needs.detect.outputs.images == 'true'
+    name: images (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: product, dockerfile: services/product-service/Dockerfile, context: . }
+          - { name: inventory, dockerfile: services/inventory-service/Dockerfile, context: . }
+          - { name: order, dockerfile: services/order-service/Dockerfile, context: . }
+          - { name: notification, dockerfile: services/notification-service/Dockerfile, context: . }
+          - { name: ui, dockerfile: ui/Dockerfile, context: ui }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Built for the runner's own architecture and kept local: it is scanned, never pushed. The OS
+      # packages and libraries Trivy reports are the same on arm64, which is what app-images.yml ships.
+      - name: Build the image
+        env:
+          NAME: ${{ matrix.name }}
+          DOCKERFILE: ${{ matrix.dockerfile }}
+          CONTEXT: ${{ matrix.context }}
+        run: docker buildx build --load -f "$DOCKERFILE" -t "scan/${NAME}:pr" "$CONTEXT"
+
+      # Fixable HIGH and CRITICAL fail the job. Findings with no fix yet are not held against the change.
+      - name: Scan the image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          image-ref: scan/${{ matrix.name }}:pr
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+          trivyignores: .trivyignore.yaml
+
+  terraform:
+    needs: detect
+    if: needs.detect.outputs.infra == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.4
+          terraform_wrapper: false
+
+      - name: Format and validate
+        run: |
+          set -euo pipefail
+          terraform fmt -check -recursive infra/terraform
+          for dir in bootstrap envs/dev/platform envs/dev/cluster-addons; do
+            echo "== validate ${dir}"
+            terraform -chdir="infra/terraform/${dir}" init -backend=false -input=false >/dev/null
+            terraform -chdir="infra/terraform/${dir}" validate
+          done
+
+      - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
+        with:
+          tflint_version: v0.64.0
+
+      # Warnings and errors fail; notices (for example the unmodified default parameter group) do not.
+      - name: tflint
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # only to download the AWS ruleset without hitting rate limits
+        run: |
+          set -euo pipefail
+          tflint --init --config="${GITHUB_WORKSPACE}/.tflint.hcl"
+          cd infra/terraform
+          tflint --config="${GITHUB_WORKSPACE}/.tflint.hcl" --recursive --minimum-failure-severity=warning --format compact
+
+      # Every exception is an inline `#checkov:skip=ID:reason` next to its resource, so a new failing
+      # check is a failure here and an accepted one explains itself where it lives.
+      - name: Checkov
+        run: |
+          docker run --rm -v "${GITHUB_WORKSPACE}/infra/terraform:/tf:ro" \
+            bridgecrew/checkov@sha256:617c76e3f9b1f7907ebca9abb6b9d746844edcb48e9bd775e4692c69c1c6ac47 \
+            -d /tf --framework terraform --compact --quiet
+
+  config-scan:
+    needs: detect
+    if: needs.detect.outputs.config == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Scan Dockerfiles, Helm and Terraform
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          scan-type: config
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          format: table
+          trivyignores: .trivyignore.yaml
+          skip-dirs: .venv,ui/node_modules
+
+  workflows:
+    needs: detect
+    if: needs.detect.outputs.workflows == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # .github/actionlint.yaml declares the retail-vpc runner label.
+      - name: actionlint
+        run: |
+          set -euo pipefail
+          curl -fsSLo actionlint.tgz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tgz" | sha256sum -c -
+          tar -xzf actionlint.tgz actionlint
+          ./actionlint
+
+  # The single check that branch protection requires. Always runs, and fails if any job above failed or
+  # was cancelled. A skipped job (nothing it covers changed) counts as fine.
+  ci:
+    name: ci
+    needs: [detect, code, images, terraform, config-scan, workflows]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to have passed or been skipped
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          if echo "$NEEDS" | jq -e 'any(.[]; .result == "failure" or .result == "cancelled")' >/dev/null; then
+            echo "at least one job failed or was cancelled" >&2
+            exit 1
+          fi
