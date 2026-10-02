@@ -1,0 +1,75 @@
+name: "App: seed"
+
+# Loads the starting catalog (20 products in 5 categories) into product_db and the starting
+# stock into the DynamoDB inventory table. The same local/seed/seed.py that `make seed` runs.
+# Idempotent: existing products are never changed and existing stock is never reset, so it is
+# safe to run again after orders have drawn stock down.
+#
+# Runs on the in-VPC runner (RDS is private) as cloudbatch818-loria-retail-db-dev, which can read
+# the product app password, describe the RDS instance and put items into the inventory table.
+# One job, so one approval from the `dev` environment's reviewer.
+#
+# Needs: app-deploy.yml to have run once (its product-service release migrates the schema),
+# app-database.yml (the product_app role and its password) and platform-create.yml (the table).
+# The password is read into this step's memory only: it is masked, never printed, never written
+# to the environment file and never passed as an argument.
+on:
+  workflow_dispatch:
+
+run-name: app-seed
+
+permissions:
+  contents: read
+  id-token: write
+
+# Shares the group with the other app workflows so they never overlap.
+concurrency:
+  group: app-dev
+  cancel-in-progress: false
+
+env:
+  DB_INSTANCE: loria-retail-dev
+  SECRET_PREFIX: loria-retail-dev
+
+jobs:
+  seed:
+    runs-on: [self-hosted, retail-vpc]
+    environment: dev
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_DB }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Install the workspace
+        env:
+          UV_PYTHON_DOWNLOADS: never
+        run: uv sync --all-packages --locked
+
+      - name: Seed the catalog and the stock
+        env:
+          ENVIRONMENT: dev
+          DB_NAME: product_db
+          DB_USER: product_app
+          DB_SSLMODE: require
+          INVENTORY_TABLE: loria-inventory
+        run: |
+          set -euo pipefail
+          endpoint=$(aws rds describe-db-instances --db-instance-identifier "$DB_INSTANCE" \
+            --query 'DBInstances[0].[Endpoint.Address,Endpoint.Port]' --output text)
+          DB_HOST=$(echo "$endpoint" | cut -f1)
+          DB_PORT=$(echo "$endpoint" | cut -f2)
+
+          password=$(aws secretsmanager get-secret-value \
+            --secret-id "${SECRET_PREFIX}/product-app-db" \
+            --query SecretString --output text | jq -r .password)
+          echo "::add-mask::${password}"
+          export DB_HOST DB_PORT DB_PASSWORD="$password"
+          unset password
+
+          uv run --frozen --no-sync python local/seed/seed.py

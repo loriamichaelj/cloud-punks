@@ -35,6 +35,12 @@ variable "db_instance_identifier" {
   default     = "loria-retail-dev"
 }
 
+variable "inventory_table_name" {
+  description = "DynamoDB inventory table the db role may seed (PutItem only). Must match the name the data module creates."
+  type        = string
+  default     = "loria-inventory"
+}
+
 variable "db_secret_prefix" {
   description = "Secrets Manager name prefix the db role may create and read: <prefix>/*."
   type        = string

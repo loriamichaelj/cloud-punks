@@ -159,9 +159,10 @@ data "aws_iam_policy_document" "deploy" {
   }
 }
 
-# Database role: used only by app-database.yml on the in-VPC runner. It reads the RDS master
-# secret to create the application databases and roles, and writes their passwords to Secrets
-# Manager. It can do nothing else: no RDS changes, no other secrets, no ECR, no EKS.
+# Database role: used only by app-database.yml and app-seed.yml on the in-VPC runner. It reads
+# the RDS master secret to create the application databases and roles, writes their passwords to
+# Secrets Manager, and puts the starting stock into the inventory table. It can do nothing else:
+# no RDS changes, no other secrets, no other tables, no ECR, no EKS.
 data "aws_iam_policy_document" "db" {
   statement {
     sid       = "FindTheInstance"
@@ -199,6 +200,33 @@ data "aws_iam_policy_document" "db" {
       "secretsmanager:TagResource",
     ]
     resources = ["arn:aws:secretsmanager:${var.aws_region}:${local.account_id}:secret:${var.db_secret_prefix}/*"]
+  }
+
+  # app-seed.yml: starting stock. PutItem only, on the one table.
+  statement {
+    sid       = "SeedTheInventoryTable"
+    actions   = ["dynamodb:PutItem"]
+    resources = ["arn:aws:dynamodb:${var.aws_region}:${local.account_id}:table/${var.inventory_table_name}"]
+  }
+
+  # The table uses a customer-managed key, so writing to it needs that key, through DynamoDB.
+  statement {
+    sid = "UseTheDataKeyThroughDynamoDb"
+    actions = [
+      "kms:Decrypt",
+      "kms:Encrypt",
+      "kms:ReEncrypt*",
+      "kms:GenerateDataKey*",
+      "kms:DescribeKey",
+      "kms:CreateGrant",
+    ]
+    resources = ["arn:aws:kms:${var.aws_region}:${local.account_id}:key/*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["dynamodb.${var.aws_region}.amazonaws.com"]
+    }
   }
 }
 

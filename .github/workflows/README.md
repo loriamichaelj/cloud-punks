@@ -14,6 +14,7 @@ Every workflow is independent: none calls another, each has its own concurrency 
 | `app-database.yml` | `workflow_dispatch`. Creates `product_db` and `order_db`, their owner and app roles, and the four passwords in Secrets Manager. Runs on the `retail-vpc` runner (approval) | `dev` | `cloudbatch818-loria-retail-db-dev` (`AWS_ROLE_ARN_DB`) | `app-dev` |
 | `app-build.yml` | `workflow_dispatch`. The CI check, no AWS and no approval. Jobs: `prepare`, `test` (`make lint test`), `build` (builds the five images, pushes nothing), `notify` | none | none | `app-dev` |
 | `app-deploy.yml` | `workflow_dispatch` with an optional image `tag` (default `sha-<this commit>`). Jobs: `deploy` (checks the images exist, Helm on the runners, e2e; approval), `notify` | `dev` | `cloudbatch818-loria-retail-deploy-dev` (`AWS_ROLE_ARN_DEPLOY`) | `app-dev` |
+| `app-seed.yml` | `workflow_dispatch`. Loads the 20-product catalog into `product_db` and the starting stock into the inventory table, with the same `local/seed/seed.py` as `make seed`. Runs on the `retail-vpc` runner (approval). Safe to run again | `dev` | `cloudbatch818-loria-retail-db-dev` (`AWS_ROLE_ARN_DB`) | `app-dev` |
 | `app-destroy.yml` | `workflow_dispatch` with a required `tag` (an image tag, or `all`) and an optional `uninstall_releases` (off by default; needs the runners) | `dev` | `cloudbatch818-loria-retail-deploy-dev` (`AWS_ROLE_ARN_DEPLOY`) | `app-dev` |
 
 ## Run order
@@ -25,7 +26,8 @@ Every workflow is independent: none calls another, each has its own concurrency 
 5. `app-database.yml`: on the runner, the application databases, roles and their four Secrets Manager passwords. Needs `platform-create` and the db role from `bootstrap-ci-roles`. Safe to run again.
 6. `app-build.yml`: lint, unit tests and a build of every image. Pushes nothing and needs no AWS, so it can run any time.
 7. `app-images.yml`: pushes the images to ECR. Needs the repositories from `platform-create`.
-8. `app-deploy.yml`: deploys a pushed tag to the cluster. Not runnable yet (see below).
+8. `app-deploy.yml`: deploys a pushed tag to the cluster. Its e2e step needs data and a cloud mode, see below.
+9. `app-seed.yml`: after the first `app-deploy` (its `product-service` release migrates the schema), loads the catalog and stock. The app serves an empty catalog until this has run.
 
 Tearing down, in this order:
 
@@ -35,4 +37,4 @@ Tearing down, in this order:
 
 `platform-create`, `platform-destroy`, `addons-create` and `addons-destroy` share the group `platform-dev`, so none of them overlap. `app-images`, `app-build`, `app-deploy` and `app-destroy` share `app-dev`.
 
-`app-build.yml` runs today. `app-deploy.yml` now has its dev values and workload roles. It needs `app-database.yml` to have run first (it creates the four `loria-retail-dev/{product,order}-{app,owner}-db` secrets), the workload roles from `platform-create`, and the secret store from `addons-create`. It finds the internal ALB's address itself. `app-build.yml` checks and `app-images.yml` publishes; they do not overlap. Only the `dev` environment exists for now.
+`app-build.yml` runs today, and `app-deploy.yml` has run: it installs every release and the internal ALB. Its last step, the e2e acceptance test, still fails: the catalog is empty until `app-seed.yml` runs, step 9 reaches each service on `localhost` (there is only the ALB in the cloud), and the low-stock Lambda is not deployed. Run the seed, then give the suite a cloud mode. `app-build.yml` checks and `app-images.yml` publishes; they do not overlap. Only the `dev` environment exists for now.

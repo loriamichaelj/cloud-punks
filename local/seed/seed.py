@@ -4,9 +4,9 @@
 * Stock uses a conditional put (``attribute_not_exists(sku)``): a re-seed never resets stock that
   orders have already drawn down.
 
-Connection settings come from the environment only (DB_*, AWS_REGION, and boto3's own
-AWS_ENDPOINT_URL / credential variables). Runs as the ``seed`` Compose service from the product
-image (``make seed``).
+Connection settings come from the environment only (DB_*, AWS_REGION, INVENTORY_TABLE, and
+boto3's own AWS_ENDPOINT_URL / credential variables). Runs as the ``seed`` Compose service from the
+product image (``make seed``), and on the in-VPC runner for dev (the "App: seed" workflow).
 """
 
 import os
@@ -62,14 +62,14 @@ def seed_catalog(conninfo: str) -> dict[str, int]:
     return {"categories_inserted": categories, "products_inserted": products}
 
 
-def seed_stock(dynamodb: Any) -> dict[str, int]:
+def seed_stock(dynamodb: Any, table: str = "inventory") -> dict[str, int]:
     """Insert starting stock for any SKU that has no inventory item yet."""
     inserted = existing = 0
     now = datetime.now(UTC).isoformat(timespec="seconds")
     for sku, quantity in STOCK.items():
         try:
             dynamodb.put_item(
-                TableName="inventory",
+                TableName=table,
                 Item={
                     "sku": {"S": sku},
                     "available": {"N": str(quantity)},
@@ -100,7 +100,7 @@ def main() -> int:
     dynamodb = boto3.client("dynamodb", region_name=os.environ["AWS_REGION"])
 
     catalog = seed_catalog(conninfo)
-    stock = seed_stock(dynamodb)
+    stock = seed_stock(dynamodb, os.environ.get("INVENTORY_TABLE", "inventory"))
     _log.info("seed_complete", **catalog, **stock)
     return 0
 

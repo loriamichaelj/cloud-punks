@@ -575,7 +575,7 @@ The Dockerfile is production-shaped from day one: multi-stage, `uv sync --frozen
 | valkey | `valkey/valkey:9.0` | — | 6379 | ElastiCache for Valkey |
 | localstack | `localstack/localstack` at a pinned CalVer tag (2026.03.0 or later), auth token required | — | 4566 | EventBridge, SQS, DynamoDB, Lambda |
 | product-migrate / order-migrate | service image | `migrate` | — | Helm pre-install/pre-upgrade Job |
-| seed | product image | `seed` | — | Manual/CI job (dev only) |
+| seed | product image | `seed` | — | `app-seed.yml` on the runner (dev only): the same `local/seed/seed.py`, run from the checkout, as the `db` role |
 | product-service | product | `api` | 8001 | Deployment + HPA |
 | inventory-service | inventory | `api` | 8002 | Deployment + HPA |
 | inventory-consumer | inventory | `consumer` | 9000 | Deployment (scale on queue depth, KEDA later) |

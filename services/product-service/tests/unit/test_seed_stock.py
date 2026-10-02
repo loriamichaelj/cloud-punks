@@ -81,3 +81,22 @@ def test_items_have_the_documented_attributes(seed_module, inventory_table) -> N
     assert set(item) == {"sku", "available", "reserved", "updated_at"}
     assert item["reserved"] == {"N": "0"}
     assert 10 <= int(item["available"]["N"]) <= 50
+
+
+def test_stock_goes_to_the_configured_table_and_not_to_the_default(seed_module) -> None:
+    """In the cloud the table is loria-inventory (INVENTORY_TABLE); seeding "inventory" would
+    either fail or fill a table nothing reads."""
+    with mock_aws():
+        client = boto3.client("dynamodb", region_name="us-east-1")
+        client.create_table(
+            TableName="loria-inventory",
+            AttributeDefinitions=[{"AttributeName": "sku", "AttributeType": "S"}],
+            KeySchema=[{"AttributeName": "sku", "KeyType": "HASH"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+
+        result = seed_module.seed_stock(client, "loria-inventory")
+
+        assert result == {"stock_inserted": 20, "stock_already_present": 0}
+        assert client.scan(TableName="loria-inventory", Select="COUNT")["Count"] == 20
+        assert client.list_tables()["TableNames"] == ["loria-inventory"]
