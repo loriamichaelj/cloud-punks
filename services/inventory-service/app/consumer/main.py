@@ -58,11 +58,17 @@ def build_consumer(
         settings,
         sqs,
         settings.queue_name,
-        readiness_checks=[ReadinessCheck("dynamodb", lambda: ping(dynamodb))],
+        readiness_checks=[
+            ReadinessCheck("dynamodb", lambda: ping(dynamodb, settings.inventory_table))
+        ],
     )
     service = ReservationService(
-        DynamoReservationStore(dynamodb),
-        DynamoInventoryRepository(dynamodb),
+        DynamoReservationStore(
+            dynamodb,
+            inventory_table=settings.inventory_table,
+            reservations_table=settings.reservations_table,
+        ),
+        DynamoInventoryRepository(dynamodb, settings.inventory_table),
         new_event_id=new_event_id,
         now=lambda: datetime.now(UTC),
     )

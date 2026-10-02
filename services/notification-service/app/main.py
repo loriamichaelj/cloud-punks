@@ -24,8 +24,10 @@ def create_app(
 
     if store is None:
         client = build_dynamodb_client(settings)
-        store = DynamoNotificationStore(client)
-        probes.append(ReadinessCheck("dynamodb", lambda: ping(client)))
+        store = DynamoNotificationStore(client, settings.notifications_table)
+        probes.append(
+            ReadinessCheck("dynamodb", lambda: ping(client, settings.notifications_table))
+        )
     if readiness_probes is not None:
         probes = list(readiness_probes)
 

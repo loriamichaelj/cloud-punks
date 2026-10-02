@@ -35,3 +35,23 @@ module "eks" {
   deploy_role_arn = local.deploy_role_arn
   addon_versions  = var.addon_versions
 }
+
+module "events" {
+  source = "../../../modules/events"
+
+  prefix = var.name_prefix
+}
+
+module "data" {
+  source = "../../../modules/data"
+
+  name                     = var.cluster_name
+  table_prefix             = var.name_prefix
+  vpc_id                   = module.network.vpc_id
+  data_subnet_ids          = module.network.private_data_subnet_ids
+  client_security_group_id = module.eks.cluster_security_group_id
+
+  # Dev is destroyed when idle (platform-destroy.yml), so the instance must be removable.
+  db_deletion_protection = var.db_deletion_protection
+  db_skip_final_snapshot = var.db_skip_final_snapshot
+}

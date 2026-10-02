@@ -28,3 +28,21 @@ variable "addon_versions" {
   type    = map(string)
   default = {}
 }
+
+variable "name_prefix" {
+  description = "Prefix for the events and DynamoDB resources (loria-retail-events, loria-inventory, ...)."
+  type        = string
+  default     = "loria"
+}
+
+variable "db_deletion_protection" {
+  description = "Off in dev so platform-destroy can remove RDS. DESIGN.md asks for protection; turn it on for prod."
+  type        = bool
+  default     = false
+}
+
+variable "db_skip_final_snapshot" {
+  description = "True in dev: the data is disposable. False for prod."
+  type        = bool
+  default     = true
+}

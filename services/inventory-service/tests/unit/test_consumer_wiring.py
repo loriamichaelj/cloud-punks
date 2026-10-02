@@ -89,3 +89,30 @@ def test_readiness_needs_dynamodb_but_liveness_checks_nothing(settings: Consumer
 
     assert client.get("/health/live").status_code == 200
     assert client.get("/health/ready").status_code == 503
+
+
+class RecordingDynamo:
+    """Remembers which table readiness asked about."""
+
+    def __init__(self) -> None:
+        self.tables: list[str] = []
+
+    def describe_table(self, *, TableName: str) -> Any:
+        self.tables.append(TableName)
+        return {}
+
+
+def test_readiness_checks_the_configured_inventory_table(
+    monkeypatch: pytest.MonkeyPatch, settings: ConsumerSettings
+) -> None:
+    monkeypatch.setenv("INVENTORY_TABLE", "loria-inventory")
+    dynamo = RecordingDynamo()
+    runtime = build_consumer(
+        ConsumerSettings(),  # type: ignore[call-arg]
+        dynamodb=dynamo,
+        sqs=Unreachable(),
+        events=Unreachable(),
+    )
+
+    assert TestClient(runtime.side_app).get("/health/ready").status_code == 200
+    assert dynamo.tables == ["loria-inventory"]

@@ -26,3 +26,23 @@ def test_the_aws_endpoint_is_deliberately_not_a_setting(monkeypatch: pytest.Monk
     monkeypatch.setenv("AWS_REGION", "us-east-1")
     monkeypatch.setenv("AWS_ENDPOINT_URL", "http://localstack:4566")
     assert not hasattr(Settings(), "aws_endpoint_url")  # type: ignore[call-arg]
+
+
+def test_table_names_default_to_the_local_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    settings = Settings()  # type: ignore[call-arg]
+    assert (settings.inventory_table, settings.reservations_table) == (
+        "inventory",
+        "inventory_reservations",
+    )
+
+
+def test_table_names_come_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("INVENTORY_TABLE", "loria-inventory")
+    monkeypatch.setenv("RESERVATIONS_TABLE", "loria-inventory-reservations")
+    settings = Settings()  # type: ignore[call-arg]
+    assert (settings.inventory_table, settings.reservations_table) == (
+        "loria-inventory",
+        "loria-inventory-reservations",
+    )

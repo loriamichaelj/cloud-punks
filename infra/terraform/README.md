@@ -9,6 +9,8 @@ Applied only from GitHub Actions (ADR-14). Locally: `terraform fmt`, `terraform 
 | `modules/network/` | VPC over 3 AZs: public, private-app (/20) and private-data subnets, one NAT in dev, S3 and DynamoDB gateway endpoints, interface endpoints |
 | `modules/ecr/` | `loria-retail/<service>` repositories: immutable tags, scan on push, keep 30 |
 | `modules/eks/` | Private-endpoint cluster, secrets KMS key, access entries, one-node AL2023 arm64 managed node group, add-ons |
+| `modules/events/` | EventBridge bus, the three routing rules, queues with DLQs (SSE, `aws:SourceArn` queue policies) and the 7-day archive |
+| `modules/data/` | RDS for PostgreSQL 17, ElastiCache for Valkey (TLS), the three DynamoDB tables, one KMS key |
 | `modules/github-oidc/` | One IAM role trusting one exact GitHub OIDC `sub`. Reads the hand-made OIDC provider with a `data` source |
 
 State lives in `loria-retail-tfstate-<account-id>-<region>`, created by `bootstrap-state-bucket.yml`. Keys are `<stack>/terraform.tfstate` for `bootstrap` and `<env>/<stack>/terraform.tfstate` for environments; `cloudbatch818-loria-retail-tf-<env>` can touch only `<env>/*`.
@@ -23,3 +25,8 @@ Choices to revisit:
 - The cluster API is private-only. The runners module must add an ingress rule from the runner security group to the cluster security group on 443.
 
 Naming: everything Terraform and the workflows create is prefixed `loria-` (state bucket, VPC, cluster `loria-retail-dev`, ECR repositories `loria-retail/<service>`, KMS alias, log group). IAM roles and policies are the exception and keep `cloudbatch818-loria-`, because that is the only prefix the manual bootstrap role may manage.
+- Not in the `events` module yet: the `low-stock-alert` Lambda and its `to-low-stock` rule. Packaging the function needs the `hashicorp/archive` provider (a new dependency, so it waits for a decision).
+- ElastiCache has no AUTH token yet. Generating one hands the secret to Terraform and into state; the cache is reachable only from the EKS cluster security group, with TLS and encryption at rest.
+- RDS runs `engine_version = "17"`, so AWS picks the default 17.x minor. Pin the minor once the first apply shows it. `product_db`, `order_db` and the app roles inside them are created by the bootstrap migration, which also needs app-user secrets in Secrets Manager; neither exists yet.
+- Dev RDS has deletion protection off and no final snapshot, so `platform-destroy` can remove it. DESIGN.md asks for protection: set `db_deletion_protection = true` for prod.
+- The DynamoDB tables are named `loria-inventory`, `loria-inventory-reservations` and `loria-notifications`. The services read the names from `INVENTORY_TABLE`, `RESERVATIONS_TABLE` and `NOTIFICATIONS_TABLE` (defaults are the local names).

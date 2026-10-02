@@ -68,3 +68,33 @@ def test_readiness_needs_dynamodb_but_liveness_checks_nothing(settings: Consumer
     assert client.get("/health/live").status_code == 200
     assert client.get("/health/ready").status_code == 503
     assert "events_consumed" in client.get("/metrics").text
+
+
+class RecordingDynamo:
+    """Remembers which table readiness asked about."""
+
+    def __init__(self) -> None:
+        self.tables: list[str] = []
+
+    def describe_table(self, *, TableName: str) -> Any:
+        self.tables.append(TableName)
+        return {}
+
+
+def test_the_table_name_defaults_to_the_local_name(settings: ConsumerSettings) -> None:
+    assert settings.notifications_table == "notifications"
+
+
+def test_readiness_checks_the_configured_table(
+    monkeypatch: pytest.MonkeyPatch, settings: ConsumerSettings
+) -> None:
+    monkeypatch.setenv("NOTIFICATIONS_TABLE", "loria-notifications")
+    dynamo = RecordingDynamo()
+    runtime = build_consumer(
+        ConsumerSettings(),  # type: ignore[call-arg]
+        dynamodb=dynamo,
+        sqs=Unreachable(),
+    )
+
+    assert TestClient(runtime.side_app).get("/health/ready").status_code == 200
+    assert dynamo.tables == ["loria-notifications"]

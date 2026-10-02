@@ -10,6 +10,9 @@ class Settings(AwsSettings):
     by boto3 itself, so the same code runs against LocalStack and AWS."""
 
     service_name: str = "inventory-service"
+    # The defaults are the local names (DESIGN.md section 5); the cloud tables are prefixed loria-.
+    inventory_table: str = Field(default="inventory", min_length=1)
+    reservations_table: str = Field(default="inventory_reservations", min_length=1)
 
 
 class ConsumerSettings(Settings):

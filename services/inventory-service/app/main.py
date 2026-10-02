@@ -26,8 +26,8 @@ def create_app(
 
     if repository is None:
         client = build_dynamodb_client(settings)
-        repository = DynamoInventoryRepository(client)
-        probes.append(ReadinessCheck("dynamodb", lambda: ping(client)))
+        repository = DynamoInventoryRepository(client, settings.inventory_table)
+        probes.append(ReadinessCheck("dynamodb", lambda: ping(client, settings.inventory_table)))
     if readiness_probes is not None:
         probes = list(readiness_probes)
 

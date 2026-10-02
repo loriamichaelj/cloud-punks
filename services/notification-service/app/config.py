@@ -10,6 +10,8 @@ class Settings(AwsSettings):
     by boto3 itself, so the same code runs against LocalStack and AWS."""
 
     service_name: str = "notification-service"
+    # The default is the local name (DESIGN.md section 5); the cloud table is prefixed loria-.
+    notifications_table: str = Field(default="notifications", min_length=1)
 
 
 class ConsumerSettings(Settings):

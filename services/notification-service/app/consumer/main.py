@@ -35,9 +35,13 @@ def build_consumer(
         settings,
         sqs,
         settings.queue_name,
-        readiness_checks=[ReadinessCheck("dynamodb", lambda: ping(dynamodb))],
+        readiness_checks=[
+            ReadinessCheck("dynamodb", lambda: ping(dynamodb, settings.notifications_table))
+        ],
     )
-    handler = NotificationHandler(NotificationService(DynamoNotificationStore(dynamodb)))
+    handler = NotificationHandler(
+        NotificationService(DynamoNotificationStore(dynamodb, settings.notifications_table))
+    )
     for event_type in NOTIFIED_EVENTS:
         runtime.consumer.register(event_type, handler)
     return runtime
