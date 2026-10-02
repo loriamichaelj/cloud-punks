@@ -1,15 +1,15 @@
-name: "Platform: destroy"
+name: "Addons: destroy"
 
-# Tears down the dev/platform stack (network, ecr, eks). Two jobs as
-# cloudbatch818-loria-retail-tf-dev, each approved by the `dev`
-# environment's required reviewer: `plan` runs `terraform plan -destroy`,
-# saves it to the state bucket and prints it; `destroy` runs only after a
-# second approval and applies exactly that saved plan.
-# It never touches the bootstrap stack, the state bucket or the CI roles.
+# Tears down the dev/cluster-addons stack: the Helm releases, their IAM roles and the retail
+# namespace. Runs on the in-VPC runner. Two jobs as cloudbatch818-loria-retail-tf-dev, each
+# approved by the `dev` environment's required reviewer: `plan` runs `terraform plan -destroy`,
+# saves it and prints it; `destroy` runs only after a second approval and applies exactly that
+# saved plan. Run it before platform-destroy.yml, so the load balancer controller can delete
+# the ALBs it made before the VPC goes. It never touches the platform stack.
 on:
   workflow_dispatch:
 
-run-name: platform-destroy
+run-name: addons-destroy
 
 permissions:
   contents: read
@@ -19,20 +19,20 @@ env:
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
   TF_VAR_aws_region: ${{ vars.AWS_REGION }}
-  STATE_KEY: dev/platform/terraform.tfstate
+  STATE_KEY: dev/cluster-addons/terraform.tfstate
 
 defaults:
   run:
-    working-directory: infra/terraform/envs/dev/platform
+    working-directory: infra/terraform/envs/dev/cluster-addons
 
-# Shares platform-create's group so the two never touch the stack at once.
+# Shares the platform group: platform and addons runs never overlap.
 concurrency:
   group: platform-dev
   cancel-in-progress: false
 
 jobs:
   plan:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, retail-vpc]
     environment: dev
     timeout-minutes: 20
     outputs:
@@ -54,6 +54,18 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN_TF }}
           aws-region: ${{ vars.AWS_REGION }}
 
+      - name: Check the cluster API is reachable
+        run: |
+          set -euo pipefail
+          endpoint=$(aws eks describe-cluster --name loria-retail-dev --query cluster.endpoint --output text)
+          code=$(curl -sk -m 15 -o /dev/null -w '%{http_code}' "${endpoint}/healthz" || true)
+          echo "cluster API ${endpoint} answered ${code}"
+          # Any HTTP answer, even 401 or 403, means the runner reached the private endpoint.
+          if [ "$code" = "000" ]; then
+            echo "the runner cannot reach the private cluster API" >&2
+            exit 1
+          fi
+
       - name: Init
         run: |
           account_id=$(aws sts get-caller-identity --query Account --output text)
@@ -61,21 +73,6 @@ jobs:
             -backend-config="bucket=loria-retail-tfstate-${account_id}-${TF_VAR_aws_region}" \
             -backend-config="key=${STATE_KEY}" \
             -backend-config="region=${TF_VAR_aws_region}"
-
-      # The load balancer controller deletes the ALBs it created only while it still runs.
-      # Destroying the VPC first would hang on them, so addons-destroy.yml goes first.
-      - name: Refuse while the addons stack still has resources
-        run: |
-          set -euo pipefail
-          account_id=$(aws sts get-caller-identity --query Account --output text)
-          uri="s3://loria-retail-tfstate-${account_id}-${TF_VAR_aws_region}/dev/cluster-addons/terraform.tfstate"
-          if aws s3 ls "$uri" >/dev/null 2>&1; then
-            n=$(aws s3 cp "$uri" - | jq '[.resources[]?] | length')
-            if [ "$n" -gt 0 ]; then
-              echo "dev/cluster-addons still holds ${n} resources: run addons-destroy first" >&2
-              exit 1
-            fi
-          fi
 
       - name: Plan
         id: plan
@@ -94,7 +91,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "### terraform destroy: dev/platform"
+            echo "### terraform destroy: dev/cluster-addons"
             echo '```'
             terraform show -no-color tfplan 2>&1 | head -c 100000 || echo "no plan was produced"
             echo '```'
@@ -107,7 +104,7 @@ jobs:
         if: steps.plan.outputs.has_changes == 'true'
         run: |
           account_id=$(aws sts get-caller-identity --query Account --output text)
-          key="dev/plans/destroy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tfplan"
+          key="dev/plans/addons-destroy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tfplan"
           aws s3 cp tfplan "s3://loria-retail-tfstate-${account_id}-${TF_VAR_aws_region}/${key}"
           echo "plan_key=${key}" >> "$GITHUB_OUTPUT"
           echo "plan_sha256=$(sha256sum tfplan | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
@@ -119,7 +116,7 @@ jobs:
   destroy:
     needs: plan
     if: needs.plan.outputs.has_changes == 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, retail-vpc]
     environment: dev
     timeout-minutes: 90
     env:
@@ -161,7 +158,7 @@ jobs:
       - name: Remaining resources
         run: |
           {
-            echo "### Resources left in dev/platform state"
+            echo "### Resources left in dev/cluster-addons state"
             echo '```'
             terraform state list || true
             echo '```'

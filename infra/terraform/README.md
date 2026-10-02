@@ -10,6 +10,8 @@ Applied only from GitHub Actions (ADR-14). Locally: `terraform fmt`, `terraform 
 | `modules/ecr/` | `loria-retail/<service>` repositories: immutable tags, scan on push, keep 30 |
 | `modules/eks/` | Private-endpoint cluster, secrets KMS key, access entries, one-node AL2023 arm64 managed node group, add-ons |
 | `modules/runners/` | One ephemeral in-VPC GitHub runner (label `retail-vpc`): launch template, Auto Scaling group of one, instance role, security group, the empty Secrets Manager secret for the PAT |
+| `envs/dev/cluster-addons/` | The `retail` namespace, the AWS Load Balancer Controller and External Secrets Operator, with their Pod Identity roles. State key `dev/cluster-addons/terraform.tfstate`. Runs on the in-VPC runner (the cluster API is private): `addons-create.yml`, `addons-destroy.yml` |
+| `modules/pod-identity-role/` | One IAM role for one Kubernetes service account through EKS Pod Identity, plus the association |
 | `modules/events/` | EventBridge bus, the three routing rules, queues with DLQs (SSE, `aws:SourceArn` queue policies) and the 7-day archive |
 | `modules/data/` | RDS for PostgreSQL 17, ElastiCache for Valkey (TLS), the three DynamoDB tables, one KMS key |
 | `modules/github-oidc/` | One IAM role trusting one exact GitHub OIDC `sub`. Reads the hand-made OIDC provider with a `data` source |
@@ -34,3 +36,7 @@ Naming: everything Terraform and the workflows create is prefixed `loria-` (stat
 - The runner needs a one-time manual step after `platform-create` applies it. Create a fine-grained personal access token for this repository with *Administration: read and write*, then store it as the secret's value (the secret is named in the `runner_github_token_secret` output, `loria-retail-dev-runner-github-token`). The instance retries every 30 seconds until the secret has a value, then registers. Terraform never sees the token.
 - Also set Settings > Actions > General > "Approval for running fork pull request workflows" to *Require approval for all outside collaborators*. Self-hosted runners in a public repo must never run fork code; the workflows that target `retail-vpc` run only on `workflow_dispatch`.
 - The runner is the only instance that can reach the private cluster API from outside the cluster. Its security group is allowed into the cluster security group on 443.
+- `cluster-addons` adds the `hashicorp/helm` and `hashicorp/kubernetes` providers (DESIGN.md section 13 already calls for them). Chart versions are pinned: AWS Load Balancer Controller 3.5.0 with its upstream IAM policy vendored as `lbc-iam-policy.json`, External Secrets Operator 2.11.0.
+- The External Secrets `ClusterSecretStore` is not created here. It is a custom resource whose CRD exists only after the operator installs, so it comes with the dev Helm values.
+- One node limits the pods: the add-ons plus the application releases must fit the m7g.large's pod limit (about 29 with the default VPC CNI). Check `kubectl get pods -A` after the first deploy.
+- Dev has no ACM certificate or domain, so the first ingress is plain HTTP on an internal ALB.
