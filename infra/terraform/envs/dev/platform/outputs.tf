@@ -59,3 +59,12 @@ output "workload_role_arns" {
   description = "Release name => Pod Identity role ARN. The chart names each service account after its release."
   value       = { for k, m in module.workload_role : k => m.role_arn }
 }
+
+output "low_stock_function_name" {
+  value = module.events.low_stock_function_name
+}
+
+output "low_stock_log_group_name" {
+  value = module.events.low_stock_log_group_name
+}
+

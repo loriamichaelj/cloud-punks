@@ -187,8 +187,10 @@ jobs:
       # above). The few things the ALB does not expose are reached the way `make k8s-e2e` does it
       # locally: the four APIs are port-forwarded to localhost, and scripts/k8s_compose.py answers
       # the suite's "compose" commands with kubectl (scale a consumer to 0 and back, read logs,
-      # scrape /metrics). E2E_CLOUD=1 skips the two checks the cloud cannot offer yet: the dead
-      # letter queue count and the low-stock Lambda test. The drills and the UI journeys are not run.
+      # scrape /metrics). E2E_CLOUD=1 skips the dead letter queue count (the deploy role may not
+      # read the queues) and points the low-stock Lambda test at the real CloudWatch log group
+      # (E2E_LAMBDA_LOG_GROUP, which the deploy role may read). The drills and the UI journeys are
+      # not run.
       # Steps 2 to 10 write test stock for two SKUs and place orders for e2e-* customers in dev.
       - name: E2E acceptance
         env:
@@ -207,6 +209,7 @@ jobs:
           sleep 5
 
           E2E_K8S=1 E2E_CLOUD=1 \
+          E2E_LAMBDA_LOG_GROUP=/aws/lambda/loria-low-stock-alert \
           K8S_CONTEXT="$EKS_CLUSTER" K8S_NAMESPACE="$NAMESPACE" \
           E2E_COMPOSE="$PWD/.venv/bin/python $PWD/scripts/k8s_compose.py" \
           PYTHONPATH=tests/e2e \

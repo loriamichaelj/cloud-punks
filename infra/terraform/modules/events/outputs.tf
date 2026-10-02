@@ -26,3 +26,17 @@ output "dlq_arns" {
   description = "Route name => DLQ ARN, for the DLQ alarms."
   value       = { for k, q in aws_sqs_queue.dlq : k => q.arn }
 }
+
+output "low_stock_function_name" {
+  value = aws_lambda_function.low_stock.function_name
+}
+
+output "low_stock_log_group_name" {
+  description = "Where the low_stock records are. The deploy role may read this one group, for the acceptance test."
+  value       = aws_cloudwatch_log_group.low_stock.name
+}
+
+output "low_stock_dlq_arn" {
+  description = "For the DLQ alarms."
+  value       = aws_sqs_queue.low_stock_dlq.arn
+}

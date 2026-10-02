@@ -122,6 +122,14 @@ data "aws_iam_policy_document" "tf" {
 # Deploy role: push and pull images, describe the cluster. Cluster access
 # itself comes from an EKS access entry created by the eks module.
 data "aws_iam_policy_document" "deploy" {
+  # app-deploy's acceptance test checks that a low-stock reservation reaches the Lambda. Read
+  # access to this one log group, and nothing else in CloudWatch.
+  statement {
+    sid       = "ReadLowStockLogs"
+    actions   = ["logs:FilterLogEvents"]
+    resources = ["arn:aws:logs:${var.aws_region}:${local.account_id}:log-group:${var.low_stock_log_group}:*"]
+  }
+
   statement {
     sid       = "EcrLogin"
     actions   = ["ecr:GetAuthorizationToken"]

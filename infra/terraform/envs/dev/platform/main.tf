@@ -39,7 +39,11 @@ module "eks" {
 module "events" {
   source = "../../../modules/events"
 
-  prefix = var.name_prefix
+  prefix          = var.name_prefix
+  iam_name_prefix = "cloudbatch818-loria-retail-dev"
+
+  # Built by scripts/package_lambda.py: the platform workflows run it before plan and before apply.
+  lambda_zip_path = "${path.root}/../../../../../dist/low-stock-alert.zip"
 }
 
 module "data" {

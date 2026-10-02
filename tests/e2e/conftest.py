@@ -8,8 +8,8 @@ Each test creates its own orders under a unique ``e2e-*`` customer, so runs neve
 
 ``E2E_K8S=1`` runs the same suite against a Kubernetes cluster, reaching the processes through
 ``scripts/k8s_compose.py``. ``E2E_CLOUD=1`` adds the dev EKS cluster's limits on top: no
-LocalStack, so the dead-letter queue check and the low-stock Lambda test are skipped (the cloud
-stack deploys no Lambda yet, and the deploy role may not read the queues).
+LocalStack, so the dead-letter queue count is skipped (the deploy role may not read the queues);
+the low-stock Lambda test reads the real CloudWatch log group named in ``E2E_LAMBDA_LOG_GROUP``.
 """
 
 import json
@@ -125,7 +125,11 @@ DEAD_LETTER_QUEUES = tuple(f"{queue}-dlq" for queue in QUEUES)
 
 
 def aws(service: str) -> Any:
-    """LocalStack with dummy credentials, whatever the shell exports (this suite never reaches AWS)."""
+    """LocalStack with dummy credentials, whatever the shell exports. In the cloud (``E2E_CLOUD``)
+    it is the real AWS with the job's own credentials: the deploy role may read one log group
+    (the low-stock Lambda's) and nothing else, which is all the suite asks of it."""
+    if E2E_CLOUD:
+        return boto3.client(service, region_name=os.environ.get("AWS_REGION", "us-east-1"))
     return boto3.client(
         service,
         region_name="us-east-1",

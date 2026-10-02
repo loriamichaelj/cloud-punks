@@ -35,6 +35,12 @@ variable "db_instance_identifier" {
   default     = "loria-retail-dev"
 }
 
+variable "low_stock_log_group" {
+  description = "Log group of the low-stock Lambda. The deploy role may read it (FilterLogEvents) so the acceptance test can see the low_stock record. Must match the events module (/aws/lambda/<prefix>-low-stock-alert)."
+  type        = string
+  default     = "/aws/lambda/loria-low-stock-alert"
+}
+
 variable "inventory_table_name" {
   description = "DynamoDB inventory table the db role may seed (PutItem only). Must match the name the data module creates."
   type        = string
