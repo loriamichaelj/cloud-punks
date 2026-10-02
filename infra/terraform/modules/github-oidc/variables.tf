@@ -3,8 +3,8 @@ variable "role_name" {
   type        = string
 
   validation {
-    condition     = startswith(var.role_name, "cloudbatch818-loria-")
-    error_message = "Role names must start with cloudbatch818-loria-."
+    condition     = startswith(var.role_name, "cloudbatch818-loria-retail-")
+    error_message = "Role names must start with cloudbatch818-loria-retail-."
   }
 }
 

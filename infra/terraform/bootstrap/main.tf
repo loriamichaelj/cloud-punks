@@ -3,7 +3,7 @@ data "aws_caller_identity" "current" {}
 locals {
   account_id = data.aws_caller_identity.current.account_id
   env        = var.target_environment
-  prefix     = "cloudbatch818-loria"
+  prefix     = "cloudbatch818-loria-retail"
 
   sub_pull_request = "${var.oidc_subject_prefix}:pull_request"
   sub_environment  = "${var.oidc_subject_prefix}:environment:${local.env}"
@@ -116,9 +116,9 @@ data "aws_iam_policy_document" "tf_apply" {
       "iam:RemoveRoleFromInstanceProfile",
     ]
     resources = [
-      "arn:aws:iam::${local.account_id}:role/${local.prefix}-retail-${local.env}-*",
-      "arn:aws:iam::${local.account_id}:policy/${local.prefix}-retail-${local.env}-*",
-      "arn:aws:iam::${local.account_id}:instance-profile/${local.prefix}-retail-${local.env}-*",
+      "arn:aws:iam::${local.account_id}:role/${local.prefix}-${local.env}-*",
+      "arn:aws:iam::${local.account_id}:policy/${local.prefix}-${local.env}-*",
+      "arn:aws:iam::${local.account_id}:instance-profile/${local.prefix}-${local.env}-*",
     ]
   }
 
@@ -175,7 +175,7 @@ data "aws_iam_policy_document" "deploy" {
 module "tf_plan" {
   source = "../modules/github-oidc"
 
-  role_name           = "${local.prefix}-tf-plan"
+  role_name           = "${local.prefix}-tf-plan-${local.env}"
   subject             = local.sub_pull_request
   managed_policy_arns = ["arn:aws:iam::aws:policy/ReadOnlyAccess"]
   inline_policies     = { state-read-and-lock = data.aws_iam_policy_document.tf_plan.json }

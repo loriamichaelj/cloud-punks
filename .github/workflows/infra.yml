@@ -1,8 +1,8 @@
 name: infra
 
 # dev/platform stack (network, ecr, eks).
-# - pull_request: plan only, as cloudbatch818-loria-tf-plan, posted as a PR comment.
-# - workflow_dispatch: two jobs as cloudbatch818-loria-tf-apply-dev, each approved by
+# - pull_request: plan only, as cloudbatch818-loria-retail-tf-plan-dev, posted as a PR comment.
+# - workflow_dispatch: two jobs as cloudbatch818-loria-retail-tf-apply-dev, each approved by
 #   the `dev` environment's required reviewer. `plan` writes the plan to the
 #   state bucket and prints it; `apply` runs only after a second approval and
 #   applies exactly that saved plan. Apply is manual on purpose: it creates a
