@@ -2,9 +2,11 @@ name: infra
 
 # dev/platform stack (network, ecr, eks).
 # - pull_request: plan only, as cloudbatch818-tf-plan, posted as a PR comment.
-# - workflow_dispatch: plan, then apply, as cloudbatch818-tf-apply-dev.
-#   The `dev` environment's required reviewer approves the run before any
-#   AWS call. Apply is manual on purpose: it creates a cluster that costs money.
+# - workflow_dispatch: two jobs as cloudbatch818-tf-apply-dev, each approved by
+#   the `dev` environment's required reviewer. `plan` writes the plan to the
+#   state bucket and prints it; `apply` runs only after a second approval and
+#   applies exactly that saved plan. Apply is manual on purpose: it creates a
+#   cluster that costs money.
 on:
   pull_request:
     paths:
@@ -27,8 +29,13 @@ defaults:
   run:
     working-directory: infra/terraform/envs/dev/platform
 
+# Dispatch runs queue behind each other; PR runs are grouped per ref.
+concurrency:
+  group: infra-${{ github.event_name == 'workflow_dispatch' && 'dev-platform' || github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  plan:
+  pr-plan:
     # Fork PRs get no OIDC token and no role. Skip them rather than fail.
     if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
@@ -78,14 +85,15 @@ jobs:
           } > comment.md
           gh pr comment "$PR_URL" --body-file comment.md --edit-last --create-if-none
 
-  apply:
+  plan:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: dev
-    timeout-minutes: 90
-    concurrency:
-      group: infra-dev-platform
-      cancel-in-progress: false
+    timeout-minutes: 20
+    outputs:
+      has_changes: ${{ steps.plan.outputs.has_changes }}
+      plan_key: ${{ steps.save.outputs.plan_key }}
+      plan_sha256: ${{ steps.save.outputs.plan_sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -110,7 +118,17 @@ jobs:
             -backend-config="region=${TF_VAR_aws_region}"
 
       - name: Plan
-        run: terraform plan -lock-timeout=5m -no-color -out=tfplan
+        id: plan
+        run: |
+          set +e
+          terraform plan -detailed-exitcode -lock-timeout=5m -no-color -out=tfplan
+          code=$?
+          set -e
+          # 0 = no changes, 2 = changes, anything else is an error.
+          if [ "$code" -ne 0 ] && [ "$code" -ne 2 ]; then
+            exit "$code"
+          fi
+          echo "has_changes=$([ "$code" -eq 2 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
       - name: Plan summary
         if: always()
@@ -122,6 +140,61 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # The plan can hold sensitive values, so it goes to the private state
+      # bucket (dev/*), not to a workflow artifact on a public repo.
+      - name: Save the plan
+        id: save
+        if: steps.plan.outputs.has_changes == 'true'
+        run: |
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          key="dev/plans/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tfplan"
+          aws s3 cp tfplan "s3://retail-tfstate-${account_id}-${TF_VAR_aws_region}/${key}"
+          echo "plan_key=${key}" >> "$GITHUB_OUTPUT"
+          echo "plan_sha256=$(sha256sum tfplan | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: terraform state list || true
+
+  apply:
+    needs: plan
+    if: github.event_name == 'workflow_dispatch' && needs.plan.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 90
+    env:
+      PLAN_KEY: ${{ needs.plan.outputs.plan_key }}
+      PLAN_SHA256: ${{ needs.plan.outputs.plan_sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.4
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_TF_APPLY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Init
+        run: |
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          terraform init \
+            -backend-config="bucket=retail-tfstate-${account_id}-${TF_VAR_aws_region}" \
+            -backend-config="key=${STATE_KEY}" \
+            -backend-config="region=${TF_VAR_aws_region}"
+
+      - name: Fetch the approved plan
+        run: |
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          aws s3 cp "s3://retail-tfstate-${account_id}-${TF_VAR_aws_region}/${PLAN_KEY}" tfplan
+          echo "${PLAN_SHA256}  tfplan" | sha256sum --check
+
+      # A saved plan is refused if the state changed since it was made.
       - name: Apply
         run: terraform apply -lock-timeout=5m -no-color tfplan
 
@@ -133,6 +206,12 @@ jobs:
             terraform output -json
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Delete the saved plan
+        if: always()
+        run: |
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          aws s3 rm "s3://retail-tfstate-${account_id}-${TF_VAR_aws_region}/${PLAN_KEY}" || true
 
       - name: Diagnostics on failure
         if: failure()
