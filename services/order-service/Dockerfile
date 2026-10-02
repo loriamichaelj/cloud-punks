@@ -19,6 +19,14 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-editable --package order-service
 
 FROM python:3.13-slim
+# The base image lags its own security fixes: apply them at build time. pip and setuptools are
+# dropped because the app runs from the copied /opt/venv and never uses the base image's own.
+RUN apt-get update \
+ && apt-get upgrade -y --no-install-recommends \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/* \
+ && python -m pip uninstall -y pip setuptools wheel
+
 RUN groupadd --gid 10001 app \
  && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin app
 COPY --from=builder /opt/venv /opt/venv

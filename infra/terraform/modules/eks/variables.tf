@@ -19,10 +19,6 @@ variable "kubernetes_version" {
   default     = "1.36"
 }
 
-variable "vpc_id" {
-  type = string
-}
-
 variable "subnet_ids" {
   description = "Private-app subnets for the control plane network interfaces and the node group."
   type        = list(string)

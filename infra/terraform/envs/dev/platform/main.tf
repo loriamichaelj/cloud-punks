@@ -28,7 +28,6 @@ module "eks" {
 
   name            = var.cluster_name
   iam_name_prefix = "cloudbatch818-loria-retail-dev"
-  vpc_id          = module.network.vpc_id
   subnet_ids      = module.network.private_app_subnet_ids
 
   admin_role_arns = { tf = local.tf_role_arn }

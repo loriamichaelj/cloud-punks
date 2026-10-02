@@ -10,6 +10,8 @@ locals {
 }
 
 resource "aws_cloudwatch_log_group" "low_stock" {
+  #checkov:skip=CKV_AWS_158:The log group uses the default CloudWatch Logs encryption; a customer-managed key is not required in dev
+  #checkov:skip=CKV_AWS_338:30 days of retention is enough in dev; keep a year in prod
   name              = "/aws/lambda/${local.function_name}"
   retention_in_days = var.log_retention_days
 }
@@ -58,6 +60,11 @@ resource "aws_iam_role_policy" "low_stock" {
 }
 
 resource "aws_lambda_function" "low_stock" {
+  #checkov:skip=CKV_AWS_115:No reserved concurrency: the account limit is enough in dev
+  #checkov:skip=CKV_AWS_117:The function calls no VPC resource and no AWS API, so a VPC would only add NAT cost
+  #checkov:skip=CKV_AWS_173:The only environment variable is a non-secret threshold
+  #checkov:skip=CKV_AWS_272:Code signing is not used for a small function built from this repository
+  #checkov:skip=CKV_AWS_50:X-Ray is not needed for a function that only writes a log line
   function_name = local.function_name
   role          = aws_iam_role.low_stock.arn
   runtime       = "python3.13"

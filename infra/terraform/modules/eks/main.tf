@@ -1,5 +1,3 @@
-data "aws_caller_identity" "current" {}
-
 locals {
   iam_prefix = var.iam_name_prefix
 
@@ -12,6 +10,7 @@ locals {
 # --- secrets encryption key --------------------------------------------------
 
 resource "aws_kms_key" "secrets" {
+  #checkov:skip=CKV2_AWS_64:The key uses the default key policy, which delegates to IAM; an explicit policy adds nothing in dev
   description         = "Envelope encryption of Kubernetes secrets for ${var.name}"
   enable_key_rotation = true
 }
@@ -65,11 +64,15 @@ resource "aws_iam_role_policy" "cluster_kms" {
 # --- cluster -----------------------------------------------------------------
 
 resource "aws_cloudwatch_log_group" "cluster" {
+  #checkov:skip=CKV_AWS_158:The log group uses the default CloudWatch Logs encryption; a customer-managed key is not required in dev
+  #checkov:skip=CKV_AWS_338:30 days of retention is enough in dev; keep a year in prod
   name              = "/aws/eks/${var.name}/cluster"
   retention_in_days = var.log_retention_days
 }
 
 resource "aws_eks_cluster" "this" {
+  #checkov:skip=CKV_AWS_339:False positive: Kubernetes 1.36 is the newest EKS version in standard support (DESIGN.md section 13); this check's version list lags
+  #checkov:skip=CKV_AWS_37:api, audit and authenticator logs are on; controllerManager and scheduler are not needed in dev
   name     = var.name
   version  = var.kubernetes_version
   role_arn = aws_iam_role.cluster.arn

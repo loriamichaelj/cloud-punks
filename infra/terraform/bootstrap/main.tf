@@ -16,6 +16,12 @@ locals {
 # cloudbatch818-loria-retail-dev-* roles and policies, so it cannot edit the
 # bootstrap, terraform or deploy roles.
 data "aws_iam_policy_document" "tf" {
+  #checkov:skip=CKV_AWS_107:The Terraform role is broad by design: an accepted dev gap in DESIGN.md section 13. IAM stays limited to cloudbatch818-loria-retail-dev-* and state to dev/*
+  #checkov:skip=CKV_AWS_108:The Terraform role is broad by design: an accepted dev gap in DESIGN.md section 13
+  #checkov:skip=CKV_AWS_109:The Terraform role is broad by design: an accepted dev gap in DESIGN.md section 13
+  #checkov:skip=CKV_AWS_110:The Terraform role is broad by design: an accepted dev gap in DESIGN.md section 13. IAM is limited to the dev-prefixed names
+  #checkov:skip=CKV_AWS_111:The Terraform role is broad by design: an accepted dev gap in DESIGN.md section 13
+  #checkov:skip=CKV_AWS_356:The Terraform role is broad by design: an accepted dev gap in DESIGN.md section 13
   statement {
     sid       = "StateForEnvironment"
     actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]

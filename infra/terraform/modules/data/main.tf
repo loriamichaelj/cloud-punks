@@ -1,5 +1,6 @@
 # One key for the data tier: RDS storage and its master secret, and the DynamoDB tables.
 resource "aws_kms_key" "data" {
+  #checkov:skip=CKV2_AWS_64:The key uses the default key policy, which delegates to IAM; an explicit policy adds nothing in dev
   description         = "Encryption of the ${var.name} data stores"
   enable_key_rotation = true
 }
@@ -69,6 +70,10 @@ resource "aws_db_parameter_group" "postgres" {
 }
 
 resource "aws_db_instance" "this" {
+  #checkov:skip=CKV_AWS_118:Enhanced monitoring costs extra; the standard CloudWatch metrics are enough in dev
+  #checkov:skip=CKV_AWS_157:Dev is Single-AZ by decision (DESIGN.md section 13); prod sets db_multi_az
+  #checkov:skip=CKV_AWS_161:The apps authenticate with passwords from Secrets Manager; IAM database authentication is later hardening
+  #checkov:skip=CKV_AWS_353:Performance Insights is not needed in dev
   identifier = var.name
 
   engine         = "postgres"
@@ -112,6 +117,9 @@ resource "aws_elasticache_subnet_group" "this" {
 # yet: the token would have to be generated and handed to Terraform, which puts it in
 # state; reachability is limited to the cluster security group meanwhile.
 resource "aws_elasticache_replication_group" "this" {
+  #checkov:skip=CKV2_AWS_50:Dev runs one cache node, so there is nothing to fail over to
+  #checkov:skip=CKV_AWS_191:ElastiCache uses the AWS-managed key in dev; a customer-managed key is not required
+  #checkov:skip=CKV_AWS_31:Open gap: no AUTH token yet (it would sit in Terraform state). TLS in transit and encryption at rest are on; reachable only from the cluster security group
   replication_group_id = var.name
   description          = "${var.name} Valkey cache"
 

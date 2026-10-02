@@ -1,0 +1,10 @@
+# Findings Trivy is told to accept, each with the reason. Used by pr.yml (config and image scans).
+# Add an entry only with a reason and, for a vulnerability, an expiry so it is looked at again.
+misconfigurations:
+  - id: AWS-0104
+    paths:
+      - infra/terraform/modules/runners/main.tf
+    statement: >-
+      The in-VPC runner must reach GitHub, package mirrors, release hosts and AWS service endpoints,
+      none of which has a fixed address, so its egress is open. It has no inbound rule at all, no SSH
+      key and no instance-role access for jobs (the metadata service is blocked for the job user).

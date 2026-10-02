@@ -5,6 +5,8 @@ data "aws_region" "current" {}
 # (see the README): a value created here would sit in Terraform state.
 
 resource "aws_secretsmanager_secret" "github_token" {
+  #checkov:skip=CKV2_AWS_57:The secret holds a GitHub token created by hand; Secrets Manager cannot rotate it
+  #checkov:skip=CKV_AWS_149:The token secret uses the default Secrets Manager key
   name                    = "${var.name}-runner-github-token"
   description             = "Fine-grained PAT (Administration: read and write on ${var.github_repository}) the runner uses to register"
   recovery_window_in_days = 0

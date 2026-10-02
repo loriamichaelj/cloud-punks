@@ -1,6 +1,7 @@
 data "aws_region" "current" {}
 
 data "aws_availability_zones" "available" {
+  #checkov:skip=CKV_AWS_394:The zones are read from the region and sliced by az_count; pinning identity is later hardening
   state = "available"
 
   filter {
@@ -24,6 +25,7 @@ locals {
 }
 
 resource "aws_vpc" "this" {
+  #checkov:skip=CKV2_AWS_11:VPC flow logs cost money and are not needed in dev
   cidr_block           = var.cidr_block
   enable_dns_support   = true
   enable_dns_hostnames = true
@@ -181,6 +183,7 @@ resource "aws_vpc_endpoint" "gateway" {
 }
 
 resource "aws_security_group" "endpoints" {
+  #checkov:skip=CKV2_AWS_5:False positive: the group is attached to the interface endpoints through a for_each that Checkov cannot follow
   count = length(var.interface_endpoint_services) > 0 ? 1 : 0
 
   name        = "${var.name}-vpc-endpoints"
