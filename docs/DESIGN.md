@@ -647,6 +647,8 @@ Each service's integration suite runs the app in-process against the real Compos
 
 ### Acceptance test (steps 1–10)
 
+The same suite runs against three targets: Compose (`make e2e`), the local cluster (`make k8s-e2e`) and dev on EKS (the last step of `app-deploy.yml`, `E2E_CLOUD=1`). In the cloud, the dead-letter-queue count in step 9 and the low-stock Lambda test are skipped until the Lambda and queue alarms exist.
+
 1. `GET /api/v1/products` returns seeded products; second call of `GET /api/v1/products/{sku}` is a cache hit (`cache_hits_total` increments).
 2. Record stock for SKU A (`GET /api/v1/inventory/A`).
 3. `POST /api/v1/orders` with 2 × A → 202, `PENDING`.

@@ -10,8 +10,11 @@ and ask whether everything is healthy, all through one command given in ``E2E_CO
 * anything else (postgres, valkey, localstack, which stay in Compose on the Mac) is passed to the
   real ``docker compose``, whose command is in ``K8S_COMPOSE_REAL``.
 
-Every kubectl call names ``--context orbstack``. Also: ``kill-pod`` and ``scrape`` (used by the
-Kubernetes-only tests), ``restarts``. Not supported (that drill runs on Compose): ``run``.
+Every kubectl call names ``--context`` explicitly: ``orbstack`` unless ``K8S_CONTEXT`` says
+otherwise (the dev EKS cluster in the "App: deploy" workflow, which also sets ``K8S_NAMESPACE``).
+With no ``K8S_COMPOSE_REAL`` there is no Compose at all, as in the cloud: ``ps`` then lists only the
+Deployments. Also: ``kill-pod`` and ``scrape`` (used by the Kubernetes-only tests), ``restarts``.
+Not supported (that drill runs on Compose): ``run``.
 """
 
 import json
@@ -20,15 +23,21 @@ import shlex
 import subprocess
 import sys
 
-CONTEXT = "orbstack"
-NAMESPACE = "retail"
-KUBECTL = ["kubectl", "--context", CONTEXT, "-n", NAMESPACE]
+DEFAULT_CONTEXT = "orbstack"  # local work never lands on a cluster that merely is the current one
+DEFAULT_NAMESPACE = "retail"
 INFRA = {"postgres", "valkey", "localstack"}
 DESIRED = "retail.io/desired-replicas"
 
 
+def kubectl_base() -> list[str]:
+    """The kubectl prefix, with the context always named. Read at call time so tests can set it."""
+    context = os.environ.get("K8S_CONTEXT") or DEFAULT_CONTEXT
+    namespace = os.environ.get("K8S_NAMESPACE") or DEFAULT_NAMESPACE
+    return ["kubectl", "--context", context, "-n", namespace]
+
+
 def kubectl(*args: str, check: bool = True) -> str:
-    command = [*KUBECTL, *args]
+    command = [*kubectl_base(), *args]
     done = subprocess.run(command, capture_output=True, text=True, check=check, timeout=300)  # noqa: S603
     return done.stdout
 
@@ -79,7 +88,10 @@ def ps_json(known: dict[str, dict]) -> None:
             "Health": "healthy" if healthy else "unhealthy",
         }
         print(json.dumps(row))
-    command = [*shlex.split(os.environ["K8S_COMPOSE_REAL"]), "ps", "--format", "json"]
+    real = os.environ.get("K8S_COMPOSE_REAL")
+    if not real:  # the cloud: no Compose, so no postgres, valkey or localstack to report
+        return
+    command = [*shlex.split(real), "ps", "--format", "json"]
     done = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603
     for line in done.stdout.splitlines():
         if line.strip() and json.loads(line).get("Service") in INFRA:

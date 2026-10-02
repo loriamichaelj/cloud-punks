@@ -183,16 +183,34 @@ jobs:
           kubectl --context "$EKS_CLUSTER" --namespace "$NAMESPACE" get pods,events || true
           helm --kube-context "$EKS_CLUSTER" --namespace "$NAMESPACE" list || true
 
-      # The acceptance steps through the ALB (E2E_GATEWAY_URL, set above). Not yet proven
-      # against the cloud stores: the suite also talks to AWS directly (boto3), which the
-      # deploy role does not cover. Expect to adjust this step on the first real run.
+      # The acceptance suite in cloud mode. Orders go through the ALB (E2E_GATEWAY_URL, set
+      # above). The few things the ALB does not expose are reached the way `make k8s-e2e` does it
+      # locally: the four APIs are port-forwarded to localhost, and scripts/k8s_compose.py answers
+      # the suite's "compose" commands with kubectl (scale a consumer to 0 and back, read logs,
+      # scrape /metrics). E2E_CLOUD=1 skips the two checks the cloud cannot offer yet: the dead
+      # letter queue count and the low-stock Lambda test. The drills and the UI journeys are not run.
+      # Steps 2 to 10 write test stock for two SKUs and place orders for e2e-* customers in dev.
       - name: E2E acceptance
         env:
           UV_PYTHON_DOWNLOADS: never
         run: |
           set -euo pipefail
           uv sync --all-packages --locked
-          PYTHONPATH=tests/e2e uv run --frozen --no-sync pytest tests/e2e/test_acceptance.py -q
+          kube=(kubectl --context "$EKS_CLUSTER" --namespace "$NAMESPACE")
+
+          pids=""
+          trap 'kill $pids 2>/dev/null || true' EXIT
+          for pair in product-service:8001 inventory-service:8002 order-service:8003 notification-service:8004; do
+            "${kube[@]}" port-forward "svc/${pair%%:*}" "${pair##*:}:${pair##*:}" >/dev/null 2>&1 &
+            pids="$pids $!"
+          done
+          sleep 5
+
+          E2E_K8S=1 E2E_CLOUD=1 \
+          K8S_CONTEXT="$EKS_CLUSTER" K8S_NAMESPACE="$NAMESPACE" \
+          E2E_COMPOSE="$PWD/.venv/bin/python $PWD/scripts/k8s_compose.py" \
+          PYTHONPATH=tests/e2e \
+            uv run --frozen --no-sync pytest tests/e2e/test_acceptance.py -q
 
   notify:
     needs: deploy

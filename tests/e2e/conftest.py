@@ -5,6 +5,11 @@ HTTP to the gateway, except two things the gateway does not expose: the product 
 ``/metrics`` (cache counters) and ``docker compose`` (to stop and start a consumer).
 
 Each test creates its own orders under a unique ``e2e-*`` customer, so runs never collide.
+
+``E2E_K8S=1`` runs the same suite against a Kubernetes cluster, reaching the processes through
+``scripts/k8s_compose.py``. ``E2E_CLOUD=1`` adds the dev EKS cluster's limits on top: no
+LocalStack, so the dead-letter queue check and the low-stock Lambda test are skipped (the cloud
+stack deploys no Lambda yet, and the deploy role may not read the queues).
 """
 
 import json
@@ -23,6 +28,7 @@ import pytest
 
 GATEWAY = os.environ.get("E2E_GATEWAY_URL", "http://localhost:8080")
 COMPOSE = os.environ.get("E2E_COMPOSE")  # the Makefile's compose command; unset = no drills
+E2E_CLOUD = bool(os.environ.get("E2E_CLOUD"))  # real AWS behind it: nothing runs on LocalStack
 
 POLL_INTERVAL_S = 0.25
 POLL_TIMEOUT_S = 15.0
@@ -240,6 +246,8 @@ def assert_platform_whole(http: httpx2.Client) -> None:
         if not s["Service"].endswith("-migrate")
     }
     assert unhealthy == {}
+    if E2E_CLOUD:  # the queues are in AWS, not LocalStack; alarms on them come with Phase 4
+        return
     assert {q: queue_counts(q) for q in DEAD_LETTER_QUEUES} == {
         q: {"visible": 0, "in_flight": 0} for q in DEAD_LETTER_QUEUES
     }

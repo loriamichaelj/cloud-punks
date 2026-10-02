@@ -7,6 +7,7 @@ from typing import Any
 import httpx2
 import pytest
 from conftest import (
+    E2E_CLOUD,
     SKU_A,
     SKU_B,
     api_metrics,
@@ -147,6 +148,8 @@ def test_notifications_for_an_unknown_order_are_an_empty_list(http: httpx2.Clien
 def test_a_low_stock_reservation_triggers_the_lambda(http: httpx2.Client, customer: str) -> None:
     """Stock 3, order 1: 2 remain, below the threshold of 5. The Lambda logs a `low_stock` record
     (EMF) that LocalStack's CloudWatch Logs keeps."""
+    if E2E_CLOUD:
+        pytest.skip("the low-stock Lambda is not deployed in the cloud stack yet")
     set_stock(http, SKU_A, 3)
     order_id = place_order(http, customer, SKU_A, 1).json()["order_id"]
     wait_for_status(http, order_id, "CONFIRMED")
