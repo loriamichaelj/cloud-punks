@@ -1,16 +1,18 @@
 name: "App: build"
 
-# prepare -> test -> build -> notify. The CI check for the application, in dev.
+# Builds the five application images and pushes them to ECR as
+# loria-retail/<name>:sha-<git sha>, as cloudbatch818-loria-retail-deploy-dev.
+# Manual only, from dev; the `dev` environment's required reviewer approves the run.
+# One job, so one approval covers all five images. It runs no tests: app-test.yml
+# does (pr.yml runs the same checks on a pull request).
 #
-#   prepare  names the image tag and refuses to run from any branch but dev.
-#   test     `make lint test` on a hosted runner.
-#   build    builds all five arm64 images to prove they build. Nothing is
-#            pushed: publishing to ECR is app-images.yml.
-#   notify   always runs; writes the result to the run summary and comments on
-#            the commit.
+# Images are built natively for arm64 (the EKS nodes are Graviton) on a hosted
+# arm64 runner. ECR tags are immutable, so an image whose tag already exists is
+# not rebuilt; its existing digest is reported instead.
 #
-# No AWS access anywhere in this workflow, so no environment approval. Neither
-# app-images.yml nor app-deploy.yml is called from here.
+#   build   builds and pushes the images. Needs the `dev` approval.
+#   notify  always runs; writes the result to the run summary and comments on
+#           the commit.
 on:
   workflow_dispatch:
 
@@ -18,104 +20,88 @@ run-name: app-build
 
 permissions:
   contents: read
+  id-token: write
 
-# Shares the group with app-images, app-deploy and app-destroy so they never overlap.
+# Shares the group with app-deploy, app-destroy and the rest so they never overlap.
 concurrency:
   group: app-dev
   cancel-in-progress: false
 
 jobs:
-  prepare:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      tag: ${{ steps.vars.outputs.tag }}
+  build:
+    runs-on: ubuntu-24.04-arm
+    environment: dev
+    timeout-minutes: 45
     steps:
-      - name: Name the image tag
-        id: vars
+      - name: Refuse any branch but dev
         run: |
           set -euo pipefail
           if [ "$GITHUB_REF" != "refs/heads/dev" ]; then
             echo "app-build runs from the dev branch only, not ${GITHUB_REF}" >&2
             exit 1
           fi
-          tag="sha-${GITHUB_SHA}"
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          {
-            echo "### app-build"
-            echo
-            echo "- Commit: \`${GITHUB_SHA}\`"
-            echo "- Image tag: \`${tag}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
 
-  test:
-    needs: prepare
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
-          python-version-file: .python-version
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_DEPLOY }}
+          aws-region: ${{ vars.AWS_REGION }}
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: ui/package-lock.json
-
-      # Same uv version as the Dockerfiles.
-      - name: Install uv
-        run: python -m pip install --disable-pip-version-check uv==0.12.15
-
-      - name: Lint and unit tests
-        env:
-          UV_PYTHON_DOWNLOADS: never
-        run: make lint test
-
-  build:
-    needs: [prepare, test]
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 45
-    env:
-      TAG: ${{ needs.prepare.outputs.tag }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Build the images (not pushed)
+      - name: Log in to ECR
         run: |
           set -euo pipefail
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          registry="${account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          echo "REGISTRY=${registry}" >> "$GITHUB_ENV"
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin "$registry"
+
+      - name: Build and push
+        run: |
+          set -euo pipefail
+          tag="sha-${GITHUB_SHA}"
           summary="$(mktemp)"
           {
-            echo "### Images built as \`${TAG}\` (not pushed)"
+            echo "### Images pushed as \`${tag}\`"
             echo
-            echo "| Image | Result |"
-            echo "| --- | --- |"
+            echo "| Repository | Digest | Result |"
+            echo "| --- | --- | --- |"
           } > "$summary"
 
-          # name, Dockerfile, build context
-          build_only() {
-            docker buildx build --platform linux/arm64 --provenance=false \
-              -f "$2" -t "retail-ci/$1:${TAG}" "$3"
-            echo "| \`$1\` | built |" >> "$summary"
+          # repo, Dockerfile, build context
+          build_push() {
+            repo="loria-retail/$1"
+            image="${REGISTRY}/${repo}"
+            if digest=$(aws ecr describe-images --repository-name "$repo" \
+                --image-ids "imageTag=${tag}" \
+                --query 'imageDetails[0].imageDigest' --output text 2>/dev/null); then
+              echo "${repo}:${tag} already exists, not rebuilding"
+              result="already existed"
+            else
+              docker buildx build --platform linux/arm64 --provenance=false --push \
+                -f "$2" -t "${image}:${tag}" --metadata-file "meta-$1.json" "$3"
+              digest=$(jq -r '."containerimage.digest"' "meta-$1.json")
+              result="pushed"
+            fi
+            echo "| \`${repo}\` | \`${digest}\` | ${result} |" >> "$summary"
           }
 
-          build_only product       services/product-service/Dockerfile       .
-          build_only inventory     services/inventory-service/Dockerfile     .
-          build_only order         services/order-service/Dockerfile         .
-          build_only notification  services/notification-service/Dockerfile  .
-          build_only ui            ui/Dockerfile                             ui
+          # The service images build from the repo root so libs/common is included.
+          build_push product       services/product-service/Dockerfile       .
+          build_push inventory     services/inventory-service/Dockerfile     .
+          build_push order         services/order-service/Dockerfile         .
+          build_push notification  services/notification-service/Dockerfile  .
+          # The UI builds from ui/ only. VITE_DEMO_TOOLS stays at its default, false.
+          build_push ui            ui/Dockerfile                             ui
 
           cat "$summary" >> "$GITHUB_STEP_SUMMARY"
           cat "$summary"
 
   notify:
-    needs: [prepare, test, build]
+    needs: build
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -125,26 +111,19 @@ jobs:
       - name: Report the result
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.prepare.outputs.tag }}
-          R_PREPARE: ${{ needs.prepare.result }}
-          R_TEST: ${{ needs.test.result }}
           R_BUILD: ${{ needs.build.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           overall="succeeded"
-          for r in "$R_PREPARE" "$R_TEST" "$R_BUILD"; do
-            case "$r" in
-              failure|cancelled) overall="failed" ;;
-            esac
-          done
+          case "$R_BUILD" in
+            failure|cancelled) overall="failed" ;;
+          esac
           body="$(printf '%s\n' \
-            "**app-build ${overall}** for \`${TAG:-unknown}\`" \
+            "**app-build ${overall}** for \`sha-${GITHUB_SHA}\`" \
             "" \
             "| Job | Result |" \
             "| --- | --- |" \
-            "| prepare | ${R_PREPARE} |" \
-            "| test | ${R_TEST} |" \
             "| build | ${R_BUILD} |" \
             "" \
             "${RUN_URL}")"

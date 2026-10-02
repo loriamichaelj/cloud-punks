@@ -532,7 +532,7 @@ retail-platform/
 ├── README.md                     # run instructions
 ├── deploy/helm/                  # retail-service chart, values/ (per release, per env), third-party/ (Traefik)
 ├── infra/terraform/              # Phase 2 (placeholder)
-├── .github/workflows/            # Phases 2–3: bootstrap-state-bucket, bootstrap-ci-roles, platform-create, platform-destroy, addons-create, addons-destroy, app-build, app-images, app-database, app-seed, app-deploy, app-expose, app-verify, app-destroy, app-rollback, pr, promote
+├── .github/workflows/            # Phases 2–3: bootstrap-state-bucket, bootstrap-ci-roles, platform-create, platform-destroy, addons-create, addons-destroy, app-build, app-test, app-database, app-seed, app-deploy, app-expose, app-verify, app-destroy, app-rollback, pr, promote
 ├── Makefile
 ├── .env.example                  # committed; .env is git-ignored
 └── pyproject.toml                # uv workspace root, ruff, mypy, pytest config
@@ -709,7 +709,7 @@ Bring-up order:
 2. **`bootstrap-state-bucket.yml` (`workflow_dispatch`, environment `bootstrap`):** idempotent AWS CLI calls (not Terraform; there is no state to start from) create `loria-retail-tfstate-<account-id>-<region>` with versioning, SSE, all public access blocked, a TLS-only bucket policy and noncurrent-version expiry. Then **`bootstrap-ci-roles.yml`** (also `workflow_dispatch`, environment `bootstrap`, independent of the first) runs `terraform apply` of `infra/terraform/bootstrap/` (state key `bootstrap/terraform.tfstate`), which uses the `github-oidc` module to create the roles in the table below.
 3. **`platform-create.yml` on GitHub-hosted runners** applies `envs/<env>/platform` (network, eks, data, events, ecr, runners). The EKS endpoint is private, but creating the cluster only needs the AWS API, so hosted runners suffice.
 4. **`addons-create.yml` on the in-VPC runners** applies `envs/<env>/cluster-addons` (AWS Load Balancer Controller, External Secrets Operator, namespace, `ExternalSecret`/ingress class). Terraform's `helm`/`kubernetes` providers need the private API, so this stack cannot run on hosted runners.
-5. `app-images.yml` builds and pushes to ECR; `app-deploy.yml` runs `helm upgrade --install --atomic` and e2e on the in-VPC runners.
+5. `app-build.yml` builds and pushes to ECR; `app-deploy.yml` runs `helm upgrade --install --atomic` and e2e on the in-VPC runners.
 
 | Role | Trust `sub` | Permissions | Used by |
 | --- | --- | --- | --- |
@@ -744,13 +744,13 @@ Terraform references the OIDC provider with a `data` source (an account can hold
 | --- | --- | --- |
 | `bootstrap-state-bucket.yml`, `bootstrap-ci-roles.yml` | `workflow_dispatch`, environment `bootstrap` (two independent workflows, run in that order) | Phase 2 step 2: the state bucket (AWS CLI), then the `bootstrap/` Terraform stack that creates the `cloudbatch818-loria-*` roles. Hosted runner, `cloudbatch818-loria-retail-bootstrap` |
 | `pr.yml` | Pull request into `dev`, `stage` or `prod` (hosted runners, read-only token, no secrets, no AWS) | `detect` picks checks from the changed files; `code` (`make lint test`: ruff, mypy, unit tests, OpenAPI and UI checks, `helm lint` + kubeconform); `images` (builds the five images, Trivy fails on fixable HIGH/CRITICAL); `terraform` (`fmt -check`, `validate`, tflint, Checkov with inline reasoned skips); `config-scan` (Trivy over Dockerfiles, Helm, Terraform); `workflows` (actionlint); `ci`, the one required check, which fails if any job failed or was cancelled. No `terraform plan` on PRs (it runs in `platform-create.yml` behind the `dev` approval) and no LocalStack in CI |
-| `app-images.yml`, `app-deploy.yml` (replace `main.yml`) | `workflow_dispatch` only (decided: no push trigger) | Build once (hosted) → push `sha-<sha>` to ECR → on `retail-vpc` runners: OIDC assume `cloudbatch818-loria-retail-deploy-dev` → `helm upgrade --install --rollback-on-failure --wait --timeout 10m` → e2e acceptance against dev |
+| `app-build.yml`, `app-deploy.yml` (replace `main.yml`) | `workflow_dispatch` only (decided: no push trigger) | Build once (hosted arm64) → push `sha-<sha>` to ECR → on `retail-vpc` runners: OIDC assume `cloudbatch818-loria-retail-deploy-dev` → `helm upgrade --install --rollback-on-failure --wait --timeout 10m` → e2e acceptance against dev |
 | `promote.yml` | `workflow_dispatch` from the `stage` or `prod` branch | The branch names the Environment. `check` (hosted): the image's commit is in the branch's history, the Environment has a deploy role and its Helm values; then the **same image digest** (never a rebuild) is deployed by `image.digest` on a `retail-vpc` runner → smoke test. **Built, not run:** stage and prod are not deployed |
 | `app-rollback.yml` | `workflow_dispatch`, runner, `dev` approval | `helm rollback` of one release (to the previous or a named revision) or all nine, `--wait`, then the storefront must answer. Does not undo migrations |
 | `platform-create.yml` | `workflow_dispatch` (action `plan` or `apply`; no PR plan) | Plan, then apply after a second approval: the `platform` stack on hosted runners |
 | `addons-create.yml` | `workflow_dispatch` (action `plan` or `apply`) | The same two approvals for the `cluster-addons` stack, on the `retail-vpc` runner (the cluster API is private) |
 | `addons-destroy.yml`, `platform-destroy.yml` | `workflow_dispatch`, environment-gated | Destroy an env in two steps, addons first (on the runner), then platform, which refuses to start while the addons state still has resources. Never touch `bootstrap`. Support the idle-cost rule in §14. Each is a saved `plan -destroy`, then a second approval to apply it |
-| `app-build.yml` | `workflow_dispatch` | The CI check: `prepare`, `make lint test`, a no-push build of all five images, `notify`. No AWS, no approval |
+| `app-test.yml` | `workflow_dispatch`, any branch | The checks `pr.yml` runs on a pull request, all of them, by hand: `make lint test`, the five arm64 images built and Trivy-scanned, Terraform checks, the config scan, actionlint, then `notify`. No AWS, no approval |
 | `app-database.yml` | `workflow_dispatch`, runner | `scripts/db_init.py`: the two databases, the owner and app roles, and the four passwords in Secrets Manager, as the `db` role |
 | `app-seed.yml` | `workflow_dispatch`, runner | `local/seed/seed.py`: the catalog into `product_db` and the starting stock into DynamoDB |
 | `app-expose.yml` | `workflow_dispatch`, runner | Dev only: a second, internet-facing ALB reachable from one address held in the `DEV_VIEWER_CIDR` environment secret (checked by `scripts/viewer_cidr.py`); `remove` takes it away |

@@ -242,7 +242,7 @@ What a pass shows: a low-stock reservation reaches the Lambda and its record lan
 
 ### Deviations from DESIGN.md
 
-- Dev is the only deployed environment. `main.yml` became `app-images.yml` and `app-deploy.yml`, both `workflow_dispatch` only (no push trigger, decided in Phase 3), plus a hosted `app-build.yml` check. Phase 3 added `pr.yml`, `promote.yml` and `app-rollback.yml`.
+- Dev is the only deployed environment. `main.yml` became `app-build.yml` (build and push the images) and `app-deploy.yml`, both `workflow_dispatch` only (no push trigger, decided in Phase 3), plus `app-test.yml`, the checks `pr.yml` runs, by hand. `app-images.yml` was merged into `app-build.yml` on 2 Oct 2026, and the old `app-build.yml` check (tests, no-push build) became `app-test.yml`. Phase 3 added `pr.yml`, `promote.yml` and `app-rollback.yml`.
 - One Terraform role for plan, apply and destroy, trusted by the `dev` Environment only. There is no PR plan: a PR run would use broad credentials without the reviewer.
 - ECR uses basic scan-on-push, not Inspector enhanced scanning (the apply role has no `inspector2` rights).
 - `DB_SSLMODE=require` in dev, not `verify-full`: the images do not carry the RDS CA bundle.

@@ -123,7 +123,7 @@ Bring-up, in order (details and the teardown order are in `.github/workflows/REA
 1. `bootstrap-state-bucket`, then `bootstrap-ci-roles`: the Terraform state bucket and the CI roles. Needs the one-time manual setup in `infra/terraform/README.md` (OIDC provider, bootstrap role, Environments, variables).
 2. `platform-create` (plan, then apply): network, ECR, EKS, data stores, queues, the in-VPC runner. Then store the runner's GitHub token by hand, as that README says.
 3. `addons-create`: the load balancer controller, External Secrets, the secret store.
-4. `app-database`, `app-images`, `app-deploy`, then `app-seed` and `app-deploy` once more (the first deploy creates the schema; the seed needs it).
+4. `app-database`, `app-build`, `app-deploy`, then `app-seed` and `app-deploy` once more (the first deploy creates the schema; the seed needs it).
 5. `app-expose` (optional): a browser view for one address, held in the `DEV_VIEWER_CIDR` environment secret.
 
 Tear down in the reverse order: `app-destroy`, `addons-destroy`, `platform-destroy`. Dev costs roughly $300 a month while it runs (a list-price estimate, not measured), so destroy it when idle. Those workflows have not been run yet.

@@ -82,7 +82,7 @@ variable "kubectl_sha256" {
 }
 
 variable "uv_version" {
-  description = "Same as the Dockerfiles and the app-build workflow."
+  description = "Same as the Dockerfiles, pr.yml and the app-test workflow."
   type        = string
   default     = "0.12.15"
 }

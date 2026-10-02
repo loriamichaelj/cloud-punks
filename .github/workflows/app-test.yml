@@ -1,93 +1,39 @@
-name: "PR: checks"
+name: "App: test"
 
-# The automatic gate for every pull request into dev, stage or prod. It runs by itself, on GitHub's
-# hosted runners, with a read-only token, no secrets and no AWS access (and so no OIDC token): a pull
-# request is untrusted code, and a fork's can read nothing. It never touches the dev environment or the
-# self-hosted runner. Its only output is pass or fail checks on the PR. Changing this file runs every check.
+# Every check pr.yml runs on a pull request, run by hand on any branch. It builds nothing that is
+# published and needs no AWS access, no secret and no approval.
 #
-#   detect         decides from the changed files which of the checks below this change needs.
-#   code           `make lint test`: ruff, mypy per service, the OpenAPI and UI checks, Helm lint and
-#                  kubeconform over every values file, and every unit test with the coverage gates.
-#   images         builds each of the five images and scans it with Trivy (fixable HIGH and CRITICAL fail).
-#   terraform      fmt, validate, tflint and Checkov over infra/terraform. No `terraform plan`: that needs
-#                  AWS, and runs only in platform-create.yml behind the dev approval.
-#   config-scan    Trivy over Dockerfiles, Helm and Terraform for misconfigurations.
-#   workflows      actionlint over .github/workflows.
-#   ci             the one check branch protection requires. It fails if any job above failed or was
-#                  cancelled; a job skipped because nothing it covers changed is fine.
+#   code         `make lint test`: ruff, mypy per service, the OpenAPI and UI checks, Helm lint and
+#                kubeconform over every values file, and every unit test with the coverage gates.
+#   images       builds each of the five arm64 images (the architecture app-build.yml ships) and scans
+#                it with Trivy: fixable HIGH and CRITICAL fail.
+#   terraform    fmt, validate, tflint and Checkov over infra/terraform. No `terraform plan`.
+#   config-scan  Trivy over Dockerfiles, Helm and Terraform for misconfigurations.
+#   workflows    actionlint over .github/workflows.
+#   notify       always runs; writes the result to the run summary and comments on the commit.
 #
-# app-test.yml runs all of these by hand on any branch. Integration tests, the failure drills and the browser journeys need LocalStack and a secret, so they stay
-# local (`make itest`, `make e2e`, `make ui-e2e`). The cloud acceptance suite in app-deploy.yml covers that
-# layer against real AWS, after a deploy.
+# pr.yml decides from the changed files which of these a pull request needs; this runs all of them.
+# Keep the two in step: a pin changed in one is changed in the other. The cloud acceptance suite is in
+# app-deploy.yml; integration tests, the drills and the browser journeys stay local because they need
+# LocalStack. This workflow calls no other.
 on:
-  pull_request:
-    branches: [dev, stage, prod]
+  workflow_dispatch:
 
-run-name: pr ${{ github.event.pull_request.number }}
+run-name: app-test ${{ github.ref_name }}
 
 permissions:
   contents: read
 
-# A newer push to the same pull request replaces the run in progress.
+# Its own group: it uses no AWS and must not hold up a deploy.
 concurrency:
-  group: pr-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: app-test-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   TRIVY_VERSION: v0.75.0
 
 jobs:
-  detect:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      code: ${{ steps.flags.outputs.code }}
-      images: ${{ steps.flags.outputs.images }}
-      infra: ${{ steps.flags.outputs.infra }}
-      config: ${{ steps.flags.outputs.config }}
-      workflows: ${{ steps.flags.outputs.workflows }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-
-      - name: Decide which checks this change needs
-        id: flags
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          set -euo pipefail
-          # Three dots: what the pull request changed since it branched, not what the base gained since.
-          changed=$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}")
-          echo "Changed files:"
-          while IFS= read -r file; do echo "  ${file}"; done <<<"$changed"
-
-          any() { echo "$changed" | grep -Eq "$1" && echo true || echo false; }
-
-          # Changing this file changes how everything is checked, so it checks everything.
-          if echo "$changed" | grep -Fxq ".github/workflows/pr.yml"; then everything=true; else everything=false; fi
-
-          # Anything except docs, markdown and the workflows themselves can break the code checks.
-          if echo "$changed" | grep -Evq '^(docs/|\.github/)|\.md$'; then code=true; else code=false; fi
-          images=$(any '^(services/|libs/|ui/|pyproject\.toml$|uv\.lock$|local/seed/|\.dockerignore$|\.trivyignore\.yaml$)')
-          infra=$(any '^(infra/|\.tflint\.hcl$)')
-          config=$(any '^(infra/|deploy/|ui/Dockerfile$|services/[^/]+/Dockerfile$|\.trivyignore\.yaml$)')
-          workflows=$(any '^\.github/')
-
-          if [ "$everything" = true ]; then code=true; images=true; infra=true; config=true; workflows=true; fi
-          {
-            echo "code=${code}"
-            echo "images=${images}"
-            echo "infra=${infra}"
-            echo "config=${config}"
-            echo "workflows=${workflows}"
-          } | tee -a "$GITHUB_OUTPUT"
-
   code:
-    needs: detect
-    if: needs.detect.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -124,10 +70,8 @@ jobs:
         run: make lint test
 
   images:
-    needs: detect
-    if: needs.detect.outputs.images == 'true'
     name: images (${{ matrix.name }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -143,9 +87,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # Built for the runner's own architecture and kept local: it is scanned, never pushed. The OS
-      # packages and libraries Trivy reports are the same on arm64, which is what app-build.yml ships.
-      # app-test.yml runs the same checks by hand, on arm64.
+      # Built for arm64, the architecture app-build.yml ships, and kept local: it is scanned, never pushed.
       - name: Build the image
         env:
           NAME: ${{ matrix.name }}
@@ -167,8 +109,6 @@ jobs:
           trivyignores: .trivyignore.yaml
 
   terraform:
-    needs: detect
-    if: needs.detect.outputs.infra == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -214,8 +154,6 @@ jobs:
             -d /tf --framework terraform --compact --quiet
 
   config-scan:
-    needs: detect
-    if: needs.detect.outputs.config == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -236,8 +174,6 @@ jobs:
           skip-dirs: .venv,ui/node_modules
 
   workflows:
-    needs: detect
-    if: needs.detect.outputs.workflows == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -254,22 +190,34 @@ jobs:
           tar -xzf actionlint.tgz actionlint
           ./actionlint
 
-  # The single check that branch protection requires. Always runs, and fails if any job above failed or
-  # was cancelled. A skipped job (nothing it covers changed) counts as fine.
-  ci:
-    name: ci
-    needs: [detect, code, images, terraform, config-scan, workflows]
+  notify:
+    needs: [code, images, terraform, config-scan, workflows]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: write
     steps:
-      - name: Require every job to have passed or been skipped
+      - name: Report the result
         env:
+          GH_TOKEN: ${{ github.token }}
+          REF_NAME: ${{ github.ref_name }}
           NEEDS: ${{ toJSON(needs) }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          overall="succeeded"
           if echo "$NEEDS" | jq -e 'any(.[]; .result == "failure" or .result == "cancelled")' >/dev/null; then
-            echo "at least one job failed or was cancelled" >&2
-            exit 1
+            overall="failed"
           fi
+          table=$(echo "$NEEDS" | jq -r 'to_entries[] | "| \(.key) | \(.value.result) |"')
+          body="$(printf '%s\n' \
+            "**app-test ${overall}** for \`${REF_NAME}\` at \`${GITHUB_SHA}\`" \
+            "" \
+            "| Job | Result |" \
+            "| --- | --- |" \
+            "${table}" \
+            "" \
+            "${RUN_URL}")"
+          echo "$body" >> "$GITHUB_STEP_SUMMARY"
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" -f body="$body" >/dev/null
