@@ -1,0 +1,80 @@
+name: "Cluster: capacity"
+
+# Read-only. Reports how full the dev cluster is, so a change that adds pods (an add-on, a monitoring
+# stack, an HPA scale-up) is decided on numbers and not on an estimate:
+#   - pods per namespace, against the pods each node allows
+#   - CPU and memory requested by all pods, against what each node can allocate
+#   - what the nodes and the heaviest pods actually use right now (metrics-server)
+# Changes nothing. Runs on the in-VPC runner as cloudbatch818-loria-retail-tf-dev, because the deploy
+# role's cluster access stops at the `retail` namespace and this needs nodes and every namespace; one job,
+# one approval from the `dev` environment's reviewer.
+on:
+  workflow_dispatch:
+
+run-name: cluster-capacity
+
+permissions:
+  contents: read
+  id-token: write
+
+# Shares the group with the other cluster workflows so it never reads a cluster mid-change.
+concurrency:
+  group: app-dev
+  cancel-in-progress: false
+
+env:
+  EKS_CLUSTER: loria-retail-dev
+
+jobs:
+  capacity:
+    runs-on: [self-hosted, retail-vpc]
+    environment: dev
+    timeout-minutes: 10
+    steps:
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_TF }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Report capacity
+        run: |
+          set -euo pipefail
+          # Always name the context explicitly.
+          aws eks update-kubeconfig --name "$EKS_CLUSTER" --alias "$EKS_CLUSTER" --region "$AWS_REGION"
+          kube=(kubectl --context "$EKS_CLUSTER")
+          report="${RUNNER_TEMP}/capacity.md"
+
+          {
+            echo "### Nodes"
+            echo
+            echo '```'
+            "${kube[@]}" get nodes -o custom-columns='NAME:.metadata.name,TYPE:.metadata.labels.node\.kubernetes\.io/instance-type,CPU:.status.allocatable.cpu,MEMORY:.status.allocatable.memory,PODS:.status.allocatable.pods'
+            echo '```'
+            echo
+            echo "### Pods against the limit"
+            echo
+            total=$("${kube[@]}" get pods -A --no-headers | wc -l | tr -d ' ')
+            limit=$("${kube[@]}" get nodes -o jsonpath='{range .items[*]}{.status.allocatable.pods}{"\n"}{end}' | awk '{s += $1} END {print s}')
+            echo "**${total} pods of ${limit} allowed** (${limit} minus ${total} = $((limit - total)) free). Every pod counts, finished ones included."
+            echo
+            echo '```'
+            "${kube[@]}" get pods -A --no-headers | awk '{print $1}' | sort | uniq -c | sort -rn
+            echo '```'
+            echo
+            echo "### Requested against allocatable (all pods)"
+            echo
+            echo '```'
+            "${kube[@]}" describe nodes | sed -n '/^Allocated resources:/,/^Events:/p' | sed '$d'
+            echo '```'
+            echo
+            echo "### In use right now"
+            echo
+            echo '```'
+            "${kube[@]}" top nodes || echo "metrics-server did not answer"
+            echo
+            "${kube[@]}" top pods -A --sort-by=memory 2>/dev/null | head -n 16 || true
+            echo '```'
+          } > "$report"
+
+          cat "$report" >> "$GITHUB_STEP_SUMMARY"
+          cat "$report"
