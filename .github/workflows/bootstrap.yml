@@ -1,6 +1,6 @@
 name: bootstrap
 
-# Calls state-bucket.yml, then creates the cloudbatch818-* roles.
+# Calls state-bucket.yml, then creates the cloudbatch818-loria-* roles.
 # Manual only; the `bootstrap` environment's required reviewer is the gate.
 on:
   workflow_dispatch:

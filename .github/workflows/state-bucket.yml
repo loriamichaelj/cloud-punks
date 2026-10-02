@@ -1,7 +1,7 @@
 name: state-bucket
 
 # Creates (or re-asserts the settings of) the Terraform state bucket
-# retail-tfstate-<account-id>-<region>. Idempotent: safe to run again.
+# loria-retail-tfstate-<account-id>-<region>. Idempotent: safe to run again.
 # Run it alone from the Actions tab, or let bootstrap.yml call it first.
 on:
   workflow_dispatch:
@@ -35,7 +35,7 @@ jobs:
         run: |
           set -euo pipefail
           account_id=$(aws sts get-caller-identity --query Account --output text)
-          bucket="retail-tfstate-${account_id}-${REGION}"
+          bucket="loria-retail-tfstate-${account_id}-${REGION}"
           echo "name=${bucket}" >> "$GITHUB_OUTPUT"
 
           if aws s3api head-bucket --bucket "$bucket" 2> head.err; then

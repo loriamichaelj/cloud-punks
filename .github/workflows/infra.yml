@@ -1,8 +1,8 @@
 name: infra
 
 # dev/platform stack (network, ecr, eks).
-# - pull_request: plan only, as cloudbatch818-tf-plan, posted as a PR comment.
-# - workflow_dispatch: two jobs as cloudbatch818-tf-apply-dev, each approved by
+# - pull_request: plan only, as cloudbatch818-loria-tf-plan, posted as a PR comment.
+# - workflow_dispatch: two jobs as cloudbatch818-loria-tf-apply-dev, each approved by
 #   the `dev` environment's required reviewer. `plan` writes the plan to the
 #   state bucket and prints it; `apply` runs only after a second approval and
 #   applies exactly that saved plan. Apply is manual on purpose: it creates a
@@ -63,7 +63,7 @@ jobs:
         run: |
           account_id=$(aws sts get-caller-identity --query Account --output text)
           terraform init \
-            -backend-config="bucket=retail-tfstate-${account_id}-${TF_VAR_aws_region}" \
+            -backend-config="bucket=loria-retail-tfstate-${account_id}-${TF_VAR_aws_region}" \
             -backend-config="key=${STATE_KEY}" \
             -backend-config="region=${TF_VAR_aws_region}"
 
@@ -113,7 +113,7 @@ jobs:
         run: |
           account_id=$(aws sts get-caller-identity --query Account --output text)
           terraform init \
-            -backend-config="bucket=retail-tfstate-${account_id}-${TF_VAR_aws_region}" \
+            -backend-config="bucket=loria-retail-tfstate-${account_id}-${TF_VAR_aws_region}" \
             -backend-config="key=${STATE_KEY}" \
             -backend-config="region=${TF_VAR_aws_region}"
 
@@ -148,7 +148,7 @@ jobs:
         run: |
           account_id=$(aws sts get-caller-identity --query Account --output text)
           key="dev/plans/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tfplan"
-          aws s3 cp tfplan "s3://retail-tfstate-${account_id}-${TF_VAR_aws_region}/${key}"
+          aws s3 cp tfplan "s3://loria-retail-tfstate-${account_id}-${TF_VAR_aws_region}/${key}"
           echo "plan_key=${key}" >> "$GITHUB_OUTPUT"
           echo "plan_sha256=$(sha256sum tfplan | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
@@ -184,14 +184,14 @@ jobs:
         run: |
           account_id=$(aws sts get-caller-identity --query Account --output text)
           terraform init \
-            -backend-config="bucket=retail-tfstate-${account_id}-${TF_VAR_aws_region}" \
+            -backend-config="bucket=loria-retail-tfstate-${account_id}-${TF_VAR_aws_region}" \
             -backend-config="key=${STATE_KEY}" \
             -backend-config="region=${TF_VAR_aws_region}"
 
       - name: Fetch the approved plan
         run: |
           account_id=$(aws sts get-caller-identity --query Account --output text)
-          aws s3 cp "s3://retail-tfstate-${account_id}-${TF_VAR_aws_region}/${PLAN_KEY}" tfplan
+          aws s3 cp "s3://loria-retail-tfstate-${account_id}-${TF_VAR_aws_region}/${PLAN_KEY}" tfplan
           echo "${PLAN_SHA256}  tfplan" | sha256sum --check
 
       # A saved plan is refused if the state changed since it was made.
@@ -211,7 +211,7 @@ jobs:
         if: always()
         run: |
           account_id=$(aws sts get-caller-identity --query Account --output text)
-          aws s3 rm "s3://retail-tfstate-${account_id}-${TF_VAR_aws_region}/${PLAN_KEY}" || true
+          aws s3 rm "s3://loria-retail-tfstate-${account_id}-${TF_VAR_aws_region}/${PLAN_KEY}" || true
 
       - name: Diagnostics on failure
         if: failure()

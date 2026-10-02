@@ -3,7 +3,7 @@ data "aws_caller_identity" "current" {}
 locals {
   account_id = data.aws_caller_identity.current.account_id
   env        = var.target_environment
-  prefix     = "cloudbatch818"
+  prefix     = "cloudbatch818-loria"
 
   sub_pull_request = "${var.oidc_subject_prefix}:pull_request"
   sub_environment  = "${var.oidc_subject_prefix}:environment:${local.env}"
@@ -34,7 +34,7 @@ data "aws_iam_policy_document" "tf_plan" {
 }
 
 # Apply role: broad by design (DESIGN.md section 13, accepted gap). IAM is the
-# one area kept narrow: it can manage only cloudbatch818-retail-* roles and
+# one area kept narrow: it can manage only cloudbatch818-loria-retail-dev-* roles and
 # policies, so it cannot edit the tf-plan, tf-apply or deploy roles.
 data "aws_iam_policy_document" "tf_apply" {
   statement {
@@ -116,9 +116,9 @@ data "aws_iam_policy_document" "tf_apply" {
       "iam:RemoveRoleFromInstanceProfile",
     ]
     resources = [
-      "arn:aws:iam::${local.account_id}:role/${local.prefix}-retail-*",
-      "arn:aws:iam::${local.account_id}:policy/${local.prefix}-retail-*",
-      "arn:aws:iam::${local.account_id}:instance-profile/${local.prefix}-retail-*",
+      "arn:aws:iam::${local.account_id}:role/${local.prefix}-retail-${local.env}-*",
+      "arn:aws:iam::${local.account_id}:policy/${local.prefix}-retail-${local.env}-*",
+      "arn:aws:iam::${local.account_id}:instance-profile/${local.prefix}-retail-${local.env}-*",
     ]
   }
 

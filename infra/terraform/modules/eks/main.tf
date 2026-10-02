@@ -1,7 +1,7 @@
 data "aws_caller_identity" "current" {}
 
 locals {
-  iam_prefix = "cloudbatch818-${var.name}"
+  iam_prefix = var.iam_name_prefix
 
   # Needed before nodes can become Ready.
   early_addons = toset(["vpc-cni", "kube-proxy"])

@@ -26,11 +26,11 @@ variable "target_environment" {
 variable "ecr_repository_prefix" {
   description = "ECR repositories the deploy role may push to and pull from: <prefix>/*."
   type        = string
-  default     = "retail"
+  default     = "loria-retail"
 }
 
 variable "eks_cluster_name" {
   description = "EKS cluster the deploy role may describe. Must match the name the eks module uses."
   type        = string
-  default     = "retail-dev"
+  default     = "loria-retail-dev"
 }

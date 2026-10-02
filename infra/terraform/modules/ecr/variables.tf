@@ -1,7 +1,7 @@
 variable "repository_prefix" {
   description = "Repositories are named <prefix>/<service>. Must match the prefix the deploy role is scoped to."
   type        = string
-  default     = "retail"
+  default     = "loria-retail"
 }
 
 variable "services" {

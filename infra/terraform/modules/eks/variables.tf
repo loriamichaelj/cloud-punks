@@ -1,10 +1,15 @@
 variable "name" {
-  description = "Cluster name, for example retail-dev. IAM roles are named cloudbatch818-<name>-*, so it must start with retail."
+  description = "Cluster name, for example loria-retail-dev."
+  type        = string
+}
+
+variable "iam_name_prefix" {
+  description = "Prefix for the IAM roles this module creates. The apply role can only manage cloudbatch818-loria-retail-dev-*."
   type        = string
 
   validation {
-    condition     = startswith(var.name, "retail")
-    error_message = "Cluster names must start with retail: the apply role can only manage cloudbatch818-retail-* IAM."
+    condition     = startswith(var.iam_name_prefix, "cloudbatch818-loria-retail-dev")
+    error_message = "IAM role names must start with cloudbatch818-loria-retail-dev."
   }
 }
 

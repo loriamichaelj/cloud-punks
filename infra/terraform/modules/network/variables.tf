@@ -1,5 +1,5 @@
 variable "name" {
-  description = "Name prefix for every resource, for example retail-dev."
+  description = "Name prefix for every resource, for example loria-retail-dev."
   type        = string
 }
 

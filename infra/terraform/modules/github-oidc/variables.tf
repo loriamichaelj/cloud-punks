@@ -3,8 +3,8 @@ variable "role_name" {
   type        = string
 
   validation {
-    condition     = startswith(var.role_name, "cloudbatch818-")
-    error_message = "Role names must start with cloudbatch818-."
+    condition     = startswith(var.role_name, "cloudbatch818-loria-")
+    error_message = "Role names must start with cloudbatch818-loria-."
   }
 }
 
@@ -19,7 +19,7 @@ variable "subject" {
 }
 
 variable "managed_policy_arns" {
-  description = "Managed policies to attach. The bootstrap role may only attach ReadOnlyAccess and cloudbatch818-* policies."
+  description = "Managed policies to attach. The bootstrap role may only attach ReadOnlyAccess and cloudbatch818-loria-* policies."
   type        = list(string)
   default     = []
 }

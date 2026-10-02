@@ -5,13 +5,13 @@ variable "aws_region" {
 variable "cluster_name" {
   description = "Must match eks_cluster_name in the bootstrap stack, which scopes the deploy role to it."
   type        = string
-  default     = "retail-dev"
+  default     = "loria-retail-dev"
 }
 
 variable "ecr_repository_prefix" {
   description = "Must match ecr_repository_prefix in the bootstrap stack."
   type        = string
-  default     = "retail"
+  default     = "loria-retail"
 }
 
 variable "single_nat_gateway" {
