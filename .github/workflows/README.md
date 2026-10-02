@@ -15,6 +15,7 @@ Every workflow is independent: none calls another, each has its own concurrency 
 | `app-build.yml` | `workflow_dispatch`. The CI check, no AWS and no approval. Jobs: `prepare`, `test` (`make lint test`), `build` (builds the five images, pushes nothing), `notify` | none | none | `app-dev` |
 | `app-deploy.yml` | `workflow_dispatch` with an optional image `tag` (default `sha-<this commit>`). Jobs: `deploy` (checks the images exist, Helm on the runners, e2e; approval), `notify` | `dev` | `cloudbatch818-loria-retail-deploy-dev` (`AWS_ROLE_ARN_DEPLOY`) | `app-dev` |
 | `app-seed.yml` | `workflow_dispatch`. Loads the 20-product catalog into `product_db` and the starting stock into the inventory table, with the same `local/seed/seed.py` as `make seed`. Runs on the `retail-vpc` runner (approval). Safe to run again | `dev` | `cloudbatch818-loria-retail-db-dev` (`AWS_ROLE_ARN_DB`) | `app-dev` |
+| `app-verify.yml` | `workflow_dispatch`. Read-only: lists every tag and digest in the five ECR repositories, compares each running pod's image digest with the digest ECR holds for its tag (a difference fails the run), and warns when the running tag is older than the code the images are built from. Runs on the `retail-vpc` runner (approval) | `dev` | `cloudbatch818-loria-retail-deploy-dev` (`AWS_ROLE_ARN_DEPLOY`) | `app-dev` |
 | `app-expose.yml` | `workflow_dispatch` with an `action` choice: `expose` or `remove`. Installs a second, internet-facing ALB for the storefront, reachable only from the address in the `dev` environment secret `DEV_VIEWER_CIDR`. Runs on the `retail-vpc` runner (approval) | `dev` | `cloudbatch818-loria-retail-deploy-dev` (`AWS_ROLE_ARN_DEPLOY`) | `app-dev` |
 | `app-destroy.yml` | `workflow_dispatch` with a required `tag` (an image tag, or `all`) and an optional `uninstall_releases` (off by default; needs the runners) | `dev` | `cloudbatch818-loria-retail-deploy-dev` (`AWS_ROLE_ARN_DEPLOY`) | `app-dev` |
 
@@ -30,6 +31,7 @@ Every workflow is independent: none calls another, each has its own concurrency 
 8. `app-deploy.yml`: deploys a pushed tag to the cluster and runs the acceptance suite. On a fresh environment its e2e step is red the first time, because the catalog is empty (see 9).
 9. `app-seed.yml`: after the first `app-deploy` (its `product-service` release migrates the schema), loads the catalog and stock. Then run `app-deploy` again, or just use the app.
 10. `app-expose.yml` (optional): opens the storefront to one browser address, see below.
+11. `app-verify.yml` (any time after a deploy): checks that what runs on the cluster is what ECR holds, and whether it is current.
 
 Tearing down, in this order:
 
@@ -37,7 +39,7 @@ Tearing down, in this order:
 2. `addons-destroy.yml`: removes the add-ons while the cluster still runs, so the load balancer controller can delete the ALBs it created.
 3. `platform-destroy.yml`: removes the platform stack. It refuses to start while the addons stack still has resources. The bucket and the CI roles stay.
 
-`platform-create`, `platform-destroy`, `addons-create` and `addons-destroy` share the group `platform-dev`, so none of them overlap. `app-build`, `app-images`, `app-database`, `app-seed`, `app-deploy`, `app-expose` and `app-destroy` share `app-dev`.
+`platform-create`, `platform-destroy`, `addons-create` and `addons-destroy` share the group `platform-dev`, so none of them overlap. `app-build`, `app-images`, `app-database`, `app-seed`, `app-deploy`, `app-expose`, `app-verify` and `app-destroy` share `app-dev`.
 
 `app-build.yml` runs today. `app-deploy.yml` installs every release and the internal ALB, then runs the acceptance suite in cloud mode (`E2E_K8S=1 E2E_CLOUD=1`): orders go through the ALB, the four APIs are port-forwarded to the runner's localhost, and `scripts/k8s_compose.py` stands in for Compose with kubectl. Two checks are skipped there because the cloud stack cannot offer them yet: the dead-letter-queue count and the low-stock Lambda test. Run `app-seed.yml` once first, or the catalog is empty and step 1 fails. The drills and the UI journeys are not run in the cloud. `app-build.yml` checks and `app-images.yml` publishes; they do not overlap. Only the `dev` environment exists for now.
 
