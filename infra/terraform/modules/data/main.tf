@@ -74,6 +74,7 @@ resource "aws_db_instance" "this" {
   #checkov:skip=CKV_AWS_157:Dev is Single-AZ by decision (DESIGN.md section 13); prod sets db_multi_az
   #checkov:skip=CKV_AWS_161:The apps authenticate with passwords from Secrets Manager; IAM database authentication is later hardening
   #checkov:skip=CKV_AWS_353:Performance Insights is not needed in dev
+  #checkov:skip=CKV_AWS_293:Dev is destroyed when idle, so envs/dev/platform turns deletion protection off (db_deletion_protection); the module defaults it on and prod keeps it
   identifier = var.name
 
   engine         = "postgres"
