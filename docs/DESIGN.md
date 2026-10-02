@@ -434,7 +434,7 @@ Every service implements the same config, health, logging, metrics and resilienc
 | `AWS_ENDPOINT_URL` | `http://localstack:4566` | **Unset** in cloud |
 | `DB_HOST` / `DB_PORT` / `DB_NAME` | `postgres` / `5432` / `order_db` | ConfigMap (RDS instance endpoint, or RDS Proxy if kept) |
 | `DB_USER` / `DB_PASSWORD` | from `.env` (`order_app`; migrate job uses `order_owner`) | Secrets Manager → Kubernetes Secret (External Secrets Operator) |
-| `DB_SSLMODE` | `disable` | `verify-full`; **verify in Phase 2** which CA chain RDS Proxy presents (it may not be the RDS CA bundle) |
+| `DB_SSLMODE` | `disable` | `require` in dev for now (RDS enforces TLS; `require` encrypts but does not check the certificate). `verify-full` needs the RDS CA bundle in the images: **open**, verify in Phase 2 |
 | `CACHE_URL` | `redis://valkey:6379/0` | ConfigMap (`rediss://` with TLS) |
 | `EVENT_BUS_NAME` | `retail-events` | ConfigMap |
 | `QUEUE_NAME` | `inventory-order-events` | ConfigMap. Consumers call `GetQueueUrl` at startup, so no LocalStack-specific URL format leaks into config |

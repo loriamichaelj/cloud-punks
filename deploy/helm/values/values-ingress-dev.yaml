@@ -1,0 +1,26 @@
+# One shared Ingress mirroring gateway/nginx.conf; `/` goes to the UI. An internal ALB through
+# the AWS Load Balancer Controller, so the in-VPC runner can reach it for the e2e test. There is
+# no domain and no certificate yet, so it serves HTTP on port 80 inside the VPC only.
+workload:
+  enabled: false
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/load-balancer-name: loria-retail-dev
+    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/group.name: retail
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    alb.ingress.kubernetes.io/inbound-cidrs: 10.20.0.0/16
+    # One health check serves every target group. The APIs answer /health/live with 200; the
+    # UI has no such path and answers 404, which still proves nginx is up, so 404 counts.
+    alb.ingress.kubernetes.io/healthcheck-path: /health/live
+    alb.ingress.kubernetes.io/success-codes: "200-499"
+  routes:
+    - { path: /api/v1/products, service: product-service, port: 8001 }
+    - { path: /api/v1/categories, service: product-service, port: 8001 }
+    - { path: /api/v1/inventory, service: inventory-service, port: 8002 }
+    - { path: /api/v1/orders, service: order-service, port: 8003 }
+    - { path: /api/v1/notifications, service: notification-service, port: 8004 }
+  default: { service: ui, port: 8005 }

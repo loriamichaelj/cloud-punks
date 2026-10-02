@@ -1,0 +1,6 @@
+apiVersion: v2
+name: secret-store
+description: The External Secrets ClusterSecretStore that reads AWS Secrets Manager. Installed by the cluster-addons Terraform stack right after the operator, because the custom resource needs the operator's CRD (a Terraform kubernetes_manifest would fail on a fresh cluster).
+type: application
+version: 0.1.0
+appVersion: "dev"

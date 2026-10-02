@@ -9,9 +9,9 @@ name: "App: deploy"
 #   notify  always runs; writes the result to the run summary and comments on
 #           the commit.
 #
-# Needs the retail-vpc runners, the cluster add-ons, the data stores, the dev
-# Helm values and a DEV_BASE_URL variable on `dev`; none exist yet, so a run
-# stops at the preflight step or waits for a runner. This workflow calls no other.
+# Needs the retail-vpc runner, the cluster add-ons and the data stores, the dev Helm
+# values, the workload roles, and the database and app-user secrets in Secrets Manager.
+# This workflow calls no other.
 on:
   workflow_dispatch:
     inputs:
@@ -48,8 +48,6 @@ jobs:
     timeout-minutes: 60
     env:
       INPUT_TAG: ${{ inputs.tag }}
-      # Internal ALB URL of the dev ingress, set on the dev environment once it exists.
-      E2E_GATEWAY_URL: ${{ vars.DEV_BASE_URL }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -91,13 +89,12 @@ jobs:
       - name: Check the dev values exist
         run: |
           set -euo pipefail
-          releases="product-service inventory-service order-service inventory-consumer order-relay order-consumer notification-service notification-consumer ui"
+          releases="secrets product-service inventory-service order-service inventory-consumer order-relay order-consumer notification-service notification-consumer ui ingress"
           missing=0
           [ -f "${HELM_VALUES}/values-common-dev.yaml" ] || { echo "missing ${HELM_VALUES}/values-common-dev.yaml" >&2; missing=1; }
           for r in $releases; do
             [ -f "${HELM_VALUES}/values-${r}-dev.yaml" ] || { echo "missing ${HELM_VALUES}/values-${r}-dev.yaml" >&2; missing=1; }
           done
-          [ -n "${E2E_GATEWAY_URL}" ] || { echo "the dev environment variable DEV_BASE_URL is not set" >&2; missing=1; }
           exit "$missing"
 
       - name: Deploy the releases
@@ -108,6 +105,23 @@ jobs:
           account_id=$(aws sts get-caller-identity --query Account --output text)
           registry="${account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com"
           helm_cmd=(helm --kube-context "$EKS_CLUSTER" --namespace "$NAMESPACE")
+          kube=(kubectl --context "$EKS_CLUSTER" --namespace "$NAMESPACE")
+
+          # The database passwords come first: External Secrets copies them from Secrets
+          # Manager, and a migration Job runs before its own release creates anything.
+          echo "== secrets"
+          "${helm_cmd[@]}" upgrade --install --wait --timeout 5m \
+            secrets "$HELM_CHART" -f "${HELM_VALUES}/values-secrets-dev.yaml"
+          for s in product-app-db product-owner-db order-app-db order-owner-db; do
+            for _ in $(seq 1 36); do
+              "${kube[@]}" get secret "$s" >/dev/null 2>&1 && break
+              sleep 5
+            done
+            "${kube[@]}" get secret "$s" >/dev/null 2>&1 || {
+              echo "External Secrets did not create ${s}: does loria-retail-dev/${s} exist in Secrets Manager with a \"password\" key?" >&2
+              exit 1
+            }
+          done
 
           # release:image repository. Release order: a first install waits for its migration Job.
           for pair in \
@@ -128,7 +142,40 @@ jobs:
             ui "$HELM_CHART" -f "${HELM_VALUES}/values-ui-dev.yaml" \
             --set "image.repository=${registry}/loria-retail/ui" --set "image.tag=${TAG}"
 
-          kubectl --context "$EKS_CLUSTER" --namespace "$NAMESPACE" get pods
+          echo "== gateway (the shared Ingress)"
+          "${helm_cmd[@]}" upgrade --install --rollback-on-failure --wait --timeout 5m \
+            gateway "$HELM_CHART" -f "${HELM_VALUES}/values-ingress-dev.yaml"
+
+          "${kube[@]}" get pods
+
+      # The internal ALB takes a few minutes to get an address and healthy targets.
+      - name: Find the ALB and wait for it to answer
+        run: |
+          set -euo pipefail
+          host=""
+          for _ in $(seq 1 60); do
+            host=$(kubectl --context "$EKS_CLUSTER" --namespace "$NAMESPACE" get ingress gateway \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+            [ -n "$host" ] && break
+            sleep 10
+          done
+          if [ -z "$host" ]; then
+            echo "the Ingress has no ALB address after 10 minutes" >&2
+            kubectl --context "$EKS_CLUSTER" --namespace "$NAMESPACE" describe ingress gateway || true
+            exit 1
+          fi
+          code=""
+          for _ in $(seq 1 60); do
+            code=$(curl -s -m 5 -o /dev/null -w '%{http_code}' "http://${host}/" || true)
+            [ "$code" = "200" ] && break
+            sleep 10
+          done
+          if [ "$code" != "200" ]; then
+            echo "http://${host}/ answered ${code:-nothing} after 10 minutes" >&2
+            exit 1
+          fi
+          echo "E2E_GATEWAY_URL=http://${host}" >> "$GITHUB_ENV"
+          echo "- Dev ALB: \`http://${host}\` (internal, reachable only inside the VPC)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Show cluster state on failure
         if: failure()
@@ -136,9 +183,9 @@ jobs:
           kubectl --context "$EKS_CLUSTER" --namespace "$NAMESPACE" get pods,events || true
           helm --kube-context "$EKS_CLUSTER" --namespace "$NAMESPACE" list || true
 
-      # The acceptance steps through the ingress. Not yet proven against the cloud
-      # stores: the suite also talks to AWS directly (boto3), which the deploy role
-      # does not cover. Expect to adjust this step on the first real run.
+      # The acceptance steps through the ALB (E2E_GATEWAY_URL, set above). Not yet proven
+      # against the cloud stores: the suite also talks to AWS directly (boto3), which the
+      # deploy role does not cover. Expect to adjust this step on the first real run.
       - name: E2E acceptance
         env:
           UV_PYTHON_DOWNLOADS: never

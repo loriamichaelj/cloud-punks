@@ -33,4 +33,4 @@ Tearing down, in this order:
 
 `platform-create`, `platform-destroy`, `addons-create` and `addons-destroy` share the group `platform-dev`, so none of them overlap. `app-images`, `app-build`, `app-deploy` and `app-destroy` share `app-dev`.
 
-`app-build.yml` runs today. `app-deploy.yml` still needs `deploy/helm/values/values-*-dev.yaml` and a `DEV_BASE_URL` variable on `dev`, and a ClusterSecretStore for External Secrets; none exist yet. `app-build.yml` checks and `app-images.yml` publishes; they do not overlap. Only the `dev` environment exists for now.
+`app-build.yml` runs today. `app-deploy.yml` now has its dev values and workload roles. What it still needs is the app databases and their four secrets in Secrets Manager (`loria-retail-dev/{product,order}-{app,owner}-db`, JSON with a `password` key); nothing creates those yet. After `platform-create` adds the workload roles and `addons-create` adds the secret store, it can run. It finds the internal ALB's address itself. `app-build.yml` checks and `app-images.yml` publishes; they do not overlap. Only the `dev` environment exists for now.

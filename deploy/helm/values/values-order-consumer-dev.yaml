@@ -1,0 +1,14 @@
+image:
+  repository: loria-retail/order
+args: [consumer]
+port: 9000   # health and metrics side server
+preStopSleepSeconds: 0
+terminationGracePeriodSeconds: 40
+env:
+  SERVICE_NAME: order-consumer
+  QUEUE_NAME: loria-order-inventory-events
+  DB_HOST: loria-retail-dev.cefo7yhuwfxg.us-east-1.rds.amazonaws.com
+  DB_NAME: order_db
+  DB_USER: order_app
+secretEnv:
+  - { name: DB_PASSWORD, secret: order-app-db, key: DB_PASSWORD }

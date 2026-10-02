@@ -77,9 +77,7 @@ resource "helm_release" "lbc" {
 }
 
 # --- External Secrets Operator -----------------------------------------------------------
-# Copies Secrets Manager values into Kubernetes Secrets. The ClusterSecretStore that points
-# it at AWS is created with the dev Helm values, not here: it is a custom resource, and its
-# CRD only exists once this release is installed.
+# Copies Secrets Manager values into Kubernetes Secrets.
 
 data "aws_iam_policy_document" "eso" {
   statement {
@@ -138,4 +136,24 @@ resource "helm_release" "eso" {
   })]
 
   depends_on = [module.eso_role, helm_release.lbc]
+}
+
+# The ClusterSecretStore that points the operator at Secrets Manager. It is a custom resource
+# whose CRD the operator installs, so it goes in through a small local chart, installed after
+# the operator: a kubernetes_manifest would fail to plan on a freshly built cluster.
+resource "helm_release" "secret_store" {
+  name      = "secret-store"
+  namespace = "external-secrets"
+  chart     = "${path.module}/../../../../../deploy/helm/secret-store"
+
+  wait    = true
+  atomic  = true
+  timeout = 300
+
+  values = [yamlencode({
+    name   = "aws-secrets-manager"
+    region = var.aws_region
+  })]
+
+  depends_on = [helm_release.eso]
 }

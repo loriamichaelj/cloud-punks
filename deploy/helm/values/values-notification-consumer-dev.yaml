@@ -1,0 +1,10 @@
+image:
+  repository: loria-retail/notification
+args: [consumer]
+port: 9000   # health and metrics side server
+preStopSleepSeconds: 0
+terminationGracePeriodSeconds: 40
+env:
+  SERVICE_NAME: notification-consumer
+  QUEUE_NAME: loria-notification-events
+  NOTIFICATIONS_TABLE: loria-notifications

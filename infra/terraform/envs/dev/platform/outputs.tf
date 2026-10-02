@@ -54,3 +54,8 @@ output "runner_github_token_secret" {
 output "runner_autoscaling_group" {
   value = module.runners.autoscaling_group_name
 }
+
+output "workload_role_arns" {
+  description = "Release name => Pod Identity role ARN. The chart names each service account after its release."
+  value       = { for k, m in module.workload_role : k => m.role_arn }
+}

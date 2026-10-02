@@ -1,0 +1,14 @@
+# Static files behind nginx-unprivileged (uid 101). It writes only under /tmp, so the root
+# filesystem stays read-only. Same probe for liveness and readiness: nothing external to check.
+image:
+  repository: loria-retail/ui
+port: 8005
+service: { enabled: true, port: 8005 }
+probes:
+  livePath: /healthz
+  readyPath: /healthz
+securityContext:
+  runAsUser: 101
+  runAsGroup: 101
+replicas: 2
+pdb: { enabled: true }

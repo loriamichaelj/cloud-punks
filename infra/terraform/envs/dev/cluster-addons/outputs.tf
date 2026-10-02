@@ -12,7 +12,8 @@ output "eso_role_arn" {
 
 output "helm_releases" {
   value = {
-    lbc = "${helm_release.lbc.chart} ${helm_release.lbc.version}"
-    eso = "${helm_release.eso.chart} ${helm_release.eso.version}"
+    lbc   = "${helm_release.lbc.chart} ${helm_release.lbc.version}"
+    eso   = "${helm_release.eso.chart} ${helm_release.eso.version}"
+    store = "${helm_release.secret_store.chart} ${helm_release.secret_store.version}"
   }
 }

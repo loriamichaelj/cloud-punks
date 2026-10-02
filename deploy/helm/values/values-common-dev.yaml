@@ -1,0 +1,20 @@
+# Shared by every process release on the dev EKS cluster. The endpoints are the dev/platform
+# stack's Terraform outputs (db_endpoint, cache_url, event_bus_name, queue_names, table_names).
+# The cache endpoint changes when the cache is rebuilt (platform-destroy then platform-create),
+# so refresh it here after a rebuild. No AWS endpoint override and no credentials: the pods
+# get theirs from EKS Pod Identity.
+env:
+  ENVIRONMENT: dev
+  LOG_LEVEL: INFO
+  AWS_REGION: us-east-1
+  EVENT_BUS_NAME: loria-retail-events
+  CACHE_URL: rediss://master.loria-retail-dev.m25p71.use1.cache.amazonaws.com:6379/0
+  DB_PORT: "5432"
+  # RDS rejects non-TLS connections (rds.force_ssl). "require" encrypts without checking the
+  # certificate chain; verify-full needs the RDS CA bundle in the images (open item, DESIGN.md
+  # section 8).
+  DB_SSLMODE: require
+
+hpa:
+  minReplicas: 2
+  maxReplicas: 4

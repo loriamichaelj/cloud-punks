@@ -1,0 +1,2 @@
+name: aws-secrets-manager   # the name the retail-service chart's externalSecret.secretStore expects
+region: ""                  # required

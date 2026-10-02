@@ -1,0 +1,11 @@
+image:
+  repository: loria-retail/inventory
+args: [consumer]
+port: 9000   # health and metrics side server
+preStopSleepSeconds: 0
+terminationGracePeriodSeconds: 40   # finish the 20 s long poll and the batch in flight
+env:
+  SERVICE_NAME: inventory-consumer
+  QUEUE_NAME: loria-inventory-order-events
+  INVENTORY_TABLE: loria-inventory
+  RESERVATIONS_TABLE: loria-inventory-reservations

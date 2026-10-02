@@ -1,0 +1,10 @@
+image:
+  repository: loria-retail/notification
+args: [api]
+port: 8004
+service: { enabled: true, port: 8004 }
+pdb: { enabled: true }
+hpa: { enabled: true }
+env:
+  SERVICE_NAME: notification-service
+  NOTIFICATIONS_TABLE: loria-notifications

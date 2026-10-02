@@ -127,13 +127,16 @@ METRICS_SERVER_VERSION := 3.14.0
 
 # Static checks only: helm lint and a render of every release; kubeconform when installed.
 k8s-lint:
-	@for f in $(HV)/values-*-local.yaml; do \
-		r=$$(basename $$f -local.yaml); r=$${r#values-}; [ "$$r" = common ] && continue; \
-		extra=""; case $$r in ui|backing|ingress) ;; *) extra="-f $(HV)/values-common-local.yaml";; esac; \
-		helm lint $(CHART) $$extra -f $$f --set image.tag=dev-lint >/dev/null || { echo "helm lint failed: $$r"; exit 1; }; \
-		helm template $$r $(CHART) $$extra -f $$f --set image.tag=dev-lint > /tmp/k8s-lint-$$r.yaml || exit 1; \
-		if command -v kubeconform >/dev/null; then kubeconform -strict -summary -ignore-missing-schemas /tmp/k8s-lint-$$r.yaml || exit 1; fi; \
+	@for env in local dev; do \
+		for f in $(HV)/values-*-$$env.yaml; do \
+			r=$$(basename $$f -$$env.yaml); r=$${r#values-}; [ "$$r" = common ] && continue; \
+			extra=""; case $$r in ui|backing|ingress|secrets) ;; *) extra="-f $(HV)/values-common-$$env.yaml";; esac; \
+			helm lint $(CHART) $$extra -f $$f --set image.tag=dev-lint >/dev/null || { echo "helm lint failed: $$env $$r"; exit 1; }; \
+			helm template $$r $(CHART) $$extra -f $$f --set image.tag=dev-lint > /tmp/k8s-lint-$$env-$$r.yaml || exit 1; \
+			if command -v kubeconform >/dev/null; then kubeconform -strict -summary -ignore-missing-schemas /tmp/k8s-lint-$$env-$$r.yaml || exit 1; fi; \
+		done; \
 	done
+	@helm lint deploy/helm/secret-store --set region=us-east-1 >/dev/null || { echo "helm lint failed: secret-store"; exit 1; }
 	@command -v kubeconform >/dev/null || echo "kubeconform not installed: rendered manifests were not schema-checked"
 
 # Images the cluster uses are the ones the local Docker engine builds: no registry, no push.
