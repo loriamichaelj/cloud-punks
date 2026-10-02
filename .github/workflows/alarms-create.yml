@@ -1,15 +1,28 @@
-name: "Platform: destroy"
+name: "Alarms: create"
 
-# Tears down the dev/platform stack (network, ecr, eks). Two jobs as
-# cloudbatch818-loria-retail-tf-dev, each approved by the `dev`
-# environment's required reviewer: `plan` runs `terraform plan -destroy`,
-# saves it to the state bucket and prints it; `destroy` runs only after a
-# second approval and applies exactly that saved plan.
-# It never touches the bootstrap stack, the state bucket or the CI roles.
+# dev/alb-alarms stack: the two ALB alarms (5xx rate and p95 latency), created from workflow_dispatch only.
+# Run it after app-deploy.yml, because the ALB does not exist before that: the AWS Load Balancer
+# Controller creates it from the Ingress. The alarms notify the topic the platform stack's monitoring
+# module creates.
+# Jobs run as cloudbatch818-loria-retail-tf-dev, each approved by the
+# `dev` environment's required reviewer. Pick an action:
+#   plan   the `plan` job only: print the plan, change nothing.
+#   apply  `plan`, then `apply` after a second approval, applying exactly the
+#          saved plan.
+# Tearing the stack down is alarms-destroy.yml; run it before app-destroy.yml, and before platform-destroy.yml,
+# which refuses while this stack still has resources.
 on:
   workflow_dispatch:
+    inputs:
+      action:
+        description: What to do with the dev/alb-alarms stack
+        type: choice
+        options:
+          - plan
+          - apply
+        default: plan
 
-run-name: platform-destroy
+run-name: alarms-create ${{ inputs.action }}
 
 permissions:
   contents: read
@@ -19,13 +32,14 @@ env:
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
   TF_VAR_aws_region: ${{ vars.AWS_REGION }}
-  STATE_KEY: dev/platform/terraform.tfstate
+  STATE_KEY: dev/alb-alarms/terraform.tfstate
+  ALB_NAME: loria-retail-dev
 
 defaults:
   run:
-    working-directory: infra/terraform/envs/dev/platform
+    working-directory: infra/terraform/envs/dev/alb-alarms
 
-# Shares platform-create's group so the two never touch the stack at once.
+# Shares the platform workflows' group so none of them runs at once.
 concurrency:
   group: platform-dev
   cancel-in-progress: false
@@ -54,11 +68,19 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN_TF }}
           aws-region: ${{ vars.AWS_REGION }}
 
-      # Terraform reads this file (the function's filename and hash). Plan and apply run on
-      # different machines, so it is built in each job; the script's output is byte-identical.
-      - name: Package the low-stock Lambda
-        working-directory: .
-        run: python3 scripts/package_lambda.py
+      # The ALB is created by the AWS Load Balancer Controller from the Ingress that app-deploy.yml installs,
+      # and AWS invents the last part of its CloudWatch dimension. Look it up and pass it in.
+      - name: Find the ALB
+        run: |
+          set -euo pipefail
+          arn=$(aws elbv2 describe-load-balancers --names "$ALB_NAME" \
+            --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || true)
+          if [ -z "$arn" ] || [ "$arn" = "None" ]; then
+            echo "no load balancer named ${ALB_NAME}: run app-deploy first" >&2
+            exit 1
+          fi
+          # arn:aws:elasticloadbalancing:<region>:<account>:loadbalancer/app/<name>/<id>
+          echo "TF_VAR_alb_arn_suffix=${arn#*:loadbalancer/}" >> "$GITHUB_ENV"
 
       - name: Init
         run: |
@@ -68,31 +90,11 @@ jobs:
             -backend-config="key=${STATE_KEY}" \
             -backend-config="region=${TF_VAR_aws_region}"
 
-      # The load balancer controller deletes the ALBs it created only while it still runs.
-      # Destroying the VPC first would hang on them, so addons-destroy.yml goes first.
-      - name: Refuse while the addons or alarms stacks still have resources
-        run: |
-          set -euo pipefail
-          account_id=$(aws sts get-caller-identity --query Account --output text)
-          # stack:workflow that removes it. The ALB alarms go first, then the add-ons.
-          for pair in alb-alarms:alarms-destroy cluster-addons:addons-destroy; do
-            stack="${pair%%:*}"
-            workflow="${pair##*:}"
-            uri="s3://loria-retail-tfstate-${account_id}-${TF_VAR_aws_region}/dev/${stack}/terraform.tfstate"
-            if aws s3 ls "$uri" >/dev/null 2>&1; then
-              n=$(aws s3 cp "$uri" - | jq '[.resources[]?] | length')
-              if [ "$n" -gt 0 ]; then
-                echo "dev/${stack} still holds ${n} resources: run ${workflow} first" >&2
-                exit 1
-              fi
-            fi
-          done
-
       - name: Plan
         id: plan
         run: |
           set +e
-          terraform plan -destroy -detailed-exitcode -lock-timeout=5m -no-color -out=tfplan
+          terraform plan -detailed-exitcode -lock-timeout=5m -no-color -out=tfplan
           code=$?
           set -e
           # 0 = no changes, 2 = changes, anything else is an error.
@@ -103,9 +105,11 @@ jobs:
 
       - name: Plan summary
         if: always()
+        env:
+          ACTION: ${{ inputs.action }}
         run: |
           {
-            echo "### terraform destroy: dev/platform"
+            echo "### terraform ${ACTION}: dev/alb-alarms"
             echo '```'
             terraform show -no-color tfplan 2>&1 | head -c 100000 || echo "no plan was produced"
             echo '```'
@@ -115,10 +119,10 @@ jobs:
       # bucket (dev/*), not to a workflow artifact on a public repo.
       - name: Save the plan
         id: save
-        if: steps.plan.outputs.has_changes == 'true'
+        if: steps.plan.outputs.has_changes == 'true' && inputs.action != 'plan'
         run: |
           account_id=$(aws sts get-caller-identity --query Account --output text)
-          key="dev/plans/destroy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tfplan"
+          key="dev/plans/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tfplan"
           aws s3 cp tfplan "s3://loria-retail-tfstate-${account_id}-${TF_VAR_aws_region}/${key}"
           echo "plan_key=${key}" >> "$GITHUB_OUTPUT"
           echo "plan_sha256=$(sha256sum tfplan | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
@@ -127,9 +131,9 @@ jobs:
         if: failure()
         run: terraform state list || true
 
-  destroy:
+  apply:
     needs: plan
-    if: needs.plan.outputs.has_changes == 'true'
+    if: inputs.action != 'plan' && needs.plan.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
     environment: dev
     timeout-minutes: 90
@@ -151,12 +155,6 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN_TF }}
           aws-region: ${{ vars.AWS_REGION }}
 
-      # Terraform reads this file (the function's filename and hash). Plan and apply run on
-      # different machines, so it is built in each job; the script's output is byte-identical.
-      - name: Package the low-stock Lambda
-        working-directory: .
-        run: python3 scripts/package_lambda.py
-
       - name: Init
         run: |
           account_id=$(aws sts get-caller-identity --query Account --output text)
@@ -172,15 +170,15 @@ jobs:
           echo "${PLAN_SHA256}  tfplan" | sha256sum --check
 
       # A saved plan is refused if the state changed since it was made.
-      - name: Destroy
+      - name: Apply
         run: terraform apply -lock-timeout=5m -no-color tfplan
 
-      - name: Remaining resources
+      - name: Outputs
         run: |
           {
-            echo "### Resources left in dev/platform state"
-            echo '```'
-            terraform state list || true
+            echo "### Outputs"
+            echo '```json'
+            terraform output -json
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 

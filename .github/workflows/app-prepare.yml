@@ -161,7 +161,7 @@ jobs:
         run: |
           set -euo pipefail
           terraform fmt -check -recursive infra/terraform
-          for dir in bootstrap envs/dev/platform envs/dev/cluster-addons; do
+          for dir in bootstrap envs/dev/platform envs/dev/cluster-addons envs/dev/alb-alarms; do
             echo "== validate ${dir}"
             terraform -chdir="infra/terraform/${dir}" init -backend=false -input=false >/dev/null
             terraform -chdir="infra/terraform/${dir}" validate

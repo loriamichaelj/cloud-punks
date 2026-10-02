@@ -1,15 +1,16 @@
-name: "Platform: destroy"
+name: "Alarms: destroy"
 
-# Tears down the dev/platform stack (network, ecr, eks). Two jobs as
+# Tears down the dev/alb-alarms stack (the two ALB alarms). Run it before app-destroy.yml and
+# platform-destroy.yml. It works after the ALB is gone too. Two jobs as
 # cloudbatch818-loria-retail-tf-dev, each approved by the `dev`
 # environment's required reviewer: `plan` runs `terraform plan -destroy`,
 # saves it to the state bucket and prints it; `destroy` runs only after a
 # second approval and applies exactly that saved plan.
-# It never touches the bootstrap stack, the state bucket or the CI roles.
+# It never touches the platform stack, the bootstrap stack, the state bucket or the CI roles.
 on:
   workflow_dispatch:
 
-run-name: platform-destroy
+run-name: alarms-destroy
 
 permissions:
   contents: read
@@ -19,13 +20,14 @@ env:
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
   TF_VAR_aws_region: ${{ vars.AWS_REGION }}
-  STATE_KEY: dev/platform/terraform.tfstate
+  STATE_KEY: dev/alb-alarms/terraform.tfstate
+  ALB_NAME: loria-retail-dev
 
 defaults:
   run:
-    working-directory: infra/terraform/envs/dev/platform
+    working-directory: infra/terraform/envs/dev/alb-alarms
 
-# Shares platform-create's group so the two never touch the stack at once.
+# Shares the platform workflows' group so none of them runs at once.
 concurrency:
   group: platform-dev
   cancel-in-progress: false
@@ -54,11 +56,20 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN_TF }}
           aws-region: ${{ vars.AWS_REGION }}
 
-      # Terraform reads this file (the function's filename and hash). Plan and apply run on
-      # different machines, so it is built in each job; the script's output is byte-identical.
-      - name: Package the low-stock Lambda
-        working-directory: .
-        run: python3 scripts/package_lambda.py
+      # The stack only needs the ALB's identifier to describe its alarms. If the ALB is already gone, a
+      # placeholder of the right shape is enough: destroying removes the alarms by their recorded state.
+      - name: Find the ALB
+        run: |
+          set -euo pipefail
+          arn=$(aws elbv2 describe-load-balancers --names "$ALB_NAME" \
+            --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || true)
+          if [ -z "$arn" ] || [ "$arn" = "None" ]; then
+            echo "no load balancer named ${ALB_NAME}: destroying with a placeholder"
+            suffix="app/${ALB_NAME}/0000000000000000"
+          else
+            suffix="${arn#*:loadbalancer/}"
+          fi
+          echo "TF_VAR_alb_arn_suffix=${suffix}" >> "$GITHUB_ENV"
 
       - name: Init
         run: |
@@ -67,26 +78,6 @@ jobs:
             -backend-config="bucket=loria-retail-tfstate-${account_id}-${TF_VAR_aws_region}" \
             -backend-config="key=${STATE_KEY}" \
             -backend-config="region=${TF_VAR_aws_region}"
-
-      # The load balancer controller deletes the ALBs it created only while it still runs.
-      # Destroying the VPC first would hang on them, so addons-destroy.yml goes first.
-      - name: Refuse while the addons or alarms stacks still have resources
-        run: |
-          set -euo pipefail
-          account_id=$(aws sts get-caller-identity --query Account --output text)
-          # stack:workflow that removes it. The ALB alarms go first, then the add-ons.
-          for pair in alb-alarms:alarms-destroy cluster-addons:addons-destroy; do
-            stack="${pair%%:*}"
-            workflow="${pair##*:}"
-            uri="s3://loria-retail-tfstate-${account_id}-${TF_VAR_aws_region}/dev/${stack}/terraform.tfstate"
-            if aws s3 ls "$uri" >/dev/null 2>&1; then
-              n=$(aws s3 cp "$uri" - | jq '[.resources[]?] | length')
-              if [ "$n" -gt 0 ]; then
-                echo "dev/${stack} still holds ${n} resources: run ${workflow} first" >&2
-                exit 1
-              fi
-            fi
-          done
 
       - name: Plan
         id: plan
@@ -105,7 +96,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "### terraform destroy: dev/platform"
+            echo "### terraform destroy: dev/alb-alarms"
             echo '```'
             terraform show -no-color tfplan 2>&1 | head -c 100000 || echo "no plan was produced"
             echo '```'
@@ -151,12 +142,6 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN_TF }}
           aws-region: ${{ vars.AWS_REGION }}
 
-      # Terraform reads this file (the function's filename and hash). Plan and apply run on
-      # different machines, so it is built in each job; the script's output is byte-identical.
-      - name: Package the low-stock Lambda
-        working-directory: .
-        run: python3 scripts/package_lambda.py
-
       - name: Init
         run: |
           account_id=$(aws sts get-caller-identity --query Account --output text)
@@ -178,7 +163,7 @@ jobs:
       - name: Remaining resources
         run: |
           {
-            echo "### Resources left in dev/platform state"
+            echo "### Resources left in dev/alb-alarms state"
             echo '```'
             terraform state list || true
             echo '```'
