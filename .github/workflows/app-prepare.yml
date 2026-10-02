@@ -1,6 +1,6 @@
 name: "App: prepare"
 
-# Everything before a deploy, in one run: prepare -> test -> build -> manifest -> verify -> notify.
+# Everything before a deploy, in one run: prepare -> test -> build -> verify -> notify.
 #
 #   prepare   names the image tag (sha-<git sha>) and decides whether this run may publish: only from dev.
 #   test      the checks pr.yml runs on a pull request, all of them, as parallel legs of one job on hosted
@@ -11,8 +11,6 @@ name: "App: prepare"
 #             loria-retail/<name>:sha-<git sha>. Dev only, after every test leg passed, behind the `dev`
 #             environment's approval. ECR tags are immutable, so an image whose tag already exists is not
 #             rebuilt; its existing digest is reported.
-#   manifest  records what the build produced: the tag, the commit and each image's digest, as a table and a
-#             JSON document in the run summary, and as a job output. No AWS access.
 #   verify    on the in-VPC runner, read-only: compares ECR with what the cluster runs, and prints the tag to
 #             paste into App: deploy. Dev only, behind its own `dev` approval.
 #   notify    always runs; writes the result to the run summary and comments on the commit.
@@ -64,7 +62,7 @@ jobs:
             echo "- Commit: \`${GITHUB_SHA}\`"
             echo "- Image tag: \`${tag}\`"
             if [ "$publish" = true ]; then
-              echo "- Publishes: yes (build, manifest and verify will run)"
+              echo "- Publishes: yes (build and verify will run)"
             else
               echo "- Publishes: no, only dev builds and verifies; this run only tests"
             fi
@@ -219,7 +217,7 @@ jobs:
           ./actionlint
 
   # Builds the five arm64 images and pushes them. Dev only, after every test leg passed, behind the `dev`
-  # approval. Its outputs are the digests, which `manifest` records.
+  # approval.
   build:
     needs: [prepare, test]
     if: needs.prepare.outputs.publish == 'true'
@@ -231,17 +229,6 @@ jobs:
       id-token: write
     env:
       TAG: ${{ needs.prepare.outputs.tag }}
-    outputs:
-      digest_product: ${{ steps.push.outputs.digest_product }}
-      digest_inventory: ${{ steps.push.outputs.digest_inventory }}
-      digest_order: ${{ steps.push.outputs.digest_order }}
-      digest_notification: ${{ steps.push.outputs.digest_notification }}
-      digest_ui: ${{ steps.push.outputs.digest_ui }}
-      result_product: ${{ steps.push.outputs.result_product }}
-      result_inventory: ${{ steps.push.outputs.result_inventory }}
-      result_order: ${{ steps.push.outputs.result_order }}
-      result_notification: ${{ steps.push.outputs.result_notification }}
-      result_ui: ${{ steps.push.outputs.result_ui }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -262,10 +249,16 @@ jobs:
             | docker login --username AWS --password-stdin "$registry"
 
       - name: Build and push
-        id: push
         run: |
           set -euo pipefail
           tag="$TAG"
+          summary="$(mktemp)"
+          {
+            echo "### Images pushed as \`${tag}\`"
+            echo
+            echo "| Repository | Digest | Result |"
+            echo "| --- | --- | --- |"
+          } > "$summary"
 
           # repo, Dockerfile, build context
           build_push() {
@@ -282,9 +275,7 @@ jobs:
               digest=$(jq -r '."containerimage.digest"' "meta-$1.json")
               result="pushed"
             fi
-            echo "${repo}:${tag} ${digest} (${result})"
-            echo "digest_$1=${digest}" >> "$GITHUB_OUTPUT"
-            echo "result_$1=${result}" >> "$GITHUB_OUTPUT"
+            echo "| \`${repo}\` | \`${digest}\` | ${result} |" >> "$summary"
           }
 
           # The service images build from the repo root so libs/common is included.
@@ -295,62 +286,8 @@ jobs:
           # The UI builds from ui/ only. VITE_DEMO_TOOLS stays at its default, false.
           build_push ui            ui/Dockerfile                             ui
 
-  # Records what `build` produced. No AWS access: the digests come from build's outputs.
-  manifest:
-    needs: [prepare, build]
-    if: needs.prepare.outputs.publish == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      manifest: ${{ steps.manifest.outputs.manifest }}
-    env:
-      TAG: ${{ needs.prepare.outputs.tag }}
-      DIGEST_PRODUCT: ${{ needs.build.outputs.digest_product }}
-      DIGEST_INVENTORY: ${{ needs.build.outputs.digest_inventory }}
-      DIGEST_ORDER: ${{ needs.build.outputs.digest_order }}
-      DIGEST_NOTIFICATION: ${{ needs.build.outputs.digest_notification }}
-      DIGEST_UI: ${{ needs.build.outputs.digest_ui }}
-      RESULT_PRODUCT: ${{ needs.build.outputs.result_product }}
-      RESULT_INVENTORY: ${{ needs.build.outputs.result_inventory }}
-      RESULT_ORDER: ${{ needs.build.outputs.result_order }}
-      RESULT_NOTIFICATION: ${{ needs.build.outputs.result_notification }}
-      RESULT_UI: ${{ needs.build.outputs.result_ui }}
-      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-    steps:
-      - name: Write the manifest
-        id: manifest
-        run: |
-          set -euo pipefail
-          manifest='{}'
-          rows=""
-          for name in product inventory order notification ui; do
-            upper=$(echo "$name" | tr '[:lower:]' '[:upper:]')
-            digest_var="DIGEST_${upper}"
-            result_var="RESULT_${upper}"
-            digest="${!digest_var}"
-            result="${!result_var}"
-            if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-              echo "the build reported no digest for ${name}: got '${digest}'" >&2
-              exit 1
-            fi
-            manifest=$(jq -c --arg n "$name" --arg d "$digest" --arg r "$result" \
-              '.images[$n] = {repository: ("loria-retail/" + $n), digest: $d, result: $r}' <<<"$manifest")
-            rows="${rows}| \`loria-retail/${name}\` | \`${digest}\` | ${result} |"$'\n'
-          done
-          manifest=$(jq -c --arg t "$TAG" --arg c "$GITHUB_SHA" --arg u "$RUN_URL" \
-            '{tag: $t, commit: $c, run: $u} + .' <<<"$manifest")
-          echo "manifest=${manifest}" >> "$GITHUB_OUTPUT"
-          {
-            echo "### Image manifest for \`${TAG}\`"
-            echo
-            echo "| Repository | Digest | Result |"
-            echo "| --- | --- | --- |"
-            printf '%s' "$rows"
-            echo
-            echo '```json'
-            jq . <<<"$manifest"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+          cat "$summary"
 
   # Read-only. Answers four questions about the images, and changes nothing:
   #   1. What is in ECR?             every tag and digest in the five loria-retail/* repositories.
@@ -361,9 +298,9 @@ jobs:
   #                                  failure, because running an older tag can be deliberate.
   #   4. Which tag do I deploy?      the newest sha-<commit> tag that exists in all five repositories,
   #                                  shown first in the run summary as a line to paste into App: deploy.
-  # Runs on the in-VPC runner (ECR describe, and read of pods in `retail`), after the build and the manifest.
+  # Runs on the in-VPC runner (ECR describe, and read of pods in `retail`), after the build.
   verify:
-    needs: [prepare, build, manifest]
+    needs: [prepare, build]
     if: needs.prepare.outputs.publish == 'true'
     runs-on: [self-hosted, retail-vpc]
     environment: dev
@@ -515,7 +452,7 @@ jobs:
           fi
 
   notify:
-    needs: [prepare, test, build, manifest, verify]
+    needs: [prepare, test, build, verify]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
