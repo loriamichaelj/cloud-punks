@@ -3,7 +3,7 @@ name: "PR: checks"
 # The automatic gate for every pull request into dev, stage or prod. It runs by itself, on GitHub's
 # hosted runners, with a read-only token, no secrets and no AWS access (and so no OIDC token): a pull
 # request is untrusted code, and a fork's can read nothing. It never touches the dev environment or the
-# self-hosted runner. Its only output is pass or fail checks on the PR.
+# self-hosted runner. Its only output is pass or fail checks on the PR. Changing this file runs every check.
 #
 #   detect         decides from the changed files which of the checks below this change needs.
 #   code           `make lint test`: ruff, mypy per service, the OpenAPI and UI checks, Helm lint and
