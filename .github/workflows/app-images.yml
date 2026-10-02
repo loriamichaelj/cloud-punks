@@ -18,7 +18,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: app-images
+  group: app-dev
   cancel-in-progress: false
 
 jobs:

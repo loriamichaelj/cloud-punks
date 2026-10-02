@@ -1,0 +1,154 @@
+name: "App: destroy"
+
+# Removes the application from dev. It never touches the platform stack (the
+# cluster, network and ECR repositories stay), the bootstrap stack or the CI
+# roles. Runs as cloudbatch818-loria-retail-deploy-dev in the `dev`
+# environment; each job below waits for the reviewer's approval.
+#
+#   plan      lists what would be deleted. Read it before approving the next job.
+#   uninstall (optional) helm uninstall of every release in the `retail`
+#             namespace, on the in-VPC runners. Off by default: those runners
+#             and app-deploy.yml do not exist yet.
+#   images    deletes the matching images from the five loria-retail/* repos.
+#             Runs after uninstall so no pod loses its image first.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to delete from every repo (for example sha-<git sha>), or 'all' for every image"
+        type: string
+        required: true
+      uninstall_releases:
+        description: Helm-uninstall the releases in the retail namespace first (needs the retail-vpc runners)
+        type: boolean
+        default: false
+
+run-name: app-destroy ${{ inputs.tag }}
+
+permissions:
+  contents: read
+  id-token: write
+
+# Shares the group with app-images so a build and a delete never overlap.
+concurrency:
+  group: app-dev
+  cancel-in-progress: false
+
+env:
+  REPOS: product inventory order notification ui
+  EKS_CLUSTER: loria-retail-dev
+  NAMESPACE: retail
+  TAG: ${{ inputs.tag }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 15
+    outputs:
+      image_count: ${{ steps.list.outputs.image_count }}
+    steps:
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_DEPLOY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: List what would be deleted
+        id: list
+        run: |
+          set -euo pipefail
+          total=0
+          {
+            echo "### App destroy plan: tag \`${TAG}\`"
+            echo "Helm releases are listed by the uninstall job, if you enabled it."
+            echo
+            echo "| Repository | Images to delete | Tags |"
+            echo "| --- | --- | --- |"
+          } > summary.md
+          for r in $REPOS; do
+            repo="loria-retail/${r}"
+            ids=$(aws ecr list-images --repository-name "$repo" --query 'imageIds' --output json)
+            if [ "$TAG" != "all" ]; then
+              ids=$(echo "$ids" | jq -c --arg t "$TAG" '[.[] | select(.imageTag == $t)]')
+            fi
+            n=$(echo "$ids" | jq 'length')
+            tags=$(echo "$ids" | jq -r '[.[].imageTag // "untagged"] | join(", ")')
+            echo "| \`${repo}\` | ${n} | ${tags:-none} |" >> summary.md
+            total=$((total + n))
+          done
+          echo "image_count=${total}" >> "$GITHUB_OUTPUT"
+          echo >> summary.md
+          echo "Total: ${total}" >> summary.md
+          cat summary.md >> "$GITHUB_STEP_SUMMARY"
+          cat summary.md
+
+  uninstall:
+    needs: plan
+    if: inputs.uninstall_releases
+    # The cluster API is private, so this runs on the in-VPC runners.
+    runs-on: [self-hosted, retail-vpc]
+    environment: dev
+    timeout-minutes: 30
+    steps:
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_DEPLOY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Uninstall the releases
+        run: |
+          set -euo pipefail
+          # Always name the context explicitly.
+          aws eks update-kubeconfig --name "$EKS_CLUSTER" --alias "$EKS_CLUSTER" --region "$AWS_REGION"
+          releases=$(helm --kube-context "$EKS_CLUSTER" --namespace "$NAMESPACE" list --short)
+          {
+            echo "### Helm releases uninstalled from \`${NAMESPACE}\`"
+            echo '```'
+            echo "${releases:-none}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          for rel in $releases; do
+            helm --kube-context "$EKS_CLUSTER" --namespace "$NAMESPACE" uninstall "$rel" --wait --timeout 5m
+          done
+
+  images:
+    needs: [plan, uninstall]
+    # Run when the uninstall job succeeded or was skipped, and there is something to delete.
+    if: ${{ !failure() && !cancelled() && needs.plan.outputs.image_count != '0' }}
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 30
+    steps:
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_DEPLOY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Delete the images
+        run: |
+          set -euo pipefail
+          {
+            echo "### Images deleted: tag \`${TAG}\`"
+            echo
+            echo "| Repository | Deleted | Failures |"
+            echo "| --- | --- | --- |"
+          } > summary.md
+          for r in $REPOS; do
+            repo="loria-retail/${r}"
+            ids=$(aws ecr list-images --repository-name "$repo" --query 'imageIds' --output json)
+            if [ "$TAG" != "all" ]; then
+              ids=$(echo "$ids" | jq -c --arg t "$TAG" '[.[] | select(.imageTag == $t)]')
+            fi
+            deleted=0
+            failed=0
+            # batch-delete-image takes at most 100 ids per call.
+            while read -r chunk; do
+              [ -n "$chunk" ] || continue
+              result=$(aws ecr batch-delete-image --repository-name "$repo" --image-ids "$chunk" --output json)
+              deleted=$((deleted + $(echo "$result" | jq '.imageIds | length')))
+              failed=$((failed + $(echo "$result" | jq '.failures | length')))
+            done < <(echo "$ids" | jq -c '. as $a | [range(0; length; 100)] | map($a[.:.+100])[]')
+            echo "| \`${repo}\` | ${deleted} | ${failed} |" >> summary.md
+          done
+          cat summary.md >> "$GITHUB_STEP_SUMMARY"
+          cat summary.md

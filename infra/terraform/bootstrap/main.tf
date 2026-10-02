@@ -144,6 +144,14 @@ data "aws_iam_policy_document" "deploy" {
     resources = ["arn:aws:ecr:${var.aws_region}:${local.account_id}:repository/${var.ecr_repository_prefix}/*"]
   }
 
+  # Used by app-destroy.yml to remove images. The repositories themselves belong
+  # to the platform stack and are not touched.
+  statement {
+    sid       = "EcrDeleteImages"
+    actions   = ["ecr:BatchDeleteImage"]
+    resources = ["arn:aws:ecr:${var.aws_region}:${local.account_id}:repository/${var.ecr_repository_prefix}/*"]
+  }
+
   statement {
     sid       = "DescribeCluster"
     actions   = ["eks:DescribeCluster"]
