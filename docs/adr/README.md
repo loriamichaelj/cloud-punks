@@ -208,7 +208,7 @@ The owner asked for a more presentable, colourful, light UI with product assets.
 
 ## Cloud (dev on AWS) as built (Phase 2, 30 Sep to 2 Oct 2026)
 
-**Result.** Dev runs in `us-east-1`. `app-deploy.yml` installs every release and runs `tests/e2e/test_acceptance.py` through the internal ALB: 10 passed, none skipped (the dead-letter-queue count inside step 9 is not checked in the cloud). Nothing was created or changed from a laptop; no AWS credential exists outside GitHub Actions (ADR-14). The unit gate (`make lint test`) and the hosted `app-build.yml` check are green on the same commit.
+**Result.** Dev runs in `us-east-1`. `app-deploy.yml` installs every release and runs `tests/e2e/test_acceptance.py` through the internal ALB: 10 passed, none skipped (the dead-letter-queue count inside step 9 is not checked in the cloud). Nothing was created or changed from a laptop; no AWS credential exists outside GitHub Actions (ADR-14). The unit gate (`make lint test`) and the hosted `app-build.yml` check (now part of `app-prepare.yml`) are green on the same commit.
 
 ### What exists
 
@@ -242,7 +242,7 @@ What a pass shows: a low-stock reservation reaches the Lambda and its record lan
 
 ### Deviations from DESIGN.md
 
-- Dev is the only deployed environment. `main.yml` became `app-build.yml` (build and push the images) and `app-deploy.yml`, both `workflow_dispatch` only (no push trigger, decided in Phase 3), plus `app-test.yml`, the checks `pr.yml` runs, by hand. `app-images.yml` was merged into `app-build.yml` on 2 Oct 2026, and the old `app-build.yml` check (tests, no-push build) became `app-test.yml`. Phase 3 added `pr.yml`, `promote.yml` and `app-rollback.yml`.
+- Dev is the only deployed environment. `main.yml` became `app-images.yml` and `app-deploy.yml`, both `workflow_dispatch` only (no push trigger, decided in Phase 3), plus a hosted `app-build.yml` check. On 2 Oct 2026 `app-images`, `app-build` (the check), `app-test` and `app-verify` became one workflow, `app-prepare.yml`: the checks, then build and push, then verify, with `build` and `verify` for `dev` only. Phase 3 added `pr.yml`, `promote.yml` and `app-rollback.yml`.
 - One Terraform role for plan, apply and destroy, trusted by the `dev` Environment only. There is no PR plan: a PR run would use broad credentials without the reviewer.
 - ECR uses basic scan-on-push, not Inspector enhanced scanning (the apply role has no `inspector2` rights).
 - `DB_SSLMODE=require` in dev, not `verify-full`: the images do not carry the RDS CA bundle.
@@ -270,7 +270,7 @@ What a pass shows: a low-stock reservation reaches the Lambda and its record lan
 10. **PostgreSQL 17.** `GRANT <owner> TO <master>` followed by `CREATE DATABASE ... OWNER` worked on RDS first time.
 11. **A zip Terraform makes does not survive a split plan and apply.** The plan and the apply are separate jobs on separate machines, so a file a data source writes during the plan is missing at apply. The package is built by a script before each, and its bytes must not depend on the machine: a fixed timestamp and mode, no compression. Tests break each of those and fail. The saved plan carried the zip's hash and the second machine reproduced it.
 12. **A new workflow file is not dispatchable for a few seconds after the push that adds it** (`HTTP 404: workflow ... not found on the default branch`). Retry.
-13. **Image currency is easy to assume and now checked.** `app-verify` compares what is in ECR, what the pods pulled, and what the code says; the first two runs matched and said the same thing.
+13. **Image currency is easy to assume and now checked.** `app-verify` (now the `verify` job of `app-prepare`) compares what is in ECR, what the pods pulled, and what the code says; the first two runs matched and said the same thing.
 
 ### Still open
 
@@ -299,6 +299,8 @@ A list-price estimate for `us-east-1`, not measured: EKS control plane about $73
 **`app-rollback.yml`.** Dev only, from `dev`, on the runner, behind the `dev` approval. One release or all nine, to the previous revision or a named one (a single release only). It checks every release has an earlier revision before it changes any, runs `helm rollback --wait`, then waits for the storefront to answer. It does not undo database migrations; they are forward-only and backward compatible, so the earlier release runs on the newer schema. **Unproven:** it has never run.
 
 **Chart.** `image.digest` renders `repository@digest` and ignores the tag. `make k8s-lint` renders one and fails if it is not that form (checked by breaking the helper once).
+
+**One workflow before a deploy.** `app-prepare.yml` runs `prepare` (the tag, and whether this run may publish), `test`, `build`, `manifest`, `verify` and `notify`. `test` is one job with parallel matrix legs (`code`, `terraform`, `config-scan`, `workflows`, and an `image` leg per image), copied from `pr.yml`, so a pin changed in one is changed in the other. `build` pushes the images and exposes their digests; `manifest` turns those into a table and a JSON document (tag, commit, per-image repository, digest and whether it was pushed or already existed) in the run summary and as a job output, with no AWS access. It is a record, not an uploaded artifact: that would need another pinned action. From a branch other than `dev` only `prepare`, `test` and `notify` run. AWS access is granted to `build` and `verify` only, never the test legs. The cost is two `dev` approvals per run, and that a run holds the `app-dev` group for a few minutes, so it cannot overlap a deploy. `verify` ends by printing the tag to paste into `app-deploy`.
 
 **Other.** The deploy has no push trigger (decided): a deploy needs the `dev` approval anyway, and a push to `dev` should not deploy by itself. ECR still does basic scan-on-push; Trivy in `pr.yml` is the gate before an image is pushed.
 

@@ -1,0 +1,548 @@
+name: "App: prepare"
+
+# Everything before a deploy, in one run: prepare -> test -> build -> manifest -> verify -> notify.
+#
+#   prepare   names the image tag (sha-<git sha>) and decides whether this run may publish: only from dev.
+#   test      the checks pr.yml runs on a pull request, all of them, as parallel legs of one job on hosted
+#             runners with no AWS access: `code` (make lint test), `terraform` (fmt, validate, tflint,
+#             Checkov), `config-scan` (Trivy over Dockerfiles, Helm, Terraform), `workflows` (actionlint),
+#             and an `image` leg per image (an arm64 build, then Trivy). Runs on any branch.
+#   build     builds the five arm64 images (the EKS nodes are Graviton) and pushes them to ECR as
+#             loria-retail/<name>:sha-<git sha>. Dev only, after every test leg passed, behind the `dev`
+#             environment's approval. ECR tags are immutable, so an image whose tag already exists is not
+#             rebuilt; its existing digest is reported.
+#   manifest  records what the build produced: the tag, the commit and each image's digest, as a table and a
+#             JSON document in the run summary, and as a job output. No AWS access.
+#   verify    on the in-VPC runner, read-only: compares ECR with what the cluster runs, and prints the tag to
+#             paste into App: deploy. Dev only, behind its own `dev` approval.
+#   notify    always runs; writes the result to the run summary and comments on the commit.
+#
+# From any other branch only prepare, test and notify run, which is how to try a branch before a pull
+# request. The test legs are copied from pr.yml, which decides from the changed files which of them a pull
+# request needs; keep the two in step (a pin changed in one is changed in the other). Integration tests, the
+# drills and the browser journeys stay local because they need LocalStack; the cloud acceptance suite is in
+# app-deploy.yml. This workflow calls no other.
+on:
+  workflow_dispatch:
+
+run-name: app-prepare ${{ github.ref_name }}
+
+# AWS access is granted per job (build and verify), never to the test legs.
+permissions:
+  contents: read
+
+# Shares the group with app-deploy, app-destroy and the rest so they never overlap.
+concurrency:
+  group: app-dev
+  cancel-in-progress: false
+
+env:
+  TRIVY_VERSION: v0.75.0
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.vars.outputs.tag }}
+      publish: ${{ steps.vars.outputs.publish }}
+    steps:
+      - name: Name the image tag
+        id: vars
+        run: |
+          set -euo pipefail
+          tag="sha-${GITHUB_SHA}"
+          if [ "$GITHUB_REF" = "refs/heads/dev" ]; then publish=true; else publish=false; fi
+          {
+            echo "tag=${tag}"
+            echo "publish=${publish}"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### app-prepare"
+            echo
+            echo "- Branch: \`${GITHUB_REF_NAME}\`"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Image tag: \`${tag}\`"
+            if [ "$publish" = true ]; then
+              echo "- Publishes: yes (build, manifest and verify will run)"
+            else
+              echo "- Publishes: no, only dev builds and verifies; this run only tests"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  test:
+    name: test (${{ matrix.check }}${{ matrix.name && format(' {0}', matrix.name) || '' }})
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { check: code, runner: ubuntu-latest }
+          - { check: terraform, runner: ubuntu-latest }
+          - { check: config-scan, runner: ubuntu-latest }
+          - { check: workflows, runner: ubuntu-latest }
+          # The images that ship are arm64 (Graviton): build and scan the same architecture.
+          - { check: image, runner: ubuntu-24.04-arm, name: product, dockerfile: services/product-service/Dockerfile, context: . }
+          - { check: image, runner: ubuntu-24.04-arm, name: inventory, dockerfile: services/inventory-service/Dockerfile, context: . }
+          - { check: image, runner: ubuntu-24.04-arm, name: order, dockerfile: services/order-service/Dockerfile, context: . }
+          - { check: image, runner: ubuntu-24.04-arm, name: notification, dockerfile: services/notification-service/Dockerfile, context: . }
+          - { check: image, runner: ubuntu-24.04-arm, name: ui, dockerfile: ui/Dockerfile, context: ui }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # ---- code: ruff, mypy, unit tests, the OpenAPI and UI checks, Helm lint and kubeconform
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: matrix.check == 'code'
+        with:
+          python-version-file: .python-version
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: matrix.check == 'code'
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      # Same uv version as the Dockerfiles.
+      - name: Install uv
+        if: matrix.check == 'code'
+        run: python -m pip install --disable-pip-version-check uv==0.12.15
+
+      # k8s-lint validates the rendered manifests with kubeconform when it is installed.
+      - name: Install kubeconform
+        if: matrix.check == 'code'
+        run: |
+          set -euo pipefail
+          curl -fsSLo kubeconform.tgz https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz
+          echo "9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883  kubeconform.tgz" | sha256sum -c -
+          tar -xzf kubeconform.tgz kubeconform
+          sudo install -m 0755 kubeconform /usr/local/bin/kubeconform
+
+      - name: Lint and unit tests
+        if: matrix.check == 'code'
+        env:
+          UV_PYTHON_DOWNLOADS: never
+        run: make lint test
+
+      # ---- image: build it for arm64, kept local (scanned, never pushed), then Trivy
+      - name: Build the image
+        if: matrix.check == 'image'
+        env:
+          NAME: ${{ matrix.name }}
+          DOCKERFILE: ${{ matrix.dockerfile }}
+          CONTEXT: ${{ matrix.context }}
+        run: docker buildx build --load -f "$DOCKERFILE" -t "scan/${NAME}:test" "$CONTEXT"
+
+      # Fixable HIGH and CRITICAL fail the job. Findings with no fix yet are not held against the change.
+      - name: Scan the image
+        if: matrix.check == 'image'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          image-ref: scan/${{ matrix.name }}:test
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+          trivyignores: .trivyignore.yaml
+
+      # ---- terraform: fmt, validate, tflint, Checkov. No `terraform plan`: that needs AWS.
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        if: matrix.check == 'terraform'
+        with:
+          terraform_version: 1.16.4
+          terraform_wrapper: false
+
+      - name: Format and validate
+        if: matrix.check == 'terraform'
+        run: |
+          set -euo pipefail
+          terraform fmt -check -recursive infra/terraform
+          for dir in bootstrap envs/dev/platform envs/dev/cluster-addons; do
+            echo "== validate ${dir}"
+            terraform -chdir="infra/terraform/${dir}" init -backend=false -input=false >/dev/null
+            terraform -chdir="infra/terraform/${dir}" validate
+          done
+
+      - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
+        if: matrix.check == 'terraform'
+        with:
+          tflint_version: v0.64.0
+
+      # Warnings and errors fail; notices (for example the unmodified default parameter group) do not.
+      - name: tflint
+        if: matrix.check == 'terraform'
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # only to download the AWS ruleset without hitting rate limits
+        run: |
+          set -euo pipefail
+          tflint --init --config="${GITHUB_WORKSPACE}/.tflint.hcl"
+          cd infra/terraform
+          tflint --config="${GITHUB_WORKSPACE}/.tflint.hcl" --recursive --minimum-failure-severity=warning --format compact
+
+      # Every exception is an inline `#checkov:skip=ID:reason` next to its resource, so a new failing
+      # check is a failure here and an accepted one explains itself where it lives.
+      - name: Checkov
+        if: matrix.check == 'terraform'
+        run: |
+          docker run --rm -v "${GITHUB_WORKSPACE}/infra/terraform:/tf:ro" \
+            bridgecrew/checkov@sha256:617c76e3f9b1f7907ebca9abb6b9d746844edcb48e9bd775e4692c69c1c6ac47 \
+            -d /tf --framework terraform --compact --quiet
+
+      # ---- config-scan: Trivy over Dockerfiles, Helm and Terraform for misconfigurations
+      - name: Scan Dockerfiles, Helm and Terraform
+        if: matrix.check == 'config-scan'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          scan-type: config
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          format: table
+          trivyignores: .trivyignore.yaml
+          skip-dirs: .venv,ui/node_modules
+
+      # ---- workflows: .github/actionlint.yaml declares the retail-vpc runner label
+      - name: actionlint
+        if: matrix.check == 'workflows'
+        run: |
+          set -euo pipefail
+          curl -fsSLo actionlint.tgz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tgz" | sha256sum -c -
+          tar -xzf actionlint.tgz actionlint
+          ./actionlint
+
+  # Builds the five arm64 images and pushes them. Dev only, after every test leg passed, behind the `dev`
+  # approval. Its outputs are the digests, which `manifest` records.
+  build:
+    needs: [prepare, test]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-24.04-arm
+    environment: dev
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+    outputs:
+      digest_product: ${{ steps.push.outputs.digest_product }}
+      digest_inventory: ${{ steps.push.outputs.digest_inventory }}
+      digest_order: ${{ steps.push.outputs.digest_order }}
+      digest_notification: ${{ steps.push.outputs.digest_notification }}
+      digest_ui: ${{ steps.push.outputs.digest_ui }}
+      result_product: ${{ steps.push.outputs.result_product }}
+      result_inventory: ${{ steps.push.outputs.result_inventory }}
+      result_order: ${{ steps.push.outputs.result_order }}
+      result_notification: ${{ steps.push.outputs.result_notification }}
+      result_ui: ${{ steps.push.outputs.result_ui }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_DEPLOY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to ECR
+        run: |
+          set -euo pipefail
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          registry="${account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          echo "REGISTRY=${registry}" >> "$GITHUB_ENV"
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin "$registry"
+
+      - name: Build and push
+        id: push
+        run: |
+          set -euo pipefail
+          tag="$TAG"
+
+          # repo, Dockerfile, build context
+          build_push() {
+            repo="loria-retail/$1"
+            image="${REGISTRY}/${repo}"
+            if digest=$(aws ecr describe-images --repository-name "$repo" \
+                --image-ids "imageTag=${tag}" \
+                --query 'imageDetails[0].imageDigest' --output text 2>/dev/null); then
+              echo "${repo}:${tag} already exists, not rebuilding"
+              result="already existed"
+            else
+              docker buildx build --platform linux/arm64 --provenance=false --push \
+                -f "$2" -t "${image}:${tag}" --metadata-file "meta-$1.json" "$3"
+              digest=$(jq -r '."containerimage.digest"' "meta-$1.json")
+              result="pushed"
+            fi
+            echo "${repo}:${tag} ${digest} (${result})"
+            echo "digest_$1=${digest}" >> "$GITHUB_OUTPUT"
+            echo "result_$1=${result}" >> "$GITHUB_OUTPUT"
+          }
+
+          # The service images build from the repo root so libs/common is included.
+          build_push product       services/product-service/Dockerfile       .
+          build_push inventory     services/inventory-service/Dockerfile     .
+          build_push order         services/order-service/Dockerfile         .
+          build_push notification  services/notification-service/Dockerfile  .
+          # The UI builds from ui/ only. VITE_DEMO_TOOLS stays at its default, false.
+          build_push ui            ui/Dockerfile                             ui
+
+  # Records what `build` produced. No AWS access: the digests come from build's outputs.
+  manifest:
+    needs: [prepare, build]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      manifest: ${{ steps.manifest.outputs.manifest }}
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      DIGEST_PRODUCT: ${{ needs.build.outputs.digest_product }}
+      DIGEST_INVENTORY: ${{ needs.build.outputs.digest_inventory }}
+      DIGEST_ORDER: ${{ needs.build.outputs.digest_order }}
+      DIGEST_NOTIFICATION: ${{ needs.build.outputs.digest_notification }}
+      DIGEST_UI: ${{ needs.build.outputs.digest_ui }}
+      RESULT_PRODUCT: ${{ needs.build.outputs.result_product }}
+      RESULT_INVENTORY: ${{ needs.build.outputs.result_inventory }}
+      RESULT_ORDER: ${{ needs.build.outputs.result_order }}
+      RESULT_NOTIFICATION: ${{ needs.build.outputs.result_notification }}
+      RESULT_UI: ${{ needs.build.outputs.result_ui }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Write the manifest
+        id: manifest
+        run: |
+          set -euo pipefail
+          manifest='{}'
+          rows=""
+          for name in product inventory order notification ui; do
+            upper=$(echo "$name" | tr '[:lower:]' '[:upper:]')
+            digest_var="DIGEST_${upper}"
+            result_var="RESULT_${upper}"
+            digest="${!digest_var}"
+            result="${!result_var}"
+            if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "the build reported no digest for ${name}: got '${digest}'" >&2
+              exit 1
+            fi
+            manifest=$(jq -c --arg n "$name" --arg d "$digest" --arg r "$result" \
+              '.images[$n] = {repository: ("loria-retail/" + $n), digest: $d, result: $r}' <<<"$manifest")
+            rows="${rows}| \`loria-retail/${name}\` | \`${digest}\` | ${result} |"$'\n'
+          done
+          manifest=$(jq -c --arg t "$TAG" --arg c "$GITHUB_SHA" --arg u "$RUN_URL" \
+            '{tag: $t, commit: $c, run: $u} + .' <<<"$manifest")
+          echo "manifest=${manifest}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Image manifest for \`${TAG}\`"
+            echo
+            echo "| Repository | Digest | Result |"
+            echo "| --- | --- | --- |"
+            printf '%s' "$rows"
+            echo
+            echo '```json'
+            jq . <<<"$manifest"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Read-only. Answers four questions about the images, and changes nothing:
+  #   1. What is in ECR?             every tag and digest in the five loria-retail/* repositories.
+  #   2. Does the cluster run it?    for every pod in `retail`, the image digest the node actually pulled
+  #                                  against the digest ECR holds for that tag. A difference fails the run.
+  #   3. Is the tag current?         the commit in a running tag (sha-<commit>) against this checkout: which
+  #                                  files an image is built from have changed since. A warning, not a
+  #                                  failure, because running an older tag can be deliberate.
+  #   4. Which tag do I deploy?      the newest sha-<commit> tag that exists in all five repositories,
+  #                                  shown first in the run summary as a line to paste into App: deploy.
+  # Runs on the in-VPC runner (ECR describe, and read of pods in `retail`), after the build and the manifest.
+  verify:
+    needs: [prepare, build, manifest]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: [self-hosted, retail-vpc]
+    environment: dev
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      BUILT_TAG: ${{ needs.prepare.outputs.tag }}
+      EKS_CLUSTER: loria-retail-dev
+      NAMESPACE: retail
+      REPOS: product inventory order notification ui
+      # What an image is built from. A change in any of these makes an older tag stale.
+      IMAGE_INPUTS: services libs ui pyproject.toml uv.lock local/seed functions
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # the commit in a tag may be any ancestor of HEAD
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_DEPLOY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Compare ECR, the cluster and the code
+        run: |
+          set -euo pipefail
+          # Always name the context explicitly.
+          aws eks update-kubeconfig --name "$EKS_CLUSTER" --alias "$EKS_CLUSTER" --region "$AWS_REGION"
+          report="${RUNNER_TEMP}/verify.md"
+          pods="${RUNNER_TEMP}/pods.tsv"
+          problems=0
+          read -ra repos <<< "$REPOS"
+          ecr_tags="${RUNNER_TEMP}/ecr-tags.tsv"
+          : > "$ecr_tags"
+
+          {
+            echo "### 1. What is in ECR"
+            echo
+            echo "| Repository | Tags | Digest | Pushed |"
+            echo "| --- | --- | --- | --- |"
+          } > "$report"
+          for r in $REPOS; do
+            aws ecr describe-images --repository-name "loria-retail/${r}" --output json \
+              | jq -r --arg r "loria-retail/${r}" '
+                  .imageDetails | sort_by(.imagePushedAt)[]
+                  | "| `\($r)` | \((.imageTags // ["(untagged)"]) | join(", ")) | `\(.imageDigest[0:19])` | \(.imagePushedAt) |"' \
+              >> "$report"
+            # tag, repository, push time: only the sha-<40 hex> tags the build job creates
+            aws ecr describe-images --repository-name "loria-retail/${r}" --output json \
+              | jq -r --arg r "$r" '
+                  .imageDetails[] | .imagePushedAt as $t | (.imageTags // [])[]
+                  | select(test("^sha-[0-9a-f]{40}$")) | [., $r, $t] | @tsv' \
+              >> "$ecr_tags"
+          done
+
+          # The newest tag that every repository holds: a tag missing from one (a build that stopped
+          # part way) cannot be deployed.
+          latest=$(awk -F'\t' -v n="${#repos[@]}" '
+              { seen[$1]++; if ($3 > newest[$1]) newest[$1] = $3 }
+              END { for (t in seen) if (seen[t] == n) print newest[t] "\t" t }' "$ecr_tags" \
+            | sort | tail -n 1 | cut -f2)
+
+          # One row per container: pod, image as configured, image as pulled (a digest).
+          kubectl --context "$EKS_CLUSTER" --namespace "$NAMESPACE" get pods -o json \
+            | jq -r '.items[] | .metadata.name as $p | (.status.containerStatuses // [])[]
+                     | [$p, .image, .imageID] | @tsv' > "$pods"
+          if [ ! -s "$pods" ]; then
+            echo "no pods with containers found in ${NAMESPACE}" >&2
+            exit 1
+          fi
+
+          {
+            echo
+            echo "### 2. What the cluster runs, against ECR"
+            echo
+            echo "| Pod | Image | Running digest | ECR digest for that tag | |"
+            echo "| --- | --- | --- | --- | --- |"
+          } >> "$report"
+          while IFS=$'\t' read -r pod image image_id; do
+            ref="${image#*/}"            # loria-retail/order:sha-<commit>
+            repo="${ref%%:*}"
+            tag="${ref##*:}"
+            running="${image_id##*@}"    # sha256:...
+            ecr=$(aws ecr describe-images --repository-name "$repo" --image-ids "imageTag=${tag}" \
+              --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || echo "MISSING")
+            if [ "$ecr" = "$running" ]; then verdict="match"; else verdict="**MISMATCH**"; problems=$((problems + 1)); fi
+            echo "| \`${pod}\` | \`${repo}:${tag:0:11}…\` | \`${running:0:19}\` | \`${ecr:0:19}\` | ${verdict} |" >> "$report"
+          done < "$pods"
+
+          {
+            echo
+            echo "### 3. Is the running tag current?"
+            echo
+            echo "| Tag | Files the images are built from that changed since | |"
+            echo "| --- | --- | --- |"
+          } >> "$report"
+          tags="${RUNNER_TEMP}/tags.txt"
+          cut -f2 "$pods" | sed 's/.*://' | sort -u > "$tags"
+          while read -r tag; do
+            commit="${tag#sha-}"
+            if ! git cat-file -e "${commit}^{commit}" 2>/dev/null; then
+              echo "| \`${tag:0:11}…\` | the commit is not in this checkout's history | unknown |" >> "$report"
+              echo "::warning::${tag} names a commit that is not in this checkout"
+              continue
+            fi
+            # shellcheck disable=SC2086
+            changed=$(git diff --name-only "$commit" HEAD -- $IMAGE_INPUTS ':(exclude)**/tests/**' | tr '\n' ' ')
+            if [ -z "$changed" ]; then
+              echo "| \`${tag:0:11}…\` | none | current |" >> "$report"
+            else
+              echo "| \`${tag:0:11}…\` | ${changed} | **stale** |" >> "$report"
+              echo "::warning::the images tagged ${tag} are older than the code: ${changed}"
+            fi
+          done < "$tags"
+
+          head="${RUNNER_TEMP}/latest.md"
+          {
+            echo "### Latest image: paste into App: deploy"
+            echo
+            if [ -n "$latest" ]; then
+              echo '```'
+              echo "$latest"
+              echo '```'
+              if grep -qxF "$latest" "$tags"; then
+                echo "The cluster already runs this tag."
+              else
+                echo "The cluster does not run this tag yet."
+              fi
+              if [ "$latest" = "$BUILT_TAG" ]; then
+                echo "It is the tag built in this run."
+              else
+                echo "It is not the tag built in this run (\`${BUILT_TAG:0:15}…\`): another build pushed a newer one."
+              fi
+            else
+              echo "No sha-<commit> tag exists in all five repositories."
+              echo "::warning::no image tag exists in all five repositories"
+            fi
+            echo
+          } > "$head"
+          [ -z "$latest" ] || echo "::notice::latest image tag: ${latest}"
+
+          cat "$head" "$report" >> "$GITHUB_STEP_SUMMARY"
+          cat "$head" "$report"
+          if [ "$problems" -gt 0 ]; then
+            echo "${problems} container(s) run a digest that ECR does not hold for their tag" >&2
+            exit 1
+          fi
+
+  notify:
+    needs: [prepare, test, build, manifest, verify]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Report the result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF_NAME: ${{ github.ref_name }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          NEEDS: ${{ toJSON(needs) }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          overall="succeeded"
+          if echo "$NEEDS" | jq -e 'any(.[]; .result == "failure" or .result == "cancelled")' >/dev/null; then
+            overall="failed"
+          fi
+          table=$(echo "$NEEDS" | jq -r 'to_entries[] | "| \(.key) | \(.value.result) |"')
+          body="$(printf '%s\n' \
+            "**app-prepare ${overall}** for \`${REF_NAME}\` at \`${GITHUB_SHA}\` (\`${TAG}\`)" \
+            "" \
+            "| Job | Result |" \
+            "| --- | --- |" \
+            "${table}" \
+            "" \
+            "${RUN_URL}")"
+          echo "$body" >> "$GITHUB_STEP_SUMMARY"
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" -f body="$body" >/dev/null

@@ -135,7 +135,7 @@ jobs:
           helm --kube-context "$EKS_CLUSTER" --namespace "$NAMESPACE" list || true
 
       # The same acceptance suite as app-deploy would need the checkout and port-forwards; a rollback
-      # only checks that the storefront still answers. Run app-verify afterwards to compare digests.
+      # only checks that the storefront still answers. Run app-prepare afterwards (its verify job) to compare digests.
       - name: Check the storefront answers
         run: |
           set -euo pipefail

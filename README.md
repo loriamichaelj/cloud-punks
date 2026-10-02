@@ -116,14 +116,14 @@ Open <http://retail.k8s.orb.local/>. `make k8s-down` removes the releases and `m
 
 ## Running on AWS (dev)
 
-The dev environment runs in `us-east-1`: one EKS node, RDS for PostgreSQL, ElastiCache for Valkey, DynamoDB, EventBridge and SQS, behind an internal ALB. No AWS credential exists on any laptop (ADR-14). Every change is a workflow, started by hand, with an approval on the `bootstrap` or `dev` GitHub Environment. The acceptance suite (steps 1 to 10, including the low-stock Lambda, minus the dead-letter-queue count) passes against it from `app-deploy`, and `app-verify` checks that the pods run the images ECR holds.
+The dev environment runs in `us-east-1`: one EKS node, RDS for PostgreSQL, ElastiCache for Valkey, DynamoDB, EventBridge and SQS, behind an internal ALB. No AWS credential exists on any laptop (ADR-14). Every change is a workflow, started by hand, with an approval on the `bootstrap` or `dev` GitHub Environment. The acceptance suite (steps 1 to 10, including the low-stock Lambda, minus the dead-letter-queue count) passes against it from `app-deploy`, and `app-prepare` checks that the pods run the images ECR holds.
 
 Bring-up, in order (details and the teardown order are in `.github/workflows/README.md`):
 
 1. `bootstrap-state-bucket`, then `bootstrap-ci-roles`: the Terraform state bucket and the CI roles. Needs the one-time manual setup in `infra/terraform/README.md` (OIDC provider, bootstrap role, Environments, variables).
 2. `platform-create` (plan, then apply): network, ECR, EKS, data stores, queues, the in-VPC runner. Then store the runner's GitHub token by hand, as that README says.
 3. `addons-create`: the load balancer controller, External Secrets, the secret store.
-4. `app-database`, `app-build`, `app-deploy`, then `app-seed` and `app-deploy` once more (the first deploy creates the schema; the seed needs it).
+4. `app-database`, `app-prepare`, `app-deploy`, then `app-seed` and `app-deploy` once more (the first deploy creates the schema; the seed needs it).
 5. `app-expose` (optional): a browser view for one address, held in the `DEV_VIEWER_CIDR` environment secret.
 
 Tear down in the reverse order: `app-destroy`, `addons-destroy`, `platform-destroy`. Dev costs roughly $300 a month while it runs (a list-price estimate, not measured), so destroy it when idle. Those workflows have not been run yet.

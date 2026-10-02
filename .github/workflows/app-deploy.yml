@@ -4,7 +4,7 @@ name: "App: deploy"
 #
 #   deploy  helm upgrade --install of every release on the dev cluster from the
 #           in-VPC runners, then the e2e acceptance test. Needs the `dev`
-#           approval. Deploys images that app-build.yml already pushed; it
+#           approval. Deploys images that app-prepare.yml already pushed; it
 #           builds nothing.
 #   notify  always runs; writes the result to the run summary and comments on
 #           the commit.
@@ -27,7 +27,7 @@ permissions:
   contents: read
   id-token: write
 
-# Shares the group with app-build and app-destroy so they never overlap.
+# Shares the group with app-prepare and app-destroy so they never overlap.
 concurrency:
   group: app-dev
   cancel-in-progress: false
@@ -81,7 +81,7 @@ jobs:
           for r in product inventory order notification ui; do
             if ! aws ecr describe-images --repository-name "loria-retail/${r}" \
                 --image-ids "imageTag=${TAG}" >/dev/null 2>&1; then
-              echo "loria-retail/${r}:${TAG} is not in ECR: run app-build first" >&2
+              echo "loria-retail/${r}:${TAG} is not in ECR: run app-prepare first" >&2
               exit 1
             fi
           done

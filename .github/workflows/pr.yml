@@ -16,7 +16,7 @@ name: "PR: checks"
 #   ci             the one check branch protection requires. It fails if any job above failed or was
 #                  cancelled; a job skipped because nothing it covers changed is fine.
 #
-# app-test.yml runs all of these by hand on any branch. Integration tests, the failure drills and the browser journeys need LocalStack and a secret, so they stay
+# app-prepare.yml runs all of these by hand on any branch. Integration tests, the failure drills and the browser journeys need LocalStack and a secret, so they stay
 # local (`make itest`, `make e2e`, `make ui-e2e`). The cloud acceptance suite in app-deploy.yml covers that
 # layer against real AWS, after a deploy.
 on:
@@ -144,8 +144,8 @@ jobs:
           persist-credentials: false
 
       # Built for the runner's own architecture and kept local: it is scanned, never pushed. The OS
-      # packages and libraries Trivy reports are the same on arm64, which is what app-build.yml ships.
-      # app-test.yml runs the same checks by hand, on arm64.
+      # packages and libraries Trivy reports are the same on arm64, which is what app-prepare.yml ships.
+      # app-prepare.yml runs the same checks by hand, on arm64.
       - name: Build the image
         env:
           NAME: ${{ matrix.name }}

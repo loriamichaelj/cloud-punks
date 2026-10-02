@@ -29,7 +29,7 @@ permissions:
   contents: read
   id-token: write
 
-# Shares the group with app-build so a build and a delete never overlap.
+# Shares the group with app-prepare so a build and a delete never overlap.
 concurrency:
   group: app-dev
   cancel-in-progress: false
