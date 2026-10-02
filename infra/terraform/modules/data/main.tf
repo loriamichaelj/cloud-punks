@@ -59,9 +59,12 @@ resource "aws_db_parameter_group" "postgres" {
   name   = "${var.name}-postgres"
   family = "postgres${var.db_engine_version}"
 
+  # AWS reports this parameter's apply method as pending-reboot. Saying so here keeps
+  # every plan from showing a no-op change; the value is already in force on this instance.
   parameter {
-    name  = "rds.force_ssl"
-    value = "1"
+    name         = "rds.force_ssl"
+    value        = "1"
+    apply_method = "pending-reboot"
   }
 }
 
