@@ -27,7 +27,7 @@ We build a four-service retail order platform that runs end-to-end on localhost 
 | 1a — Local (Compose on OrbStack) | Services, data layer, events, tests | Day 1–2 | Acceptance test passes on `make up` |
 | 1b — UI (React) | `ui/` single-page app and nginx image, gateway `/` route, Playwright journeys (M8; section 15) | Day 2 (late) | Browser journeys pass on Compose via `make ui-e2e` |
 | 1c — Local Kubernetes (OrbStack) | Helm chart for every process including the UI, probes, HPA, ingress, rollback on the local cluster | Day 3 (morning) | Same test (API acceptance and UI journeys) passes via local ingress; `helm rollback` demonstrated |
-| 2 — Cloud infra, built through CI (built 2 Oct 2026) | Manual OIDC provider + `cloudbatch818-loria-retail-bootstrap` role; `bootstrap-state-bucket.yml`, `bootstrap-ci-roles.yml`; minimal `platform-create.yml`; Terraform, ECR, EKS, in-VPC runners; the 1b chart with dev values. No AWS access exists outside GitHub Actions (ADR-14) | Day 3 | Same test passes against the EKS ingress, run from a workflow. **Met:** `app-deploy.yml` runs the acceptance suite through the dev ALB (9 passed, 1 skipped) |
+| 2 — Cloud infra, built through CI (built 2 Oct 2026) | Manual OIDC provider + `cloudbatch818-loria-retail-bootstrap` role; `bootstrap-state-bucket.yml`, `bootstrap-ci-roles.yml`; minimal `platform-create.yml`; Terraform, ECR, EKS, in-VPC runners; the 1b chart with dev values. No AWS access exists outside GitHub Actions (ADR-14) | Day 3 | Same test passes against the EKS ingress, run from a workflow. **Met:** `app-deploy.yml` runs the acceptance suite through the dev ALB (10 passed, none skipped; the dead-letter-queue count inside step 9 is not checked in the cloud) |
 | 3 — CI/CD | `pr.yml`, `promote.yml`, scans, a push trigger for the deploy, promotion, rollback. The deploy and destroy workflows already exist from Phase 2 | Day 4 | PR-to-prod pipeline with a demonstrated rollback |
 | 4 — Reliability | Dashboards, SLOs, alarms, failure drills, runbooks | Day 5 | Each drill in section 11 detected and recovered |
 
@@ -111,7 +111,7 @@ Order is the only service with both sync dependencies (Product for price, Invent
 | Key-value | LocalStack DynamoDB | DynamoDB on-demand | `AWS_ENDPOINT_URL` unset |
 | Cache | Valkey 9.0 container | ElastiCache for Valkey (TLS) | `CACHE_URL` |
 | Events | LocalStack EventBridge + SQS | EventBridge + SQS | `AWS_ENDPOINT_URL` unset; `QUEUE_NAME` resolved at startup |
-| Function | LocalStack Lambda | Lambda (Terraform-deployed) | Packaging only |
+| Function | LocalStack Lambda | Lambda (Terraform-deployed; the zip is built by `scripts/package_lambda.py`) | Packaging only |
 | Secrets | `.env` (git-ignored) | Secrets Manager + KMS via External Secrets Operator | Same env var names |
 | AWS credentials | `test`/`test` for LocalStack | EKS Pod Identity role per ServiceAccount | SDK default chain, no code change |
 | Metrics and logs | Prometheus + Grafana profile; stdout | Prometheus/Grafana + CloudWatch Logs | Same `/metrics` and JSON logs |
@@ -532,7 +532,7 @@ retail-platform/
 ├── README.md                     # run instructions
 ├── deploy/helm/                  # retail-service chart, values/ (per release, per env), third-party/ (Traefik)
 ├── infra/terraform/              # Phase 2 (placeholder)
-├── .github/workflows/            # Phases 2–3 (placeholder): bootstrap-state-bucket, bootstrap-ci-roles, platform-create, platform-destroy, addons-create, addons-destroy, app-build, app-images, app-database, app-seed, app-deploy, app-expose, app-destroy; Phase 3: pr, promote
+├── .github/workflows/            # Phases 2–3 (placeholder): bootstrap-state-bucket, bootstrap-ci-roles, platform-create, platform-destroy, addons-create, addons-destroy, app-build, app-images, app-database, app-seed, app-deploy, app-expose, app-verify, app-destroy; Phase 3: pr, promote
 ├── Makefile
 ├── .env.example                  # committed; .env is git-ignored
 └── pyproject.toml                # uv workspace root, ruff, mypy, pytest config
@@ -647,7 +647,7 @@ Each service's integration suite runs the app in-process against the real Compos
 
 ### Acceptance test (steps 1–10)
 
-The same suite runs against three targets: Compose (`make e2e`), the local cluster (`make k8s-e2e`) and dev on EKS (the last step of `app-deploy.yml`, `E2E_CLOUD=1`). In the cloud, the dead-letter-queue count in step 9 and the low-stock Lambda test are skipped until the Lambda and queue alarms exist.
+The same suite runs against three targets: Compose (`make e2e`), the local cluster (`make k8s-e2e`) and dev on EKS (the last step of `app-deploy.yml`, `E2E_CLOUD=1`). In the cloud the low-stock Lambda test reads the real CloudWatch log group (`E2E_LAMBDA_LOG_GROUP`), and the dead-letter-queue count inside step 9 is skipped until queue alarms exist.
 
 1. `GET /api/v1/products` returns seeded products; second call of `GET /api/v1/products/{sku}` is a cache hit (`cache_hits_total` increments).
 2. Record stock for SKU A (`GET /api/v1/inventory/A`).
@@ -699,7 +699,7 @@ These are contracts Phase 1 must not violate, not a full spec; each phase gets i
 
 ### Phase 2 — Bootstrap, Terraform, ECR, EKS, Helm, all through CI (Day 3)
 
-**Status: built and running in dev (2 Oct 2026).** The exit criterion is met: `app-deploy.yml` deploys every release to the EKS cluster and runs the acceptance suite through the internal ALB from the in-VPC runner (9 passed; the low-stock Lambda test is skipped). Three stacks are applied only from workflows: `bootstrap` (the CI roles), `dev/platform` (133 resources: network, ECR, EKS, RDS, ElastiCache, DynamoDB, EventBridge and SQS, the runner, the workload roles) and `dev/cluster-addons` (12 resources). What changed against this section, what went wrong on the way, and what is still open: `docs/adr/README.md`, "Cloud (dev on AWS) as built". Not done in Phase 2: the low-stock Lambda in the cloud, alarms and dashboards, `verify-full` database TLS, a Valkey AUTH token, HTTPS and a domain, pinned EKS add-on versions, and any run of the teardown workflows.
+**Status: built and running in dev (2 Oct 2026).** The exit criterion is met: `app-deploy.yml` deploys every release to the EKS cluster and runs the acceptance suite through the internal ALB from the in-VPC runner (10 passed, none skipped; the dead-letter-queue count inside step 9 is not checked in the cloud). Three stacks are applied only from workflows: `bootstrap` (the CI roles), `dev/platform` (141 resources: network, ECR, EKS, RDS, ElastiCache, DynamoDB, EventBridge and SQS, the low-stock Lambda, the runner, the workload roles) and `dev/cluster-addons` (12 resources). What changed against this section, what went wrong on the way, and what is still open: `docs/adr/README.md`, "Cloud (dev on AWS) as built". Not done in Phase 2: alarms and dashboards, `verify-full` database TLS, a Valkey AUTH token, HTTPS and a domain, pinned EKS add-on versions, and any run of the teardown workflows.
 
 **AWS access model (ADR-14, ADR-15).** No AWS credential exists outside GitHub Actions. Every workflow assumes a role by ARN through OIDC (`aws-actions/configure-aws-credentials`, pinned by SHA, `permissions: id-token: write, contents: read`). Role ARNs are GitHub Actions *variables* per Environment (an ARN is not a secret). Claude Code can therefore write and statically check the cloud code (`terraform fmt/validate` with `init -backend=false`, tflint, checkov, `helm lint`, kubeconform) but can never run `plan`, `apply`, `aws` or `kubectl` against AWS; those happen only in workflows, so workflows must print diagnostics on failure (`terraform show`, `helm status`, `kubectl describe`/events).
 
@@ -754,6 +754,7 @@ Terraform references the OIDC provider with a `data` source (an account can hold
 | `app-seed.yml` | `workflow_dispatch`, runner | `local/seed/seed.py`: the catalog into `product_db` and the starting stock into DynamoDB |
 | `app-expose.yml` | `workflow_dispatch`, runner | Dev only: a second, internet-facing ALB reachable from one address held in the `DEV_VIEWER_CIDR` environment secret (checked by `scripts/viewer_cidr.py`); `remove` takes it away |
 | `app-destroy.yml` | `workflow_dispatch`, runner | Plan, optional `helm uninstall` of every release, then delete an image tag (or all) from the five repositories |
+| `app-verify.yml` | `workflow_dispatch`, runner | Read-only: lists the ECR tags and digests, compares each running pod's pulled digest with ECR's digest for its tag (a difference fails), and warns when the running tag is older than the code the images are built from |
 
 Non-negotiables: each OIDC trust policy is pinned to an exact `sub` (`environment:<env>`; never a wildcard or `ref:*`); third-party actions pinned by commit SHA; branch protection with required checks (none on `dev` for now, so the `dev` push and the environment gates are the only controls); no long-lived AWS keys in GitHub; self-hosted runners never serve `pull_request` or fork code (public repo). Rollback = `helm rollback <release> <revision>` or redeploy the previous digest; works only because migrations are expand/contract (section 5).
 
@@ -834,7 +835,7 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 - [ ] Should `reserved` stock ever be released or committed? This design never releases (no cancellation). Needed before adding cancellations in a later week.
 - [x] Pipeline, cloud and Terraform strategy: decided and built for dev (Phase 2); the choices are in `docs/adr/README.md`. Phases 3 and 4 remain provisional.
 - [ ] Budget ceiling for the week's AWS spend (EKS control plane, NAT, RDS, ElastiCache run 24/7; one node and RDS instead of Aurora are decided). Decides single-NAT, instance sizes, and whether to destroy dev nightly. A rough list-price estimate for what is built (not measured) is about $300 a month, about $10 a day, in `docs/adr/README.md`.
-- [ ] The low-stock Lambda in the cloud: `hashicorp/archive` is needed to package it from Terraform, which is a new dependency, so it waits for a decision. Until then the cloud acceptance suite skips the Lambda test.
+- [x] The low-stock Lambda in the cloud: built 2 Oct 2026 in the `events` module, packaged by `scripts/package_lambda.py` (no `archive` provider); the cloud acceptance suite checks it.
 - [ ] Database TLS: dev uses `DB_SSLMODE=require`. `verify-full` needs the RDS CA bundle in the images.
 - [ ] A Valkey AUTH token (it has TLS and a security-group limit now), pinned EKS add-on versions and a pinned PostgreSQL minor.
 - [ ] HTTPS and a domain (ACM certificate, Route 53). Until then dev is plain HTTP.

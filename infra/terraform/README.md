@@ -9,7 +9,7 @@ Status: all three stacks are applied in dev (2 Oct 2026). The record of what was
 | Stack | State key | What it holds | Workflows |
 | --- | --- | --- | --- |
 | `bootstrap/` | `bootstrap/terraform.tfstate` | The CI roles: `tf-dev`, `deploy-dev` and `db-dev`, with their policies | `bootstrap-ci-roles.yml` |
-| `envs/dev/platform/` | `dev/platform/terraform.tfstate` | Network, ECR, EKS, data stores, events, the in-VPC runner, the workload roles (133 resources) | `platform-create.yml`, `platform-destroy.yml` |
+| `envs/dev/platform/` | `dev/platform/terraform.tfstate` | Network, ECR, EKS, data stores, events, the in-VPC runner, the workload roles (141 resources) | `platform-create.yml`, `platform-destroy.yml` |
 | `envs/dev/cluster-addons/` | `dev/cluster-addons/terraform.tfstate` | The `retail` namespace, the AWS Load Balancer Controller, External Secrets Operator, the `ClusterSecretStore`, their Pod Identity roles, and the RBAC the deploy role needs (12 resources). Runs on the in-VPC runner because the cluster API is private | `addons-create.yml`, `addons-destroy.yml` |
 
 The OIDC provider and the `cloudbatch818-loria-retail-bootstrap` role are created by hand once and never managed here; Terraform reads the provider with a `data` source.
@@ -22,7 +22,7 @@ The OIDC provider and the `cloudbatch818-loria-retail-bootstrap` role are create
 | `ecr/` | `loria-retail/<name>` repositories: immutable tags, scan on push, keep 30 |
 | `eks/` | Private-endpoint cluster, secrets KMS key, access entries, one-node AL2023 arm64 managed node group, add-ons |
 | `data/` | RDS for PostgreSQL 17, ElastiCache for Valkey (TLS), the three DynamoDB tables, one KMS key |
-| `events/` | The EventBridge bus, three routing rules, queues with DLQs (SSE, `aws:SourceArn` queue policies), the 7-day archive |
+| `events/` | The EventBridge bus, three routing rules, queues with DLQs (SSE, `aws:SourceArn` queue policies), the 7-day archive, and the low-stock Lambda with its log group, role, dead-letter queue, rule, target and invoke permission |
 | `runners/` | One ephemeral in-VPC GitHub runner (label `retail-vpc`): launch template, Auto Scaling group of one, instance role, security group, and the empty Secrets Manager secret for its token |
 | `pod-identity-role/` | One IAM role for one Kubernetes service account through EKS Pod Identity, plus the association |
 | `github-oidc/` | One IAM role trusting one exact GitHub OIDC `sub` |
@@ -41,6 +41,7 @@ Everything created is prefixed `loria-` (bucket, VPC, cluster `loria-retail-dev`
 - **The deploy role** has `AmazonEKSEditPolicy` in `retail`, which does not cover custom resources. Its access entry is in the Kubernetes group `retail-deployers`, and `cluster-addons` binds that group to a Role allowing `externalsecrets` in `retail` only. Apply `platform-create` first (the group), then `addons-create` (the Role and binding).
 - **`cluster-addons`** uses the `hashicorp/helm` and `hashicorp/kubernetes` providers (DESIGN.md section 13 calls for them) with pinned charts: AWS Load Balancer Controller 3.5.0, whose upstream IAM policy is vendored as `lbc-iam-policy.json`, and External Secrets Operator 2.11.0. The `ClusterSecretStore` goes in through a tiny local chart, `deploy/helm/secret-store`, installed after the operator: it is a custom resource, and a `kubernetes_manifest` would fail to plan on a freshly built cluster whose CRD does not exist yet.
 - **Databases and seed.** `scripts/db_init.py` (`app-database.yml`) creates `product_db`, `order_db`, their owner and app roles and the four passwords; `local/seed/seed.py` (`app-seed.yml`) loads the catalog and stock. Both run on the runner as the `db` role. The platform stack lets the runner's security group reach PostgreSQL on 5432 for them, and the bootstrap stack creates the role (`AWS_ROLE_ARN_DB`, a variable on the `dev` Environment). The four secrets survive `platform-destroy` and are reused by a rebuild.
+- **The low-stock Lambda** (`modules/events/lambda.tf`) reads `dist/low-stock-alert.zip`, which `scripts/package_lambda.py` builds. The platform workflows run it before `plan` and again before `apply` (and before the destroy pair), because the saved plan is applied on a different machine; the zip is byte-identical every time, so the plan's hash still matches. No `archive` provider. The function is Python 3.13 on arm64 and calls no AWS API: its role can only write its own logs and send to its dead-letter queue. The deploy role may read that log group, for the acceptance test.
 - **The DynamoDB tables** are `loria-inventory`, `loria-inventory-reservations` and `loria-notifications`. The services read the names from `INVENTORY_TABLE`, `RESERVATIONS_TABLE` and `NOTIFICATIONS_TABLE` (the defaults are the local names).
 - **Dev RDS can be destroyed:** deletion protection is off and there is no final snapshot (`db_deletion_protection` and `db_skip_final_snapshot`). Turn both around for prod.
 - **One node limits the pods** to about 29 with the default VPC CNI. The add-ons and the application ran with room to spare, but an HPA scale-up is bounded by it.
@@ -51,6 +52,5 @@ Everything created is prefixed `loria-` (bucket, VPC, cluster `loria-retail-dev`
 - EKS add-on versions are not pinned (`addon_versions` is empty, so EKS picks its default for the cluster version), and RDS runs `engine_version = "17"`, so AWS picks the minor. Copy what the apply chose into the variables.
 - Interface endpoints (about $7.30 per endpoint per AZ per month) sit in one AZ in dev. Set `interface_endpoint_services = []` to drop them and send that traffic through the NAT.
 - Valkey has TLS, encryption at rest and a security-group limit, but no AUTH token: generating one hands the secret to Terraform and into state.
-- The `low-stock-alert` Lambda and its `to-low-stock` rule are not in the `events` module. Packaging the function from Terraform needs the `hashicorp/archive` provider, a new dependency, so it waits for a decision.
 - Dev has no ACM certificate or domain, so ingress is plain HTTP.
 - None of the three teardown workflows has been run yet.

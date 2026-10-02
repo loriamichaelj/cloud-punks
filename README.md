@@ -95,7 +95,7 @@ tests/e2e/         acceptance steps and failure drills
 docs/              DESIGN.md, ADR notes, generated OpenAPI snapshots
 deploy/helm/        the retail-service chart, the secret-store chart, and the values per release (local and dev)
 infra/terraform/    the bootstrap, dev/platform and dev/cluster-addons stacks and their modules (applied only from workflows)
-scripts/            DLQ tools, OpenAPI export, db_init, the k8s_compose shim, viewer_cidr; their tests are in scripts/tests
+scripts/            DLQ tools, OpenAPI export, db_init, the k8s_compose shim, viewer_cidr, package_lambda; their tests are in scripts/tests
 .github/workflows/  bootstrap-*, platform-*, addons-* and app-* workflows (see its README)
 ```
 
@@ -116,7 +116,7 @@ Open <http://retail.k8s.orb.local/>. `make k8s-down` removes the releases and `m
 
 ## Running on AWS (dev)
 
-The dev environment runs in `us-east-1`: one EKS node, RDS for PostgreSQL, ElastiCache for Valkey, DynamoDB, EventBridge and SQS, behind an internal ALB. No AWS credential exists on any laptop (ADR-14). Every change is a workflow, started by hand, with an approval on the `bootstrap` or `dev` GitHub Environment. The acceptance suite (steps 1 to 10, minus the Lambda test) passes against it from `app-deploy`.
+The dev environment runs in `us-east-1`: one EKS node, RDS for PostgreSQL, ElastiCache for Valkey, DynamoDB, EventBridge and SQS, behind an internal ALB. No AWS credential exists on any laptop (ADR-14). Every change is a workflow, started by hand, with an approval on the `bootstrap` or `dev` GitHub Environment. The acceptance suite (steps 1 to 10, including the low-stock Lambda, minus the dead-letter-queue count) passes against it from `app-deploy`, and `app-verify` checks that the pods run the images ECR holds.
 
 Bring-up, in order (details and the teardown order are in `.github/workflows/README.md`):
 
@@ -128,5 +128,5 @@ Bring-up, in order (details and the teardown order are in `.github/workflows/REA
 
 Tear down in the reverse order: `app-destroy`, `addons-destroy`, `platform-destroy`. Dev costs roughly $300 a month while it runs (a list-price estimate, not measured), so destroy it when idle. Those workflows have not been run yet.
 
-Not built yet: the pull-request and promotion pipeline (`pr.yml`, `promote.yml`), the low-stock Lambda in the cloud, alarms and dashboards, HTTPS and a domain. See DESIGN.md section 13 and its open questions; what was built, what differs from the design and what went wrong on the way are in `docs/adr/README.md`, "Cloud (dev on AWS) as built".
+Not built yet: the pull-request and promotion pipeline (`pr.yml`, `promote.yml`), alarms and dashboards, HTTPS and a domain. See DESIGN.md section 13 and its open questions; what was built, what differs from the design and what went wrong on the way are in `docs/adr/README.md`, "Cloud (dev on AWS) as built".
 

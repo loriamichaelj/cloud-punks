@@ -41,7 +41,7 @@ Tearing down, in this order:
 
 `platform-create`, `platform-destroy`, `addons-create` and `addons-destroy` share the group `platform-dev`, so none of them overlap. `app-build`, `app-images`, `app-database`, `app-seed`, `app-deploy`, `app-expose`, `app-verify` and `app-destroy` share `app-dev`.
 
-`app-build.yml` runs today. `app-deploy.yml` installs every release and the internal ALB, then runs the acceptance suite in cloud mode (`E2E_K8S=1 E2E_CLOUD=1`): orders go through the ALB, the four APIs are port-forwarded to the runner's localhost, and `scripts/k8s_compose.py` stands in for Compose with kubectl. Two checks are skipped there because the cloud stack cannot offer them yet: the dead-letter-queue count and the low-stock Lambda test. Run `app-seed.yml` once first, or the catalog is empty and step 1 fails. The drills and the UI journeys are not run in the cloud. `app-build.yml` checks and `app-images.yml` publishes; they do not overlap. Only the `dev` environment exists for now.
+`app-build.yml` runs today. `app-deploy.yml` installs every release and the internal ALB, then runs the acceptance suite in cloud mode (`E2E_K8S=1 E2E_CLOUD=1`): orders go through the ALB, the four APIs are port-forwarded to the runner's localhost, and `scripts/k8s_compose.py` stands in for Compose with kubectl. One check is skipped there, the dead-letter-queue count inside step 9, because the deploy role may not read the queues; the low-stock Lambda test reads the real CloudWatch log group. Run `app-seed.yml` once first, or the catalog is empty and step 1 fails. The drills and the UI journeys are not run in the cloud. `app-build.yml` checks and `app-images.yml` publishes; they do not overlap. Only the `dev` environment exists for now.
 
 ## Seeing the app in a browser
 

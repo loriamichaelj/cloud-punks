@@ -4,7 +4,7 @@ One file per ADR when a decision in DESIGN.md section 2 changes. Until then this
 
 ## Change history (was the DESIGN.md status line)
 
-**v2.4 (2 Oct 2026): Phase 2 is built.** The platform runs in dev on AWS: three Terraform stacks applied only from GitHub Actions, eleven Helm releases on one EKS node, and the acceptance suite passing through the dev ALB from a workflow (9 passed, 1 skipped). New in this version: the cloud workflows (`bootstrap-*`, `platform-*`, `addons-*`, `app-*`), the in-VPC runner, the `db_init` and seed jobs, a cloud mode for the acceptance suite, configurable DynamoDB table names, a viewer ALB limited to one address, and the section "Cloud (dev on AWS) as built" below. DESIGN.md's status, phase table, Phase 2 block, workflow table, open questions and risks were updated to match.
+**v2.4 (2 Oct 2026): Phase 2 is built.** The platform runs in dev on AWS: three Terraform stacks applied only from GitHub Actions, eleven Helm releases on one EKS node, and the acceptance suite passing through the dev ALB from a workflow (10 passed, none skipped). New in this version: the cloud workflows (`bootstrap-*`, `platform-*`, `addons-*`, `app-*`), the in-VPC runner, the `db_init` and seed jobs, the low-stock Lambda, `app-verify`, a cloud mode for the acceptance suite, configurable DynamoDB table names, a viewer ALB limited to one address, and the section "Cloud (dev on AWS) as built" below. DESIGN.md's status, phase table, Phase 2 block, workflow table, open questions and risks were updated to match.
 
 Status: v2.3, UI restyled (v2.3: light theme, product art, category colours; see "UI restyle" below); M0–M10 built; Phase 1 is complete (v2.2: M10 built — the `retail-service` Helm chart, local values, Traefik ingress, `make k8s-*`, cluster e2e and pod-kill tests; v2.1: CLAUDE.md's separate UI section merged into Workflow, Must and Must not (DESIGN.md section 14 mirrors it), the "no Helm before M9" rule dropped, DESIGN.md metrics, Make targets and layout updated; M9 built — stuck-order sweeper, queue-depth metric, failure drills as Make targets and e2e cases, DLQ tools, Prometheus and Grafana profile, README; v2.0: M8 built — the React UI, `ui` Compose service, gateway `/` route, OpenAPI snapshots and `ui-*` targets, browser journeys; v1.9: M7 built — notification API contract, consumer, Lambda, steps 6, 9 and 10 in `make e2e`; v1.8: M6 built — reservation record attributes, consumer processes and shutdown, acceptance step 6 moved to M7, M6 test rules; v1.7: milestones renumbered; v1.6: section 15 and ADR-16/17; v1.5: order API contract, outbox relay behavior, test isolation rules and the corrected bus-unavailable drill; v1.4: inventory API contract and hermetic unit tests; v1.3: product API contract and cache/outage behavior from M3, HTTP client moved to httpx2; v1.2: layout, bootstrap and tooling notes updated from M0–M2; OrbStack sized for an 8 GB Mac; v1.1: facts verified 30 Sep 2026; AWS access is GitHub-OIDC-only, so Phases 2–3 are reordered around a bootstrap workflow and in-VPC runners; bootstrap script and spec gaps fixed)
 
@@ -206,7 +206,7 @@ The owner asked for a more presentable, colourful, light UI with product assets.
 
 ## Cloud (dev on AWS) as built (Phase 2, 30 Sep to 2 Oct 2026)
 
-**Result.** Dev runs in `us-east-1`. `app-deploy.yml` installs every release and runs `tests/e2e/test_acceptance.py` through the internal ALB: 9 passed, 1 skipped (the low-stock Lambda test, on purpose). Nothing was created or changed from a laptop; no AWS credential exists outside GitHub Actions (ADR-14). The unit gate (`make lint test`) and the hosted `app-build.yml` check are green on the same commit.
+**Result.** Dev runs in `us-east-1`. `app-deploy.yml` installs every release and runs `tests/e2e/test_acceptance.py` through the internal ALB: 10 passed, none skipped (the dead-letter-queue count inside step 9 is not checked in the cloud). Nothing was created or changed from a laptop; no AWS credential exists outside GitHub Actions (ADR-14). The unit gate (`make lint test`) and the hosted `app-build.yml` check are green on the same commit.
 
 ### What exists
 
@@ -214,7 +214,7 @@ The owner asked for a more presentable, colourful, light UI with product assets.
 | --- | --- | --- | --- |
 | Manual, once | IAM OIDC provider, the `cloudbatch818-loria-retail-bootstrap` role, the `bootstrap` and `dev` GitHub Environments | the owner, in the console | none |
 | `bootstrap` | the `tf-dev`, `deploy-dev` and `db-dev` roles and their policies | `bootstrap-ci-roles.yml` | `bootstrap/terraform.tfstate` |
-| `dev/platform` (133) | network 35, ECR 10, EKS 25, data 14, events 20, the runner 10, workload roles and one security-group rule 19 | `platform-create.yml` | `dev/platform/terraform.tfstate` |
+| `dev/platform` (141) | network 35, ECR 10, EKS 25, data 14, events and the low-stock Lambda 28, the runner 10, workload roles and one security-group rule 19 | `platform-create.yml` | `dev/platform/terraform.tfstate` |
 | `dev/cluster-addons` (12) | the `retail` namespace, AWS Load Balancer Controller 3.5.0, External Secrets Operator 2.11.0, the `ClusterSecretStore`, two Pod Identity roles, a Role and binding for ExternalSecrets | `addons-create.yml`, on the runner | `dev/cluster-addons/terraform.tfstate` |
 | Helm releases (11) | `secrets`, the eight processes, `ui`, `gateway`; optionally `gateway-public` | `app-deploy.yml`, `app-expose.yml` | in the cluster |
 
@@ -222,7 +222,7 @@ The platform in detail: a VPC over three AZs with one NAT and seven interface en
 
 ### Names and roles
 
-Everything Terraform and the workflows create is prefixed `loria-` (bucket, cluster `loria-retail-dev`, repositories, queues, tables, the ALBs). IAM roles are `cloudbatch818-loria-retail-...`, the only prefix the manual bootstrap role may manage. Roles: `tf-dev` (plan, apply and destroy of both stacks; IAM only under `...-dev-*`; state only under `dev/*`), `deploy-dev` (ECR push, pull and delete; `eks:DescribeCluster`; EKS Edit in `retail`; the group `retail-deployers` for ExternalSecrets), `db-dev` (read the RDS master secret, create and read `loria-retail-dev/*` secrets, `PutItem` on the inventory table), six workload roles by Pod Identity (a service account is named after its Helm release), and the runner's instance role (Session Manager, and read of the token secret). The `bootstrap` and `dev` Environments require the owner as reviewer and accept only the `dev` branch.
+Everything Terraform and the workflows create is prefixed `loria-` (bucket, cluster `loria-retail-dev`, repositories, queues, tables, the ALBs). IAM roles are `cloudbatch818-loria-retail-...`, the only prefix the manual bootstrap role may manage. Roles: `tf-dev` (plan, apply and destroy of both stacks; IAM only under `...-dev-*`; state only under `dev/*`), `deploy-dev` (ECR push, pull and delete; `eks:DescribeCluster`; EKS Edit in `retail`; the group `retail-deployers` for ExternalSecrets; `logs:FilterLogEvents` on the Lambda's log group only), `db-dev` (read the RDS master secret, create and read `loria-retail-dev/*` secrets, `PutItem` on the inventory table), six workload roles by Pod Identity (a service account is named after its Helm release), and the runner's instance role (Session Manager, and read of the token secret). The `bootstrap` and `dev` Environments require the owner as reviewer and accept only the `dev` branch.
 
 ### Secrets
 
@@ -234,9 +234,9 @@ The run order and the teardown order are in `.github/workflows/README.md`. `app-
 
 ### Cloud mode for the acceptance suite
 
-Orders go through the internal ALB (`E2E_GATEWAY_URL`). What the ALB does not expose is reached as `make k8s-e2e` does locally: the workflow port-forwards the four APIs to the runner's `localhost`, and `scripts/k8s_compose.py` answers the suite's "compose" commands with kubectl (scale a consumer to 0 and back, read logs, scrape `/metrics`). The shim takes its cluster from `K8S_CONTEXT` and `K8S_NAMESPACE` (default `orbstack`, always named). `E2E_CLOUD=1` skips the dead-letter-queue count in step 9 and the Lambda test. The drills and the UI journeys are not run in the cloud.
+Orders go through the internal ALB (`E2E_GATEWAY_URL`). What the ALB does not expose is reached as `make k8s-e2e` does locally: the workflow port-forwards the four APIs to the runner's `localhost`, and `scripts/k8s_compose.py` answers the suite's "compose" commands with kubectl (scale a consumer to 0 and back, read logs, scrape `/metrics`). The shim takes its cluster from `K8S_CONTEXT` and `K8S_NAMESPACE` (default `orbstack`, always named). `E2E_CLOUD=1` skips the dead-letter-queue count in step 9 (the deploy role may not read the queues) and points the Lambda test at the real CloudWatch log group (`E2E_LAMBDA_LOG_GROUP`), which the deploy role may read. The drills and the UI journeys are not run in the cloud.
 
-What a pass shows: orders flow through the outbox, the relay, EventBridge, SQS, both consumers and DynamoDB; idempotency; stock is never oversold under a burst; a consumer can be stopped and recovers; one correlation id appears in every service's logs; the cache counts hits. It also shows that the Pod Identity roles, queue policies, KMS permissions, database grants and secrets all work.
+What a pass shows: a low-stock reservation reaches the Lambda and its record lands in CloudWatch; orders flow through the outbox, the relay, EventBridge, SQS, both consumers and DynamoDB; idempotency; stock is never oversold under a burst; a consumer can be stopped and recovers; one correlation id appears in every service's logs; the cache counts hits. It also shows that the Pod Identity roles, queue policies, KMS permissions, database grants and secrets all work.
 
 ### Deviations from DESIGN.md
 
@@ -246,7 +246,7 @@ What a pass shows: orders flow through the outbox, the relay, EventBridge, SQS, 
 - `DB_SSLMODE=require` in dev, not `verify-full`: the images do not carry the RDS CA bundle.
 - Valkey has TLS and a security-group limit but no AUTH token (a generated token would be in Terraform state).
 - Dev RDS has deletion protection off and no final snapshot, so it can be destroyed. EKS add-on versions and the PostgreSQL minor are not pinned.
-- The low-stock Lambda and its rule are not deployed (packaging needs the `hashicorp/archive` provider).
+- The low-stock Lambda is packaged by `scripts/package_lambda.py`, a deterministic zip built before `plan` and again before `apply`, not by the `archive` provider: that provider writes the file during the plan, and the saved plan is applied on a different machine where it would not exist. No new dependency.
 - The application databases and roles come from `scripts/db_init.py` run by a workflow, not from a bootstrap migration.
 - DynamoDB table names are read from `INVENTORY_TABLE`, `RESERVATIONS_TABLE` and `NOTIFICATIONS_TABLE` (defaults are the local names), so the cloud tables carry the `loria-` prefix.
 - Runner registration is a PAT-driven `--ephemeral` loop on one EC2 instance, not JIT registration or actions-runner-controller.
@@ -266,10 +266,13 @@ What a pass shows: orders flow through the outbox, the relay, EventBridge, SQS, 
 8. **A cosmetic no-op diff.** `rds.force_ssl` is `pending-reboot` on AWS; setting that in Terraform stopped the in-place change on every plan.
 9. **GitHub showed a finished job as in progress** once (the run itself was complete). It did not recur.
 10. **PostgreSQL 17.** `GRANT <owner> TO <master>` followed by `CREATE DATABASE ... OWNER` worked on RDS first time.
+11. **A zip Terraform makes does not survive a split plan and apply.** The plan and the apply are separate jobs on separate machines, so a file a data source writes during the plan is missing at apply. The package is built by a script before each, and its bytes must not depend on the machine: a fixed timestamp and mode, no compression. Tests break each of those and fail. The saved plan carried the zip's hash and the second machine reproduced it.
+12. **A new workflow file is not dispatchable for a few seconds after the push that adds it** (`HTTP 404: workflow ... not found on the default branch`). Retry.
+13. **Image currency is easy to assume and now checked.** `app-verify` compares what is in ECR, what the pods pulled, and what the code says; the first two runs matched and said the same thing.
 
 ### Still open
 
-The list is in DESIGN.md's open questions: the Lambda, TLS verification, a Valkey token, pinned versions, HTTPS and a domain, alarms and dashboards, and the Phase 3 pipeline. Also: the three teardown workflows (`app-destroy`, `addons-destroy`, `platform-destroy`) and the viewer's `remove` action have never been run, and the failure drills have not been run against dev.
+The list is in DESIGN.md's open questions: TLS verification, a Valkey token, pinned versions, HTTPS and a domain, alarms and dashboards, and the Phase 3 pipeline. Also: the three teardown workflows (`app-destroy`, `addons-destroy`, `platform-destroy`) and the viewer's `remove` action have never been run, and the failure drills have not been run against dev.
 
 ### Rough run-rate
 
