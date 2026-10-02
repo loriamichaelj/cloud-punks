@@ -132,6 +132,10 @@ resource "aws_eks_access_policy_association" "admin" {
 resource "aws_eks_access_entry" "deploy" {
   cluster_name  = aws_eks_cluster.this.name
   principal_arn = var.deploy_role_arn
+
+  # AmazonEKSEditPolicy (below) does not cover custom resources, and the chart creates
+  # ExternalSecrets. The cluster-addons stack binds this group to a namespaced Role that does.
+  kubernetes_groups = [var.deploy_kubernetes_group]
 }
 
 resource "aws_eks_access_policy_association" "deploy" {

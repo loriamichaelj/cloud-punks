@@ -32,6 +32,43 @@ resource "kubernetes_namespace_v1" "retail" {
   }
 }
 
+# --- what the deploy role may do with custom resources --------------------------------------
+# The deploy role's EKS access policy (AmazonEKSEditPolicy) covers the built-in kinds the chart
+# renders, but not custom resources. The chart renders ExternalSecrets, so the role's group gets
+# exactly that kind, in this namespace only.
+
+resource "kubernetes_role_v1" "deployer_external_secrets" {
+  metadata {
+    name      = "deployer-external-secrets"
+    namespace = kubernetes_namespace_v1.retail.metadata[0].name
+  }
+
+  rule {
+    api_groups = ["external-secrets.io"]
+    resources  = ["externalsecrets"]
+    verbs      = ["get", "list", "watch", "create", "update", "patch", "delete"]
+  }
+}
+
+resource "kubernetes_role_binding_v1" "deployer_external_secrets" {
+  metadata {
+    name      = "deployer-external-secrets"
+    namespace = kubernetes_namespace_v1.retail.metadata[0].name
+  }
+
+  role_ref {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "Role"
+    name      = kubernetes_role_v1.deployer_external_secrets.metadata[0].name
+  }
+
+  subject {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "Group"
+    name      = var.deploy_group
+  }
+}
+
 # --- AWS Load Balancer Controller ------------------------------------------------------
 # Turns Ingress objects into ALBs. The chart also creates the `alb` IngressClass.
 

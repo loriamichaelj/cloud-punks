@@ -14,6 +14,12 @@ variable "namespace" {
   default     = "retail"
 }
 
+variable "deploy_group" {
+  description = "Kubernetes group of the deploy role (set on its EKS access entry by the platform stack's eks module, variable deploy_kubernetes_group)."
+  type        = string
+  default     = "retail-deployers"
+}
+
 # Pinned chart versions. Bump these deliberately.
 variable "lbc_chart_version" {
   description = "AWS Load Balancer Controller chart (app v3.5.0). lbc-iam-policy.json is the matching upstream policy."

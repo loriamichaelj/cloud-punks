@@ -76,6 +76,12 @@ variable "deploy_namespace" {
   default = "retail"
 }
 
+variable "deploy_kubernetes_group" {
+  description = "Kubernetes group the deploy role belongs to. The cluster-addons stack grants it access to ExternalSecrets in the deploy namespace; keep the two defaults the same."
+  type        = string
+  default     = "retail-deployers"
+}
+
 variable "log_retention_days" {
   type    = number
   default = 30
