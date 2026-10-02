@@ -1,0 +1,152 @@
+name: "App: build"
+
+# prepare -> test -> build -> notify. The CI check for the application, in dev.
+#
+#   prepare  names the image tag and refuses to run from any branch but dev.
+#   test     `make lint test` on a hosted runner.
+#   build    builds all five arm64 images to prove they build. Nothing is
+#            pushed: publishing to ECR is app-images.yml.
+#   notify   always runs; writes the result to the run summary and comments on
+#            the commit.
+#
+# No AWS access anywhere in this workflow, so no environment approval. Neither
+# app-images.yml nor app-deploy.yml is called from here.
+on:
+  workflow_dispatch:
+
+run-name: app-build
+
+permissions:
+  contents: read
+
+# Shares the group with app-images, app-deploy and app-destroy so they never overlap.
+concurrency:
+  group: app-dev
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.vars.outputs.tag }}
+    steps:
+      - name: Name the image tag
+        id: vars
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != "refs/heads/dev" ]; then
+            echo "app-build runs from the dev branch only, not ${GITHUB_REF}" >&2
+            exit 1
+          fi
+          tag="sha-${GITHUB_SHA}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### app-build"
+            echo
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Image tag: \`${tag}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  test:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      # Same uv version as the Dockerfiles.
+      - name: Install uv
+        run: python -m pip install --disable-pip-version-check uv==0.12.15
+
+      - name: Lint and unit tests
+        env:
+          UV_PYTHON_DOWNLOADS: never
+        run: make lint test
+
+  build:
+    needs: [prepare, test]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build the images (not pushed)
+        run: |
+          set -euo pipefail
+          summary="$(mktemp)"
+          {
+            echo "### Images built as \`${TAG}\` (not pushed)"
+            echo
+            echo "| Image | Result |"
+            echo "| --- | --- |"
+          } > "$summary"
+
+          # name, Dockerfile, build context
+          build_only() {
+            docker buildx build --platform linux/arm64 --provenance=false \
+              -f "$2" -t "retail-ci/$1:${TAG}" "$3"
+            echo "| \`$1\` | built |" >> "$summary"
+          }
+
+          build_only product       services/product-service/Dockerfile       .
+          build_only inventory     services/inventory-service/Dockerfile     .
+          build_only order         services/order-service/Dockerfile         .
+          build_only notification  services/notification-service/Dockerfile  .
+          build_only ui            ui/Dockerfile                             ui
+
+          cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+          cat "$summary"
+
+  notify:
+    needs: [prepare, test, build]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Report the result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          R_PREPARE: ${{ needs.prepare.result }}
+          R_TEST: ${{ needs.test.result }}
+          R_BUILD: ${{ needs.build.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          overall="succeeded"
+          for r in "$R_PREPARE" "$R_TEST" "$R_BUILD"; do
+            case "$r" in
+              failure|cancelled) overall="failed" ;;
+            esac
+          done
+          body="$(printf '%s\n' \
+            "**app-build ${overall}** for \`${TAG:-unknown}\`" \
+            "" \
+            "| Job | Result |" \
+            "| --- | --- |" \
+            "| prepare | ${R_PREPARE} |" \
+            "| test | ${R_TEST} |" \
+            "| build | ${R_BUILD} |" \
+            "" \
+            "${RUN_URL}")"
+          echo "$body" >> "$GITHUB_STEP_SUMMARY"
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" -f body="$body" >/dev/null

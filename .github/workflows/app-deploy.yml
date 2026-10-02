@@ -1,0 +1,179 @@
+name: "App: deploy"
+
+# deploy -> notify, for the dev environment.
+#
+#   deploy  helm upgrade --install of every release on the dev cluster from the
+#           in-VPC runners, then the e2e acceptance test. Needs the `dev`
+#           approval. Deploys images that app-images.yml already pushed; it
+#           builds nothing.
+#   notify  always runs; writes the result to the run summary and comments on
+#           the commit.
+#
+# Needs the retail-vpc runners, the cluster add-ons, the data stores, the dev
+# Helm values and a DEV_BASE_URL variable on `dev`; none exist yet, so a run
+# stops at the preflight step or waits for a runner. This workflow calls no other.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to deploy, sha-<40 hex chars>. Empty: sha-<this commit>"
+        type: string
+        required: false
+        default: ""
+
+run-name: app-deploy ${{ inputs.tag }}
+
+permissions:
+  contents: read
+  id-token: write
+
+# Shares the group with app-images, app-build and app-destroy so they never overlap.
+concurrency:
+  group: app-dev
+  cancel-in-progress: false
+
+env:
+  EKS_CLUSTER: loria-retail-dev
+  NAMESPACE: retail
+  HELM_CHART: deploy/helm/retail-service
+  HELM_VALUES: deploy/helm/values
+
+jobs:
+  deploy:
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    # The cluster API is private, so this runs on the in-VPC runners.
+    runs-on: [self-hosted, retail-vpc]
+    environment: dev
+    timeout-minutes: 60
+    env:
+      INPUT_TAG: ${{ inputs.tag }}
+      # Internal ALB URL of the dev ingress, set on the dev environment once it exists.
+      E2E_GATEWAY_URL: ${{ vars.DEV_BASE_URL }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Resolve the image tag
+        id: tag
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != "refs/heads/dev" ]; then
+            echo "app-deploy runs from the dev branch only, not ${GITHUB_REF}" >&2
+            exit 1
+          fi
+          tag="${INPUT_TAG:-sha-${GITHUB_SHA}}"
+          if ! [[ "$tag" =~ ^sha-[0-9a-f]{40}$ ]]; then
+            echo "the tag must look like sha-<40 hex chars>, got: ${tag}" >&2
+            exit 1
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "TAG=${tag}" >> "$GITHUB_ENV"
+          echo "### app-deploy: \`${tag}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_DEPLOY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Check the images exist
+        run: |
+          set -euo pipefail
+          for r in product inventory order notification ui; do
+            if ! aws ecr describe-images --repository-name "loria-retail/${r}" \
+                --image-ids "imageTag=${TAG}" >/dev/null 2>&1; then
+              echo "loria-retail/${r}:${TAG} is not in ECR: run app-images first" >&2
+              exit 1
+            fi
+          done
+
+      - name: Check the dev values exist
+        run: |
+          set -euo pipefail
+          releases="product-service inventory-service order-service inventory-consumer order-relay order-consumer notification-service notification-consumer ui"
+          missing=0
+          [ -f "${HELM_VALUES}/values-common-dev.yaml" ] || { echo "missing ${HELM_VALUES}/values-common-dev.yaml" >&2; missing=1; }
+          for r in $releases; do
+            [ -f "${HELM_VALUES}/values-${r}-dev.yaml" ] || { echo "missing ${HELM_VALUES}/values-${r}-dev.yaml" >&2; missing=1; }
+          done
+          [ -n "${E2E_GATEWAY_URL}" ] || { echo "the dev environment variable DEV_BASE_URL is not set" >&2; missing=1; }
+          exit "$missing"
+
+      - name: Deploy the releases
+        run: |
+          set -euo pipefail
+          # Always name the context explicitly.
+          aws eks update-kubeconfig --name "$EKS_CLUSTER" --alias "$EKS_CLUSTER" --region "$AWS_REGION"
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          registry="${account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          helm_cmd=(helm --kube-context "$EKS_CLUSTER" --namespace "$NAMESPACE")
+
+          # release:image repository. Release order: a first install waits for its migration Job.
+          for pair in \
+            product-service:product inventory-service:inventory order-service:order \
+            inventory-consumer:inventory order-relay:order order-consumer:order \
+            notification-service:notification notification-consumer:notification; do
+            release="${pair%%:*}"
+            image="${pair##*:}"
+            echo "== ${release}"
+            "${helm_cmd[@]}" upgrade --install --rollback-on-failure --wait --timeout 10m \
+              "$release" "$HELM_CHART" \
+              -f "${HELM_VALUES}/values-common-dev.yaml" -f "${HELM_VALUES}/values-${release}-dev.yaml" \
+              --set "image.repository=${registry}/loria-retail/${image}" --set "image.tag=${TAG}"
+          done
+
+          echo "== ui"
+          "${helm_cmd[@]}" upgrade --install --rollback-on-failure --wait --timeout 10m \
+            ui "$HELM_CHART" -f "${HELM_VALUES}/values-ui-dev.yaml" \
+            --set "image.repository=${registry}/loria-retail/ui" --set "image.tag=${TAG}"
+
+          kubectl --context "$EKS_CLUSTER" --namespace "$NAMESPACE" get pods
+
+      - name: Show cluster state on failure
+        if: failure()
+        run: |
+          kubectl --context "$EKS_CLUSTER" --namespace "$NAMESPACE" get pods,events || true
+          helm --kube-context "$EKS_CLUSTER" --namespace "$NAMESPACE" list || true
+
+      # The acceptance steps through the ingress. Not yet proven against the cloud
+      # stores: the suite also talks to AWS directly (boto3), which the deploy role
+      # does not cover. Expect to adjust this step on the first real run.
+      - name: E2E acceptance
+        env:
+          UV_PYTHON_DOWNLOADS: never
+        run: |
+          set -euo pipefail
+          uv sync --all-packages --locked
+          PYTHONPATH=tests/e2e uv run --frozen --no-sync pytest tests/e2e/test_acceptance.py -q
+
+  notify:
+    needs: deploy
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Report the result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.deploy.outputs.tag }}
+          R_DEPLOY: ${{ needs.deploy.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          overall="succeeded"
+          case "$R_DEPLOY" in
+            failure|cancelled) overall="failed" ;;
+          esac
+          body="$(printf '%s\n' \
+            "**app-deploy ${overall}** for \`${TAG:-unknown}\`" \
+            "" \
+            "| Job | Result |" \
+            "| --- | --- |" \
+            "| deploy | ${R_DEPLOY} |" \
+            "" \
+            "${RUN_URL}")"
+          echo "$body" >> "$GITHUB_STEP_SUMMARY"
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" -f body="$body" >/dev/null
