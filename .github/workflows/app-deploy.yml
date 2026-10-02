@@ -215,6 +215,22 @@ jobs:
           PYTHONPATH=tests/e2e \
             uv run --frozen --no-sync pytest tests/e2e/test_acceptance.py -q
 
+      # What a failed low-stock test needs to be diagnosed from the run alone: the two places the event
+      # passes through. The inventory consumer publishes it; the Lambda logs it. Read-only, best effort.
+      - name: Show the low-stock path on failure
+        if: failure()
+        run: |
+          set +e
+          since_ms=$(( ($(date +%s) - 1800) * 1000 ))
+          echo "== low-stock Lambda log, last 30 minutes (newest last)"
+          aws logs filter-log-events --log-group-name /aws/lambda/loria-low-stock-alert \
+            --start-time "$since_ms" --query 'events[].message' --output text | tail -n 40
+          echo "== inventory-consumer log, last 30 minutes"
+          kubectl --context "$EKS_CLUSTER" --namespace "$NAMESPACE" logs deploy/inventory-consumer \
+            --since=30m --tail=80
+          echo "== pods"
+          kubectl --context "$EKS_CLUSTER" --namespace "$NAMESPACE" get pods
+
   notify:
     needs: deploy
     if: always()

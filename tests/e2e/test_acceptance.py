@@ -2,12 +2,14 @@
 
 import json
 import os
+import time
 import uuid
 from typing import Any
 
 import httpx2
 import pytest
 from conftest import (
+    E2E_CLOUD,
     SKU_A,
     SKU_B,
     api_metrics,
@@ -22,6 +24,7 @@ from conftest import (
     wait_for,
     wait_for_status,
 )
+from cwlogs import find_log_message
 
 # LocalStack's function is named low-stock-alert; the cloud's carries the loria- prefix.
 LAMBDA_LOG_GROUP = os.environ.get("E2E_LAMBDA_LOG_GROUP", "/aws/lambda/low-stock-alert")
@@ -151,15 +154,25 @@ def test_notifications_for_an_unknown_order_are_an_empty_list(http: httpx2.Clien
 def test_a_low_stock_reservation_triggers_the_lambda(http: httpx2.Client, customer: str) -> None:
     """Stock 3, order 1: 2 remain, below the threshold of 5. The Lambda logs a `low_stock` record
     (EMF) that LocalStack's CloudWatch Logs keeps."""
+    # Records older than this test cannot be ours; two minutes of margin covers clock skew.
+    since_ms = int(time.time() * 1000) - 120_000
     set_stock(http, SKU_A, 3)
     order_id = place_order(http, customer, SKU_A, 1).json()["order_id"]
     wait_for_status(http, order_id, "CONFIRMED")
 
     def logged() -> str | None:
-        events = _logs().filter_log_events(logGroupName=LAMBDA_LOG_GROUP)["events"]
-        return next((e["message"] for e in events if order_id in e["message"]), None)
+        return find_log_message(_logs(), LAMBDA_LOG_GROUP, order_id, since_ms=since_ms)
 
-    record = json.loads(wait_for("the low_stock log record", logged, timeout_s=30))
+    # Real CloudWatch ingests a cold Lambda's first record slower than LocalStack does, and rate-limits
+    # FilterLogEvents (about 5 a second), so the cloud polls every 3 s for up to 90 s.
+    record = json.loads(
+        wait_for(
+            "the low_stock log record",
+            logged,
+            timeout_s=90 if E2E_CLOUD else 30,
+            interval_s=3 if E2E_CLOUD else 0.25,
+        )
+    )
     assert (record["event"], record["sku"], record["remaining"]) == ("low_stock", SKU_A, 2)
     assert record["LowStockDetected"] == 1
 
