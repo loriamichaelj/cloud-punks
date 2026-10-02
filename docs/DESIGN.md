@@ -1,6 +1,6 @@
 # Retail Microservices Platform — Design Doc
 
-Author: M.L. · Status: M0–M10 built (Phase 1 complete); Phase 2 built and running in dev on AWS (2 Oct 2026); Phases 3 and 4 not started. Change history and as-built notes: `docs/adr/README.md`.
+Author: M.L. · Status: M0–M10 built (Phase 1 complete); Phase 2 built and running in dev on AWS (2 Oct 2026); Phase 3 built (2 Oct 2026, release v0.1.0); Phase 4 not started. Change history and as-built notes: `docs/adr/README.md`.
 
 ## 1. Overview
 
@@ -28,7 +28,7 @@ We build a four-service retail order platform that runs end-to-end on localhost 
 | 1b — UI (React) | `ui/` single-page app and nginx image, gateway `/` route, Playwright journeys (M8; section 15) | Day 2 (late) | Browser journeys pass on Compose via `make ui-e2e` |
 | 1c — Local Kubernetes (OrbStack) | Helm chart for every process including the UI, probes, HPA, ingress, rollback on the local cluster | Day 3 (morning) | Same test (API acceptance and UI journeys) passes via local ingress; `helm rollback` demonstrated |
 | 2 — Cloud infra, built through CI (built 2 Oct 2026) | Manual OIDC provider + `cloudbatch818-loria-retail-bootstrap` role; `bootstrap-state-bucket.yml`, `bootstrap-ci-roles.yml`; minimal `platform-create.yml`; Terraform, ECR, EKS, in-VPC runners; the 1b chart with dev values. No AWS access exists outside GitHub Actions (ADR-14) | Day 3 | Same test passes against the EKS ingress, run from a workflow. **Met:** `app-deploy.yml` runs the acceptance suite through the dev ALB (10 passed, none skipped; the dead-letter-queue count inside step 9 is not checked in the cloud) |
-| 3 — CI/CD | `pr.yml`, `promote.yml`, scans, a push trigger for the deploy, promotion, rollback. The deploy and destroy workflows already exist from Phase 2 | Day 4 | PR-to-prod pipeline with a demonstrated rollback |
+| 3 — CI/CD (built 2 Oct 2026) | `pr.yml` with one required `ci` gate, Trivy image and config scans, Checkov, tflint, actionlint; protected `stage` and `prod` branches and Environments; `promote.yml`; `app-rollback.yml`; release `v0.1.0`. The deploy and destroy workflows already exist from Phase 2. No push trigger for the deploy (decided) | Day 4 | **Met in part:** a pull request is gated by `ci` (shown red, then green, on PR #1). Not demonstrated: `app-rollback.yml` has never run, and `promote.yml` has never run because stage and prod are not deployed |
 | 4 — Reliability | Dashboards, SLOs, alarms, failure drills, runbooks | Day 5 | Each drill in section 11 detected and recovered |
 
 This document is detailed for Phase 1 and gives forward-compatible contracts for Phases 2–4 so nothing built locally has to be rewritten.
@@ -532,7 +532,7 @@ retail-platform/
 ├── README.md                     # run instructions
 ├── deploy/helm/                  # retail-service chart, values/ (per release, per env), third-party/ (Traefik)
 ├── infra/terraform/              # Phase 2 (placeholder)
-├── .github/workflows/            # Phases 2–3 (placeholder): bootstrap-state-bucket, bootstrap-ci-roles, platform-create, platform-destroy, addons-create, addons-destroy, app-build, app-images, app-database, app-seed, app-deploy, app-expose, app-verify, app-destroy; Phase 3: pr, promote
+├── .github/workflows/            # Phases 2–3: bootstrap-state-bucket, bootstrap-ci-roles, platform-create, platform-destroy, addons-create, addons-destroy, app-build, app-images, app-database, app-seed, app-deploy, app-expose, app-verify, app-destroy, app-rollback, pr, promote
 ├── Makefile
 ├── .env.example                  # committed; .env is git-ignored
 └── pyproject.toml                # uv workspace root, ruff, mypy, pytest config
@@ -624,7 +624,7 @@ Additional Make targets: `k8s-lint`, `k8s-build`, `k8s-build-multiarch`, `k8s-se
 
 ## 11. Testing strategy
 
-Three layers, each runnable alone; Phase 3 CI runs the first two on every PR and the third against dev after deploy.
+Three layers, each runnable alone; `pr.yml` runs the unit layer on every pull request. Integration, the drills and the browser journeys need LocalStack and its token, so they stay local; the end-to-end layer runs against real AWS in `app-deploy.yml` after a deploy.
 
 | Layer | Scope | Tools | Target runtime | Gate |
 | --- | --- | --- | --- | --- |
@@ -716,7 +716,7 @@ Bring-up order:
 | `cloudbatch818-loria-retail-bootstrap` (manual) | `environment:bootstrap` | State bucket S3; IAM on `cloudbatch818-loria-*` | `bootstrap-state-bucket.yml`, `bootstrap-ci-roles.yml` |
 | `cloudbatch818-loria-retail-tf-<env>` | `environment:<env>` | One role for plan, apply and destroy. Broad service access (accepted least-privilege gap for this week, recorded here); IAM limited to `cloudbatch818-loria-retail-<env>-*` so it cannot edit the CI roles; state limited to `<env>/*`. There is no `pull_request` role: a PR run would use broad credentials without the environment's approval, so Terraform runs only in `infra-create.yml` and `infra-destroy.yml`, behind the reviewer | `platform-create.yml`, `platform-destroy.yml`, `addons-create.yml`, `addons-destroy.yml` |
 | `cloudbatch818-loria-retail-db-<env>` | `environment:<env>` | Read the RDS master secret (and decrypt it through Secrets Manager); create and read secrets under `loria-retail-<env>/*`; describe the one RDS instance. Nothing else | `app-database.yml` (runner) |
-| `cloudbatch818-loria-retail-deploy-<env>` | `environment:<env>` | ECR push/pull, `eks:DescribeCluster`; EKS access entry with `AmazonEKSEditPolicy` scoped to namespace `retail` | `main.yml`, `promote.yml`, drills (runners) |
+| `cloudbatch818-loria-retail-deploy-<env>` | `environment:<env>` | ECR push/pull, `eks:DescribeCluster`; EKS access entry with `AmazonEKSEditPolicy` scoped to namespace `retail` | `app-deploy.yml`, `app-rollback.yml`, `promote.yml`, drills (runners) |
 
 Terraform references the OIDC provider with a `data` source (an account can hold one provider per URL) and never manages `cloudbatch818-loria-retail-bootstrap`. Tear-down is `platform-destroy.yml` (manual, environment-gated); `bootstrap` resources are never destroyed by it.
 
@@ -743,9 +743,10 @@ Terraform references the OIDC provider with a `data` source (an account can hold
 | Workflow | Trigger | Steps |
 | --- | --- | --- |
 | `bootstrap-state-bucket.yml`, `bootstrap-ci-roles.yml` | `workflow_dispatch`, environment `bootstrap` (two independent workflows, run in that order) | Phase 2 step 2: the state bucket (AWS CLI), then the `bootstrap/` Terraform stack that creates the `cloudbatch818-loria-*` roles. Hosted runner, `cloudbatch818-loria-retail-bootstrap` |
-| `pr.yml` | Pull request (hosted runners only) | Path-filtered matrix: ruff, mypy, pytest (unit + integration via Compose), a `ui/**` job (`npm ci`, eslint, `tsc`, vitest, production build within the bundle budget, Playwright against Compose), Docker build, Trivy image + config scan (fail on fixable HIGH/CRITICAL), `terraform fmt -check`, `validate`, tflint, Checkov, `helm lint` + kubeconform (no `terraform plan` on PRs; it runs in `infra-create.yml`, behind the `dev` approval) |
-| `app-images.yml`, `app-deploy.yml` (replace `main.yml`) | `workflow_dispatch` today; a push trigger is Phase 3 | Build once (hosted) → push `sha-<sha>` to ECR → on `retail-vpc` runners: OIDC assume `cloudbatch818-loria-retail-deploy-dev` → `helm upgrade --install --atomic --wait --timeout 10m` → e2e acceptance against dev |
-| `promote.yml` | Manual / tag | GitHub Environment `prod` with required reviewers → deploy the **same image digest** (never rebuild) on `retail-vpc` runners → smoke test → record release |
+| `pr.yml` | Pull request into `dev`, `stage` or `prod` (hosted runners, read-only token, no secrets, no AWS) | `detect` picks checks from the changed files; `code` (`make lint test`: ruff, mypy, unit tests, OpenAPI and UI checks, `helm lint` + kubeconform); `images` (builds the five images, Trivy fails on fixable HIGH/CRITICAL); `terraform` (`fmt -check`, `validate`, tflint, Checkov with inline reasoned skips); `config-scan` (Trivy over Dockerfiles, Helm, Terraform); `workflows` (actionlint); `ci`, the one required check, which fails if any job failed or was cancelled. No `terraform plan` on PRs (it runs in `platform-create.yml` behind the `dev` approval) and no LocalStack in CI |
+| `app-images.yml`, `app-deploy.yml` (replace `main.yml`) | `workflow_dispatch` only (decided: no push trigger) | Build once (hosted) → push `sha-<sha>` to ECR → on `retail-vpc` runners: OIDC assume `cloudbatch818-loria-retail-deploy-dev` → `helm upgrade --install --rollback-on-failure --wait --timeout 10m` → e2e acceptance against dev |
+| `promote.yml` | `workflow_dispatch` from the `stage` or `prod` branch | The branch names the Environment. `check` (hosted): the image's commit is in the branch's history, the Environment has a deploy role and its Helm values; then the **same image digest** (never a rebuild) is deployed by `image.digest` on a `retail-vpc` runner → smoke test. **Built, not run:** stage and prod are not deployed |
+| `app-rollback.yml` | `workflow_dispatch`, runner, `dev` approval | `helm rollback` of one release (to the previous or a named revision) or all nine, `--wait`, then the storefront must answer. Does not undo migrations |
 | `platform-create.yml` | `workflow_dispatch` (action `plan` or `apply`; no PR plan) | Plan, then apply after a second approval: the `platform` stack on hosted runners |
 | `addons-create.yml` | `workflow_dispatch` (action `plan` or `apply`) | The same two approvals for the `cluster-addons` stack, on the `retail-vpc` runner (the cluster API is private) |
 | `addons-destroy.yml`, `platform-destroy.yml` | `workflow_dispatch`, environment-gated | Destroy an env in two steps, addons first (on the runner), then platform, which refuses to start while the addons state still has resources. Never touch `bootstrap`. Support the idle-cost rule in §14. Each is a saved `plan -destroy`, then a second approval to apply it |
@@ -756,7 +757,7 @@ Terraform references the OIDC provider with a `data` source (an account can hold
 | `app-destroy.yml` | `workflow_dispatch`, runner | Plan, optional `helm uninstall` of every release, then delete an image tag (or all) from the five repositories |
 | `app-verify.yml` | `workflow_dispatch`, runner | Read-only: lists the ECR tags and digests, compares each running pod's pulled digest with ECR's digest for its tag (a difference fails), and warns when the running tag is older than the code the images are built from |
 
-Non-negotiables: each OIDC trust policy is pinned to an exact `sub` (`environment:<env>`; never a wildcard or `ref:*`); third-party actions pinned by commit SHA; branch protection with required checks (none on `dev` for now, so the `dev` push and the environment gates are the only controls); no long-lived AWS keys in GitHub; self-hosted runners never serve `pull_request` or fork code (public repo). Rollback = `helm rollback <release> <revision>` or redeploy the previous digest; works only because migrations are expand/contract (section 5).
+Non-negotiables: each OIDC trust policy is pinned to an exact `sub` (`environment:<env>`; never a wildcard or `ref:*`); third-party actions pinned by commit SHA; branch protection: `stage` and `prod` accept only a pull request with one approving review (stale approvals dismissed, the last pusher cannot approve) and a passing, up-to-date `ci`, for admins too, with no force push or deletion; `dev` blocks force pushes and deletion only, so the owner pushes to it directly and the `dev` Environment gate is the control on what reaches AWS (the `stage` and `prod` Environments accept only their own branch and need a reviewer); no long-lived AWS keys in GitHub; self-hosted runners never serve `pull_request` or fork code (public repo). Rollback = `app-rollback.yml` (`helm rollback <release> <revision>`) or redeploy the previous digest; works only because migrations are expand/contract (section 5).
 
 ### Phase 4 — Observability and reliability (Day 5)
 
@@ -785,7 +786,7 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 - Work one milestone (M0–M10) at a time. Finish with: make lint test (and itest/e2e when the milestone says so).
 - Stop after each milestone with a summary of what changed, what was verified, and any deviation from DESIGN.md.
 - Ask before adding a dependency, a service, a table, an event type, or changing an API contract.
-- `dev` is the only branch and the default (no `main`, no branch protection for now). Develop and push on it; PRs only when asked. Commit, push and open PRs only when asked. No AI attribution in commits or PRs.
+- `dev` is the default branch and the only one developed on (no `main`). `stage` and `prod` exist for promotion and take changes only by a reviewed pull request, never a direct push; `dev` blocks force pushes and deletion but needs no pull request. Develop and push on `dev`; PRs only when asked. Commit, push and open PRs only when asked. No AI attribution in commits or PRs.
 - Record a changed API contract in the same change (`make openapi` for the generated spec; baseline in DESIGN.md).
 - Run lint, test, up, down, seed, logs and the local cluster (`k8s-*`) through `make` (Compose needs its `IMAGE_TAG` and `--env-file .env`).
 - Unit tests are hermetic (no AWS, no LocalStack). Integration tests touch only their own data and never the shared queues or the real `retail-events` bus.
@@ -840,7 +841,7 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 - [ ] A Valkey AUTH token (it has TLS and a security-group limit now), pinned EKS add-on versions and a pinned PostgreSQL minor.
 - [ ] HTTPS and a domain (ACM certificate, Route 53). Until then dev is plain HTTP.
 - [ ] Alarms and dashboards (Phase 4), including dead-letter-queue alarms; the cloud acceptance suite skips the dead-letter count until they exist.
-- [ ] Phase 3: `pr.yml`, `promote.yml`, image scans, a push trigger for the deploy, and branch protection on `dev`.
+- [x] Phase 3 (2 Oct 2026): `pr.yml`, Trivy, branch protection, stage and prod branches and Environments, `promote.yml`, `app-rollback.yml` and release `v0.1.0`. The deploy keeps `workflow_dispatch` only. Still open: run `app-rollback` once in dev; a promotion has never run; the owner cannot approve their own pull request into `stage` or `prod`, so a first promotion needs a second reviewer or a deliberate relaxation of that rule.
 
 Decided questions are recorded in `docs/adr/README.md`.
 

@@ -4,6 +4,8 @@ One file per ADR when a decision in DESIGN.md section 2 changes. Until then this
 
 ## Change history (was the DESIGN.md status line)
 
+**v2.5 (2 Oct 2026): Phase 3 is built.** `pr.yml` checks every pull request and reports through one `ci` gate; Trivy scans the five images and the configuration; `stage` and `prod` branches and Environments exist behind a reviewed pull request; `promote.yml` (by digest) and `app-rollback.yml` exist; the chart can deploy by `image.digest`; the first release is `v0.1.0`. See "CI/CD as built (Phase 3)" below. Not run: `app-rollback` and `promote` (nothing is deployed to stage or prod).
+
 **v2.4 (2 Oct 2026): Phase 2 is built.** The platform runs in dev on AWS: three Terraform stacks applied only from GitHub Actions, eleven Helm releases on one EKS node, and the acceptance suite passing through the dev ALB from a workflow (10 passed, none skipped). New in this version: the cloud workflows (`bootstrap-*`, `platform-*`, `addons-*`, `app-*`), the in-VPC runner, the `db_init` and seed jobs, the low-stock Lambda, `app-verify`, a cloud mode for the acceptance suite, configurable DynamoDB table names, a viewer ALB limited to one address, and the section "Cloud (dev on AWS) as built" below. DESIGN.md's status, phase table, Phase 2 block, workflow table, open questions and risks were updated to match.
 
 Status: v2.3, UI restyled (v2.3: light theme, product art, category colours; see "UI restyle" below); M0–M10 built; Phase 1 is complete (v2.2: M10 built — the `retail-service` Helm chart, local values, Traefik ingress, `make k8s-*`, cluster e2e and pod-kill tests; v2.1: CLAUDE.md's separate UI section merged into Workflow, Must and Must not (DESIGN.md section 14 mirrors it), the "no Helm before M9" rule dropped, DESIGN.md metrics, Make targets and layout updated; M9 built — stuck-order sweeper, queue-depth metric, failure drills as Make targets and e2e cases, DLQ tools, Prometheus and Grafana profile, README; v2.0: M8 built — the React UI, `ui` Compose service, gateway `/` route, OpenAPI snapshots and `ui-*` targets, browser journeys; v1.9: M7 built — notification API contract, consumer, Lambda, steps 6, 9 and 10 in `make e2e`; v1.8: M6 built — reservation record attributes, consumer processes and shutdown, acceptance step 6 moved to M7, M6 test rules; v1.7: milestones renumbered; v1.6: section 15 and ADR-16/17; v1.5: order API contract, outbox relay behavior, test isolation rules and the corrected bus-unavailable drill; v1.4: inventory API contract and hermetic unit tests; v1.3: product API contract and cache/outage behavior from M3, HTTP client moved to httpx2; v1.2: layout, bootstrap and tooling notes updated from M0–M2; OrbStack sized for an 8 GB Mac; v1.1: facts verified 30 Sep 2026; AWS access is GitHub-OIDC-only, so Phases 2–3 are reordered around a bootstrap workflow and in-VPC runners; bootstrap script and spec gaps fixed)
@@ -240,7 +242,7 @@ What a pass shows: a low-stock reservation reaches the Lambda and its record lan
 
 ### Deviations from DESIGN.md
 
-- Dev only. No prod roles, no `promote.yml`, no `pr.yml`. `main.yml` became `app-images.yml` and `app-deploy.yml`, both `workflow_dispatch` for now, plus a hosted `app-build.yml` check.
+- Dev is the only deployed environment. `main.yml` became `app-images.yml` and `app-deploy.yml`, both `workflow_dispatch` only (no push trigger, decided in Phase 3), plus a hosted `app-build.yml` check. Phase 3 added `pr.yml`, `promote.yml` and `app-rollback.yml`.
 - One Terraform role for plan, apply and destroy, trusted by the `dev` Environment only. There is no PR plan: a PR run would use broad credentials without the reviewer.
 - ECR uses basic scan-on-push, not Inspector enhanced scanning (the apply role has no `inspector2` rights).
 - `DB_SSLMODE=require` in dev, not `verify-full`: the images do not carry the RDS CA bundle.
@@ -272,11 +274,33 @@ What a pass shows: a low-stock reservation reaches the Lambda and its record lan
 
 ### Still open
 
-The list is in DESIGN.md's open questions: TLS verification, a Valkey token, pinned versions, HTTPS and a domain, alarms and dashboards, and the Phase 3 pipeline. Also: the three teardown workflows (`app-destroy`, `addons-destroy`, `platform-destroy`) and the viewer's `remove` action have never been run, and the failure drills have not been run against dev.
+The list is in DESIGN.md's open questions: TLS verification, a Valkey token, pinned versions, HTTPS and a domain, alarms and dashboards, and the Phase 4 work. Also: the three teardown workflows (`app-destroy`, `addons-destroy`, `platform-destroy`) and the viewer's `remove` action have never been run, `app-rollback` and `promote` have never been run, and the failure drills have not been run against dev.
 
 ### Rough run-rate
 
 A list-price estimate for `us-east-1`, not measured: EKS control plane about $73 a month, the node about $60, NAT about $33 plus data, seven interface endpoints about $51, RDS about $26, Valkey about $12, the runner about $12, and each ALB about $17. About $300 a month, or $10 a day, with the viewer ALB included. Destroying dev when idle is the saving.
+
+## CI/CD as built (Phase 3, 2 Oct 2026)
+
+**What exists.** `pr.yml` (pull requests into `dev`, `stage`, `prod`), `app-rollback.yml`, `promote.yml`, protected `stage` and `prod` branches, `stage` and `prod` GitHub Environments, `.trivyignore.yaml`, `.tflint.hcl`, and release `v0.1.0`. Nothing is deployed to stage or prod.
+
+**`pr.yml`.** Hosted runners, `contents: read`, no secrets, no OIDC, never the `retail-vpc` runner. `detect` turns the changed files into flags (editing `pr.yml` itself turns them all on), so a docs-only change runs almost nothing. Jobs: `code` (`make lint test`, kubeconform installed by checksum), `images` (a matrix of the five images, built for the runner's architecture and not pushed, scanned by Trivy v0.75.0 for fixable HIGH and CRITICAL), `terraform` (fmt, validate for the three stacks with `-backend=false`, tflint 0.64.0 with the AWS ruleset, Checkov 3.3.22 pinned by digest), `config-scan` (Trivy over Dockerfiles, Helm and Terraform), `workflows` (actionlint 1.7.12). `ci` always runs and fails if any job failed or was cancelled; skipped jobs pass. Branch protection requires only `ci`, so a path filter can never leave a required check missing.
+
+**No LocalStack in CI.** The integration tests, the drills and the browser journeys need LocalStack and its token, and the cloud now covers that layer: `app-deploy.yml` runs the acceptance suite against real AWS. They stay local (`make itest`, `make e2e`, `make ui-e2e`).
+
+**What the first scans found, fixed before the first PR.** The base images lagged their own security fixes (fixed with `apt-get upgrade` in the Python images and `apk upgrade` in the UI image; pip and setuptools are removed from the Python final stage, which runs from `/opt/venv`); nginx moved from 1.27 to 1.30.5 on Alpine 3.24; the UI user is numeric (`USER 101`). Terraform findings are either fixed or an inline `#checkov:skip=ID:reason` next to the resource (32 of them), so a new failing check fails the PR and an accepted one explains itself where it lives. The one Trivy exception, `AWS-0104` on the runner's open egress, is in `.trivyignore.yaml` with its reason. Two Checkov results were false positives (`CKV_AWS_339` for Kubernetes 1.36 and `CKV2_AWS_5` for endpoint security groups built with `for_each`).
+
+**The gate was shown able to fail.** On PR #1 the `terraform` job failed because Checkov resolves a module with the caller's variables: the dev call sets `db_deletion_protection = false`, so `CKV_AWS_293` fired in CI though it did not when the module was scanned alone. `ci` went red; a reasoned skip turned it green. Scan the stacks in `envs/` as well as the modules.
+
+**Branches and Environments.** `stage` and `prod` accept only a pull request with one approving review (stale approvals dismissed, the last pusher cannot approve) and a passing, up-to-date `ci`, for admins as well; no force push, no deletion. `dev` blocks force pushes and deletion, requires no pull request and no check, and does not apply to admins, so the owner pushes to it directly (decided 2 Oct 2026). A required check on `dev` would be unsatisfiable by a direct push. The `stage` and `prod` Environments accept only their own branch and need a reviewer; they hold no variables, so nothing can assume a role through them. **Limit:** a solo owner cannot approve their own pull request, so the first promotion needs a second reviewer or a deliberate change to this rule.
+
+**`promote.yml`.** Dispatched from `stage` or `prod`; the branch picks the Environment. `check` stops the run unless the image's commit is in the branch's history, the Environment has `AWS_ROLE_ARN_DEPLOY`, and the per-environment Helm values exist. Then each image's digest is read from ECR and deployed with `image.digest`, so the cluster runs exactly what was tested; a smoke test replaces the acceptance suite, which writes test orders. It asks for the Environment reviewer twice (`check` and `deploy`). **Unproven:** it has never run, and stage and prod need a cluster, a deploy role, values files and a runner first.
+
+**`app-rollback.yml`.** Dev only, from `dev`, on the runner, behind the `dev` approval. One release or all nine, to the previous revision or a named one (a single release only). It checks every release has an earlier revision before it changes any, runs `helm rollback --wait`, then waits for the storefront to answer. It does not undo database migrations; they are forward-only and backward compatible, so the earlier release runs on the newer schema. **Unproven:** it has never run.
+
+**Chart.** `image.digest` renders `repository@digest` and ignores the tag. `make k8s-lint` renders one and fails if it is not that form (checked by breaking the helper once).
+
+**Other.** The deploy has no push trigger (decided): a deploy needs the `dev` approval anyway, and a push to `dev` should not deploy by itself. ECR still does basic scan-on-push; Trivy in `pr.yml` is the gate before an image is pushed.
 
 ## Decided questions
 
@@ -286,14 +310,14 @@ A list-price estimate for `us-east-1`, not measured: EKS control plane about $73
 - [x] A React UI is in scope (decided 1 Oct 2026), as M8 and section 15. Login, payments and server-side carts remain out.
 - [x] Sequencing: the UI is M8, right after M7 (decided 1 Oct 2026), before hardening and Kubernetes. It is the first real client of the APIs, so contract gaps surface while changing them is cheap, and M9 (drills, clean-start e2e) and M10 (the chart and ingress) cover the UI from the start instead of reopening the gateway, Compose, e2e and Helm later.
 - [x] Python 3.13 / FastAPI confirmed (30 Sep 2026); ADR-01 stands.
-- [x] LocalStack: free Hobby plan token (non-commercial use), not paid (30 Sep 2026). The token goes in the git-ignored `.env` as `LOCALSTACK_AUTH_TOKEN`. CI use of the Hobby token is unresolved; decide in the pipeline-strategy pass.
+- [x] LocalStack: free Hobby plan token (non-commercial use), not paid (30 Sep 2026). The token goes in the git-ignored `.env` as `LOCALSTACK_AUTH_TOKEN`. Decided 2 Oct 2026: no LocalStack in CI; the cloud acceptance suite covers that layer.
 - [x] Apple Silicon confirmed (30 Sep 2026): arm64 images, Graviton nodes, multi-arch builds.
-- [x] Environments: the remote repo (https://github.com/loriamichaelj/retail-platform) carries the **dev environment only** (30 Sep 2026). Prod roles, the `prod` Environment and `promote.yml` are deferred; the prod rows in section 13 are illustrative until a prod decision is made.
+- [x] Environments: the remote repo (https://github.com/loriamichaelj/retail-platform) carries the **dev environment only** (30 Sep 2026). Stage and prod have branches, Environments and `promote.yml` but no roles, cluster or values (2 Oct 2026); the prod rows in section 13 are illustrative until a prod decision is made.
 - [x] In-VPC runners: one ephemeral arm64 EC2 runner in an Auto Scaling group of one, registered with a fine-grained PAT held in Secrets Manager; jobs cannot reach the instance role (decided 2 Oct 2026; DESIGN.md section 13).
 - [x] Bootstrap: OIDC provider and `cloudbatch818-loria-retail-bootstrap` role created by hand; state bucket via `bootstrap-state-bucket.yml` (decided 30 Sep 2026).
 - [x] EKS access: self-hosted ephemeral runners in the VPC, private endpoint (decided 30 Sep 2026). Repo is public, so the runner restrictions in section 13 apply.
 - [x] No domain yet (30 Sep 2026): dev uses HTTP on the internal ALB; HTTPS/ACM is deferred until a domain exists.
-- [x] Branches (1 Oct 2026): `dev` is the only branch and the default; `main` was deleted; there is no branch protection. The `bootstrap` and `dev` Environments accept only the `dev` branch and require the owner as reviewer.
+- [x] Branches (1 Oct 2026, changed 2 Oct 2026): `dev` is the default and the only branch developed on; `main` was deleted. `dev` blocks force pushes and deletion but needs no pull request. `stage` and `prod` take changes only by a reviewed pull request with a passing `ci`, for admins too. The `bootstrap` and `dev` Environments accept only the `dev` branch and require the owner as reviewer; `stage` and `prod` accept only their own branch.
 - [x] Names (1 to 2 Oct 2026): resources are prefixed `loria-`, IAM roles `cloudbatch818-loria-retail-`.
 - [x] One Terraform role for plan, apply and destroy, trusted by the `dev` Environment only; no PR plan (2 Oct 2026).
 - [x] The application databases and roles are created by `scripts/db_init.py`, run by `app-database.yml` as a dedicated `db` role; passwords live in Secrets Manager (2 Oct 2026).
@@ -310,3 +334,5 @@ A list-price estimate for `us-east-1`, not measured: EKS control plane about $73
 - Per-service AWS endpoint overrides use the service id: `AWS_ENDPOINT_URL_EVENTBRIDGE`, `..._SQS`, `..._DYNAMODB` (`..._EVENTS` is silently ignored). Verify `client.meta.endpoint_url` before trusting a failure drill.
 - Cloud rules: workflows assume roles by ARN (a GitHub variable, not a secret) with `permissions: id-token: write` and least-privilege per-purpose roles; workflows that touch EKS run on the ephemeral in-VPC runners, everything else on GitHub-hosted runners.
 - UI rules now live in CLAUDE.md's Workflow, Must and Must not lists; their detail is DESIGN.md section 15 and the "UI as built (M8)" notes above: relative URLs only, `BigInt` minor units for money, `Idempotency-Key` per basket, `X-Correlation-ID` on every request, never-cached stock (`staleTime: 0`, `gcTime: 0`), `localStorage` in try/catch, `npm ci` only, and the demo-tools flag off outside local.
+- [x] Release `v0.1.0` (2 Oct 2026) is the first official release: Phases 1 to 3 built, Phase 2 running in dev.
+- [x] The deploy has no push trigger (2 Oct 2026).

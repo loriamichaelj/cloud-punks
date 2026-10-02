@@ -46,6 +46,10 @@ Everything created is prefixed `loria-` (bucket, VPC, cluster `loria-retail-dev`
 - **Dev RDS can be destroyed:** deletion protection is off and there is no final snapshot (`db_deletion_protection` and `db_skip_final_snapshot`). Turn both around for prod.
 - **One node limits the pods** to about 29 with the default VPC CNI. The add-ons and the application ran with room to spare, but an HPA scale-up is bounded by it.
 
+## Checks
+
+`pr.yml` runs `terraform fmt -check`, `validate` for the three stacks, tflint (`.tflint.hcl`, with the AWS ruleset) and Checkov on every pull request. Checkov exceptions are inline `#checkov:skip=ID:reason` lines next to the resource; Checkov resolves modules with the caller's variables, so run it over `envs/` as well as `modules/`. There is no `terraform plan` on pull requests.
+
 ## Known gaps and choices to revisit
 
 - ECR uses basic scan-on-push, not Inspector enhanced scanning (DESIGN.md says enhanced). Enhanced needs Inspector enabled and `inspector2` permissions the apply role does not have.

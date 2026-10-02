@@ -128,5 +128,5 @@ Bring-up, in order (details and the teardown order are in `.github/workflows/REA
 
 Tear down in the reverse order: `app-destroy`, `addons-destroy`, `platform-destroy`. Dev costs roughly $300 a month while it runs (a list-price estimate, not measured), so destroy it when idle. Those workflows have not been run yet.
 
-Not built yet: the pull-request and promotion pipeline (`pr.yml`, `promote.yml`), alarms and dashboards, HTTPS and a domain. See DESIGN.md section 13 and its open questions; what was built, what differs from the design and what went wrong on the way are in `docs/adr/README.md`, "Cloud (dev on AWS) as built".
+Pull requests are checked by `pr.yml` (lint, tests, image and config scans, Terraform checks, one required `ci` gate); `app-rollback.yml` and `promote.yml` exist, but neither has run, and stage and prod are not deployed. Not built yet: alarms and dashboards, HTTPS and a domain. See DESIGN.md section 13 and its open questions; what was built, what differs from the design and what went wrong on the way are in `docs/adr/README.md`, "Cloud (dev on AWS) as built".
 

@@ -17,6 +17,9 @@ Every workflow is independent: none calls another, each has its own concurrency 
 | `app-seed.yml` | `workflow_dispatch`. Loads the 20-product catalog into `product_db` and the starting stock into the inventory table, with the same `local/seed/seed.py` as `make seed`. Runs on the `retail-vpc` runner (approval). Safe to run again | `dev` | `cloudbatch818-loria-retail-db-dev` (`AWS_ROLE_ARN_DB`) | `app-dev` |
 | `app-verify.yml` | `workflow_dispatch`. Read-only: lists every tag and digest in the five ECR repositories, compares each running pod's image digest with the digest ECR holds for its tag (a difference fails the run), and warns when the running tag is older than the code the images are built from. Runs on the `retail-vpc` runner (approval) | `dev` | `cloudbatch818-loria-retail-deploy-dev` (`AWS_ROLE_ARN_DEPLOY`) | `app-dev` |
 | `app-expose.yml` | `workflow_dispatch` with an `action` choice: `expose` or `remove`. Installs a second, internet-facing ALB for the storefront, reachable only from the address in the `dev` environment secret `DEV_VIEWER_CIDR`. Runs on the `retail-vpc` runner (approval) | `dev` | `cloudbatch818-loria-retail-deploy-dev` (`AWS_ROLE_ARN_DEPLOY`) | `app-dev` |
+| `app-rollback.yml` | `workflow_dispatch` with a `release` choice (`all` or one release) and an optional `revision` (one release only). `helm rollback --wait`, then the storefront must answer. Runs on the `retail-vpc` runner (approval) | `dev` | `cloudbatch818-loria-retail-deploy-dev` (`AWS_ROLE_ARN_DEPLOY`) | `app-dev` |
+| `promote.yml` | `workflow_dispatch` with a required `tag`, run from the `stage` or `prod` branch, which picks the Environment. Deploys that tag's image digests. **Not run: stage and prod are not deployed** | `stage` or `prod` | its own `AWS_ROLE_ARN_DEPLOY` (not set) | `promote-<branch>` |
+| `pr.yml` | `pull_request` into `dev`, `stage`, `prod`. Hosted runners, read-only token, no secrets, no AWS. Jobs: `detect`, `code`, `images` (five, with Trivy), `terraform`, `config-scan`, `workflows`, and `ci`, the one required check | none | none | `pr-<number>` |
 | `app-destroy.yml` | `workflow_dispatch` with a required `tag` (an image tag, or `all`) and an optional `uninstall_releases` (off by default; needs the runners) | `dev` | `cloudbatch818-loria-retail-deploy-dev` (`AWS_ROLE_ARN_DEPLOY`) | `app-dev` |
 
 ## Run order
@@ -41,7 +44,7 @@ Tearing down, in this order:
 
 `platform-create`, `platform-destroy`, `addons-create` and `addons-destroy` share the group `platform-dev`, so none of them overlap. `app-build`, `app-images`, `app-database`, `app-seed`, `app-deploy`, `app-expose`, `app-verify` and `app-destroy` share `app-dev`.
 
-`app-build.yml` runs today. `app-deploy.yml` installs every release and the internal ALB, then runs the acceptance suite in cloud mode (`E2E_K8S=1 E2E_CLOUD=1`): orders go through the ALB, the four APIs are port-forwarded to the runner's localhost, and `scripts/k8s_compose.py` stands in for Compose with kubectl. One check is skipped there, the dead-letter-queue count inside step 9, because the deploy role may not read the queues; the low-stock Lambda test reads the real CloudWatch log group. Run `app-seed.yml` once first, or the catalog is empty and step 1 fails. The drills and the UI journeys are not run in the cloud. `app-build.yml` checks and `app-images.yml` publishes; they do not overlap. Only the `dev` environment exists for now.
+`app-build.yml` runs today. `app-deploy.yml` installs every release and the internal ALB, then runs the acceptance suite in cloud mode (`E2E_K8S=1 E2E_CLOUD=1`): orders go through the ALB, the four APIs are port-forwarded to the runner's localhost, and `scripts/k8s_compose.py` stands in for Compose with kubectl. One check is skipped there, the dead-letter-queue count inside step 9, because the deploy role may not read the queues; the low-stock Lambda test reads the real CloudWatch log group. Run `app-seed.yml` once first, or the catalog is empty and step 1 fails. The drills and the UI journeys are not run in the cloud. `app-build.yml` checks and `app-images.yml` publishes; they do not overlap. Only dev is deployed. `stage` and `prod` exist as branches and GitHub Environments, with no roles, variables or cluster behind them.
 
 ## Seeing the app in a browser
 
@@ -55,3 +58,18 @@ The internal ALB is reachable only from inside the VPC, and no laptop has AWS ac
 `scripts/viewer_cidr.py` refuses anything wider than a `/24`, any private address, and `0.0.0.0/0`. The ALB is plain HTTP, there is no login, and the API's admin endpoints are unauthenticated, which is why it is limited to one address and meant for dev only. The "demo tools" page of the UI is not in the cloud build (`VITE_DEMO_TOOLS` is off outside local), so stock and prices cannot be set from the browser.
 
 **Not yet exercised:** the three teardown workflows (`app-destroy`, `addons-destroy`, `platform-destroy`) and the `remove` action of `app-expose` have never been run. Run them once in dev before relying on them.
+
+## Pull requests, branches and releases
+
+`pr.yml` needs no secrets and no setup. It runs `make lint test`, builds and Trivy-scans the five images, checks Terraform (fmt, validate, tflint, Checkov) and the workflows (actionlint), and ends in `ci`. A change that touches only docs runs almost nothing; a change to `pr.yml` runs everything. Integration tests, drills and browser journeys are not in CI (they need LocalStack); `app-deploy.yml` runs the acceptance suite against AWS instead.
+
+| Branch | Direct push | Pull request | Required |
+| --- | --- | --- | --- |
+| `dev` | yes (owner) | not required | no force push, no deletion |
+| `stage`, `prod` | never, admins included | yes | 1 approving review (stale approvals dismissed, the last pusher cannot approve), `ci` passing and up to date, no force push, no deletion |
+
+Promotion is a pull request `dev` to `stage` (then `stage` to `prod`), a reviewer's merge, then `promote.yml` run from that branch and approved in its Environment. A solo owner cannot approve their own pull request, so the first promotion needs a second reviewer. This path has never run.
+
+Rolling back: run **App: rollback** with `all`, or with one release and a `revision`. Check with **App: verify** afterwards. It changes what runs, not the database.
+
+Releases are tags on `dev` with a GitHub Release. `v0.1.0` is the first.
