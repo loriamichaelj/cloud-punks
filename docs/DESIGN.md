@@ -29,7 +29,7 @@ We build a four-service retail order platform that runs end-to-end on localhost 
 | 1c — Local Kubernetes (OrbStack) | Helm chart for every process including the UI, probes, HPA, ingress, rollback on the local cluster | Day 3 (morning) | Same test (API acceptance and UI journeys) passes via local ingress; `helm rollback` demonstrated |
 | 2 — Cloud infra, built through CI (built 2 Oct 2026) | Manual OIDC provider + `cloudbatch818-loria-retail-bootstrap` role; `bootstrap-state-bucket.yml`, `bootstrap-ci-roles.yml`; minimal `platform-create.yml`; Terraform, ECR, EKS, in-VPC runners; the 1b chart with dev values. No AWS access exists outside GitHub Actions (ADR-14) | Day 3 | Same test passes against the EKS ingress, run from a workflow. **Met:** `app-deploy.yml` runs the acceptance suite through the dev ALB (10 passed, none skipped; the dead-letter-queue count inside step 9 is not checked in the cloud) |
 | 3 — CI/CD (built 2 Oct 2026) | `pr.yml` with one required `ci` gate, Trivy image and config scans, Checkov, tflint, actionlint; protected `stage` and `prod` branches and Environments; `promote.yml`; `app-rollback.yml`; release `v0.1.0`. The deploy and destroy workflows already exist from Phase 2. No push trigger for the deploy (decided) | Day 4 | **Met in part:** a pull request is gated by `ci` (shown red, then green, on PR #1). Not demonstrated: `app-rollback.yml` has never run, and `promote.yml` has never run because stage and prod are not deployed |
-| 4 — Reliability | Dashboards, SLOs, alarms, failure drills, runbooks | Day 5 | Each drill in section 11 detected and recovered |
+| 4 — Reliability (scoped 2 Oct 2026, P4.1 to P4.7 in section 13) | Dashboards, SLOs, alarms, failure drills, runbooks | Day 5 | Each drill in section 11 detected and recovered |
 
 This document is detailed for Phase 1 and gives forward-compatible contracts for Phases 2–4 so nothing built locally has to be rewritten.
 
@@ -772,6 +772,14 @@ Alarms (page vs ticket decided in the Phase 4 pass): SQS `ApproximateAgeOfOldest
 The failure drills in section 11 run on EKS as `workflow_dispatch` jobs on the `retail-vpc` runners using `cloudbatch818-loria-retail-deploy-<env>` (for example `kubectl scale deploy/inventory-consumer --replicas=0`); there is no laptop access to the cluster.
 
 Runbooks to write, each tied to an alarm: failed deployment/rollback, unhealthy pods, database connectivity, stuck queue/DLQ redrive, outbox lag.
+
+**Scope as decided (2 Oct 2026).** Seven milestones, one at a time, each ending with a summary: **P4.1** AWS-native alarms (each DLQ above 0, SQS oldest message, EventBridge `FailedInvocations`, Lambda errors, ALB 5xx and p95, RDS CPU, connections, memory, storage and transaction-ID wraparound) to an SNS topic with one email subscription (the address is a `dev` environment secret, never in the repo), plus an AWS Budgets alert at $350 a month with a forecast warning; **P4.2** logs through Container Insights and Fluent Bit with set retention, and a saved Logs Insights query that follows one `correlation_id`; **P4.3** app metrics and dashboards; **P4.4** pod-restart, outbox-age and `orders_stuck` alerts; **P4.5** `drills.yml`, the six drills as a choice, run on the `retail-vpc` runner; **P4.6** the five runbooks, each followed during a drill; **P4.7** close-out. Decisions:
+
+- **Metrics and dashboards: one in-cluster Prometheus and one Grafana** (reusing `local/observability`), not kube-prometheus-stack (the node's pod limit makes it too heavy) and not Amazon Managed Prometheus and Grafana (they need IAM Identity Center and add a monthly cost). Grafana is viewed through the same one-address viewer ALB pattern as `app-expose.yml`. Prometheus alert rules show in its UI; notifications come from the CloudWatch alarms. This departs from the paragraph above, which names kube-prometheus-stack or AMP.
+- **Drills change configuration, never AWS resources.** Consumer down scales the consumer to 0. Bus unavailable, cache down and DB down point the process at a dead bus, host or address with `helm --set`, and `helm rollback` undoes them. Poison and duplicate publish to the real bus, so the deploy role gains `events:PutEvents` on `loria-retail-events` (a `bootstrap-ci-roles` change).
+- **SLOs are defined and their current values shown;** a 28-day result is not claimed.
+- **Cheap win:** once the DLQ alarms exist, the deploy role may read the DLQ counts so the check the cloud acceptance suite skips can run.
+- **Out of scope:** HTTPS and a domain, a Valkey AUTH token, `verify-full` database TLS, Inspector enhanced scanning, and running the three teardown workflows, `app-rollback` and a promotion once (still open from earlier phases).
 
 ## 14. Guardrails for Claude Code, open questions, risks
 
