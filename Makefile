@@ -55,6 +55,8 @@ test: sync
 		echo "pytest $$s"; \
 		PYTHONPATH=services/$$s $(RUN) pytest services/$$s/tests/unit -q || exit 1; \
 	done
+	@echo "pytest scripts"
+	@PYTHONPATH=scripts $(RUN) pytest scripts/tests -q
 	@echo "pytest functions/low-stock-alert"
 	@$(RUN) pytest functions/low-stock-alert/tests -q
 	@$(MAKE) --no-print-directory ui-test

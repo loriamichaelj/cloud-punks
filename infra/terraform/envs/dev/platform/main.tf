@@ -66,3 +66,15 @@ module "runners" {
   cluster_security_group_id = module.eks.cluster_security_group_id
   github_repository         = var.github_repository
 }
+
+# The in-VPC runner creates the application databases and roles (scripts/db_init.py, run by
+# app-database.yml). That is the only reason it reaches PostgreSQL; the pods get in through the
+# cluster security group rule inside the data module.
+resource "aws_vpc_security_group_ingress_rule" "postgres_from_runner" {
+  security_group_id            = module.data.postgres_security_group_id
+  description                  = "PostgreSQL from the in-VPC runner"
+  referenced_security_group_id = module.runners.security_group_id
+  ip_protocol                  = "tcp"
+  from_port                    = 5432
+  to_port                      = 5432
+}

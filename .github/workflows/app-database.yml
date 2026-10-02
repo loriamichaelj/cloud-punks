@@ -1,0 +1,50 @@
+name: "App: database"
+
+# Creates the application databases, roles and passwords on the dev RDS instance:
+# product_db and order_db, an owner role (runs the migrations) and an app role (DML only)
+# for each, and the four passwords in Secrets Manager under loria-retail-dev/*.
+# Idempotent: a re-run reuses the secrets and brings the roles back in line with them.
+#
+# Runs on the in-VPC runner (RDS is private) as cloudbatch818-loria-retail-db-dev, a role that
+# can read the RDS master secret and write those four secrets, and nothing else. One job, so one
+# approval from the `dev` environment's reviewer.
+#
+# Needs: platform-create.yml (RDS, the runner, and the runner's route to PostgreSQL) and
+# bootstrap-ci-roles.yml (the db role and the AWS_ROLE_ARN_DB variable on `dev`).
+# Run it before app-deploy.yml. Passwords are never printed or passed as arguments.
+on:
+  workflow_dispatch:
+
+run-name: app-database
+
+permissions:
+  contents: read
+  id-token: write
+
+# Shares the group with the other app workflows so they never overlap.
+concurrency:
+  group: app-dev
+  cancel-in-progress: false
+
+jobs:
+  init:
+    runs-on: [self-hosted, retail-vpc]
+    environment: dev
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_DB }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Install the workspace
+        env:
+          UV_PYTHON_DOWNLOADS: never
+        run: uv sync --all-packages --locked
+
+      - name: Create the databases, roles and secrets
+        run: uv run --frozen --no-sync python scripts/db_init.py

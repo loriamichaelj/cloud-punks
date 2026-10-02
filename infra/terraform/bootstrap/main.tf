@@ -159,6 +159,49 @@ data "aws_iam_policy_document" "deploy" {
   }
 }
 
+# Database role: used only by app-database.yml on the in-VPC runner. It reads the RDS master
+# secret to create the application databases and roles, and writes their passwords to Secrets
+# Manager. It can do nothing else: no RDS changes, no other secrets, no ECR, no EKS.
+data "aws_iam_policy_document" "db" {
+  statement {
+    sid       = "FindTheInstance"
+    actions   = ["rds:DescribeDBInstances"]
+    resources = ["arn:aws:rds:${var.aws_region}:${local.account_id}:db:${var.db_instance_identifier}"]
+  }
+
+  # RDS names its managed master secret rds!db-<uuid>.
+  statement {
+    sid       = "ReadTheMasterSecret"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = ["arn:aws:secretsmanager:${var.aws_region}:${local.account_id}:secret:rds!db-*"]
+  }
+
+  # The master secret is encrypted with the data key; reading it needs that key, through
+  # Secrets Manager only.
+  statement {
+    sid       = "DecryptThroughSecretsManager"
+    actions   = ["kms:Decrypt"]
+    resources = ["arn:aws:kms:${var.aws_region}:${local.account_id}:key/*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["secretsmanager.${var.aws_region}.amazonaws.com"]
+    }
+  }
+
+  statement {
+    sid = "ApplicationDatabaseSecrets"
+    actions = [
+      "secretsmanager:CreateSecret",
+      "secretsmanager:GetSecretValue",
+      "secretsmanager:DescribeSecret",
+      "secretsmanager:TagResource",
+    ]
+    resources = ["arn:aws:secretsmanager:${var.aws_region}:${local.account_id}:secret:${var.db_secret_prefix}/*"]
+  }
+}
+
 module "tf" {
   source = "../modules/github-oidc"
 
@@ -173,4 +216,12 @@ module "deploy" {
   role_name       = "${local.prefix}-deploy-${local.env}"
   subject         = local.sub_environment
   inline_policies = { ecr-and-eks-describe = data.aws_iam_policy_document.deploy.json }
+}
+
+module "db" {
+  source = "../modules/github-oidc"
+
+  role_name       = "${local.prefix}-db-${local.env}"
+  subject         = local.sub_environment
+  inline_policies = { database-init = data.aws_iam_policy_document.db.json }
 }

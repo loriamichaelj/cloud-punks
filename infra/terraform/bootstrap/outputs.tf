@@ -3,5 +3,6 @@ output "role_arns" {
   value = {
     AWS_ROLE_ARN_TF     = module.tf.role_arn
     AWS_ROLE_ARN_DEPLOY = module.deploy.role_arn
+    AWS_ROLE_ARN_DB     = module.db.role_arn
   }
 }

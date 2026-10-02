@@ -35,3 +35,8 @@ output "kms_key_arn" {
   description = "The data-tier key, for the workload roles that read DynamoDB."
   value       = aws_kms_key.data.arn
 }
+
+output "postgres_security_group_id" {
+  description = "Allow more clients in with aws_vpc_security_group_ingress_rule (the runner does, for db_init)."
+  value       = aws_security_group.postgres.id
+}

@@ -29,6 +29,18 @@ variable "ecr_repository_prefix" {
   default     = "loria-retail"
 }
 
+variable "db_instance_identifier" {
+  description = "RDS instance the db role may describe. Must match the identifier the data module uses (the cluster name)."
+  type        = string
+  default     = "loria-retail-dev"
+}
+
+variable "db_secret_prefix" {
+  description = "Secrets Manager name prefix the db role may create and read: <prefix>/*."
+  type        = string
+  default     = "loria-retail-dev"
+}
+
 variable "eks_cluster_name" {
   description = "EKS cluster the deploy role may describe. Must match the name the eks module uses."
   type        = string
