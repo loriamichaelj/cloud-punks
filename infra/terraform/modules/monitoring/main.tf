@@ -2,9 +2,49 @@
 # rules, the low-stock Lambda and RDS. They notify one SNS topic. The application's own signals (outbox
 # age, orders stuck, pod restarts) and the ALB are separate: see DESIGN.md section 13, Phase 4.
 
+data "aws_caller_identity" "current" {}
+
+data "aws_region" "current" {}
+
+# CloudWatch alarms cannot publish to a topic encrypted with the AWS-managed key (alias/aws/sns), so the
+# topic gets its own key, and the key lets the CloudWatch service use it for alarms in this account.
+resource "aws_kms_key" "alarms" {
+  description         = "Encrypts the ${var.name} alarm topic"
+  enable_key_rotation = true
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "AccountAdministersTheKey"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
+        Action    = "kms:*"
+        Resource  = "*"
+      },
+      {
+        Sid       = "CloudWatchAlarmsPublishToTheTopic"
+        Effect    = "Allow"
+        Principal = { Service = "cloudwatch.amazonaws.com" }
+        Action    = ["kms:Decrypt", "kms:GenerateDataKey*"]
+        Resource  = "*"
+        Condition = {
+          StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id }
+          ArnLike      = { "aws:SourceArn" = "arn:aws:cloudwatch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:alarm:*" }
+        }
+      },
+    ]
+  })
+}
+
+resource "aws_kms_alias" "alarms" {
+  name          = "alias/${var.name}-alarms"
+  target_key_id = aws_kms_key.alarms.key_id
+}
+
 resource "aws_sns_topic" "alarms" {
-  #checkov:skip=CKV_AWS_26:The topic carries alarm text only, and CloudWatch alarms cannot publish to a topic encrypted with the AWS-managed key
-  name = "${var.name}-alarms"
+  name              = "${var.name}-alarms"
+  kms_master_key_id = aws_kms_key.alarms.arn
 }
 
 resource "aws_sns_topic_subscription" "email" {

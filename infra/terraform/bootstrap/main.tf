@@ -129,6 +129,7 @@ data "aws_iam_policy_document" "tf" {
 # Deploy role: push and pull images, describe the cluster. Cluster access
 # itself comes from an EKS access entry created by the eks module.
 data "aws_iam_policy_document" "deploy" {
+  #checkov:skip=CKV_AWS_356:logs:GetQueryResults and logs:StopQuery do not support resource-level permissions; logs:StartQuery is limited to the application log group
   # app-deploy's acceptance test checks that a low-stock reservation reaches the Lambda. Read
   # access to this one log group, and nothing else in CloudWatch.
   statement {
