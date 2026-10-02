@@ -132,7 +132,7 @@ k8s-lint:
 	@for env in local dev; do \
 		for f in $(HV)/values-*-$$env.yaml; do \
 			r=$$(basename $$f -$$env.yaml); r=$${r#values-}; [ "$$r" = common ] && continue; \
-			extra=""; case $$r in ui|backing|ingress|secrets) ;; *) extra="-f $(HV)/values-common-$$env.yaml";; esac; \
+			extra=""; case $$r in ui|backing|ingress|ingress-public|secrets) ;; *) extra="-f $(HV)/values-common-$$env.yaml";; esac; \
 			helm lint $(CHART) $$extra -f $$f --set image.tag=dev-lint >/dev/null || { echo "helm lint failed: $$env $$r"; exit 1; }; \
 			helm template $$r $(CHART) $$extra -f $$f --set image.tag=dev-lint > /tmp/k8s-lint-$$env-$$r.yaml || exit 1; \
 			if command -v kubeconform >/dev/null; then kubeconform -strict -summary -ignore-missing-schemas /tmp/k8s-lint-$$env-$$r.yaml || exit 1; fi; \

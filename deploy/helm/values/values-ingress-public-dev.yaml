@@ -1,0 +1,30 @@
+# A second shared Ingress for a human with a browser, in front of the same services as
+# values-ingress-dev.yaml. It is an internet-facing ALB, so everything about who may reach it is
+# in inbound-cidrs, and that value is NOT in this file: the "App: expose" workflow reads it from
+# the dev environment secret DEV_VIEWER_CIDR and passes it in a second values file. This public
+# repo never holds anyone's address. Without it the ALB would accept the whole internet, so the
+# workflow refuses to install without a narrow CIDR.
+#
+# Dev only. It exists next to the internal ALB, which stays the target of the e2e test. Remove it
+# with the workflow's "remove" action, or "App: destroy" with uninstall_releases (which runs
+# before the load balancer controller goes).
+workload:
+  enabled: false
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/load-balancer-name: loria-retail-dev-public
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/group.name: retail-public
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    alb.ingress.kubernetes.io/healthcheck-path: /health/live
+    alb.ingress.kubernetes.io/success-codes: "200-499"
+  routes:
+    - { path: /api/v1/products, service: product-service, port: 8001 }
+    - { path: /api/v1/categories, service: product-service, port: 8001 }
+    - { path: /api/v1/inventory, service: inventory-service, port: 8002 }
+    - { path: /api/v1/orders, service: order-service, port: 8003 }
+    - { path: /api/v1/notifications, service: notification-service, port: 8004 }
+  default: { service: ui, port: 8005 }

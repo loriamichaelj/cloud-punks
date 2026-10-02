@@ -15,6 +15,7 @@ Every workflow is independent: none calls another, each has its own concurrency 
 | `app-build.yml` | `workflow_dispatch`. The CI check, no AWS and no approval. Jobs: `prepare`, `test` (`make lint test`), `build` (builds the five images, pushes nothing), `notify` | none | none | `app-dev` |
 | `app-deploy.yml` | `workflow_dispatch` with an optional image `tag` (default `sha-<this commit>`). Jobs: `deploy` (checks the images exist, Helm on the runners, e2e; approval), `notify` | `dev` | `cloudbatch818-loria-retail-deploy-dev` (`AWS_ROLE_ARN_DEPLOY`) | `app-dev` |
 | `app-seed.yml` | `workflow_dispatch`. Loads the 20-product catalog into `product_db` and the starting stock into the inventory table, with the same `local/seed/seed.py` as `make seed`. Runs on the `retail-vpc` runner (approval). Safe to run again | `dev` | `cloudbatch818-loria-retail-db-dev` (`AWS_ROLE_ARN_DB`) | `app-dev` |
+| `app-expose.yml` | `workflow_dispatch` with an `action` choice: `expose` or `remove`. Installs a second, internet-facing ALB for the storefront, reachable only from the address in the `dev` environment secret `DEV_VIEWER_CIDR`. Runs on the `retail-vpc` runner (approval) | `dev` | `cloudbatch818-loria-retail-deploy-dev` (`AWS_ROLE_ARN_DEPLOY`) | `app-dev` |
 | `app-destroy.yml` | `workflow_dispatch` with a required `tag` (an image tag, or `all`) and an optional `uninstall_releases` (off by default; needs the runners) | `dev` | `cloudbatch818-loria-retail-deploy-dev` (`AWS_ROLE_ARN_DEPLOY`) | `app-dev` |
 
 ## Run order
@@ -28,6 +29,7 @@ Every workflow is independent: none calls another, each has its own concurrency 
 7. `app-images.yml`: pushes the images to ECR. Needs the repositories from `platform-create`.
 8. `app-deploy.yml`: deploys a pushed tag to the cluster. Its e2e step needs data and a cloud mode, see below.
 9. `app-seed.yml`: after the first `app-deploy` (its `product-service` release migrates the schema), loads the catalog and stock. The app serves an empty catalog until this has run.
+10. `app-expose.yml` (optional): opens the storefront to one browser address, see below.
 
 Tearing down, in this order:
 
@@ -38,3 +40,15 @@ Tearing down, in this order:
 `platform-create`, `platform-destroy`, `addons-create` and `addons-destroy` share the group `platform-dev`, so none of them overlap. `app-images`, `app-build`, `app-deploy` and `app-destroy` share `app-dev`.
 
 `app-build.yml` runs today. `app-deploy.yml` installs every release and the internal ALB, then runs the acceptance suite in cloud mode (`E2E_K8S=1 E2E_CLOUD=1`): orders go through the ALB, the four APIs are port-forwarded to the runner's localhost, and `scripts/k8s_compose.py` stands in for Compose with kubectl. Two checks are skipped there because the cloud stack cannot offer them yet: the dead-letter-queue count and the low-stock Lambda test. Run `app-seed.yml` once first, or the catalog is empty and step 1 fails. The drills and the UI journeys are not run in the cloud. `app-build.yml` checks and `app-images.yml` publishes; they do not overlap. Only the `dev` environment exists for now.
+
+## Seeing the app in a browser
+
+The internal ALB is reachable only from inside the VPC, and no laptop has AWS access (ADR-14). `app-expose.yml` adds a second ALB for one person:
+
+1. Find your public address (for example, https://checkip.amazonaws.com).
+2. Store it as the `dev` **environment secret** `DEV_VIEWER_CIDR`, as `x.x.x.x/32` or a bare address: GitHub, Settings, Environments, `dev`, Add environment secret. Do not use a variable (variables print in logs) and never commit it. Only jobs that pass the `dev` approval can read it, and logs mask it.
+3. Run **App: expose** with `expose`, approve it, and open the address in its run summary. The ALB takes a few minutes to answer the first time.
+4. When your address changes, update the secret and run `expose` again. Run `remove` when you are done; **App: destroy** with `uninstall_releases` also removes it.
+
+`scripts/viewer_cidr.py` refuses anything wider than a `/24`, any private address, and `0.0.0.0/0`. The ALB is plain HTTP, there is no login, and the API's admin endpoints are unauthenticated, which is why it is limited to one address and meant for dev only. The "demo tools" page of the UI is not in the cloud build (`VITE_DEMO_TOOLS` is off outside local), so stock and prices cannot be set from the browser.
+

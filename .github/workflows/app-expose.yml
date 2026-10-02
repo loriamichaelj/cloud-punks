@@ -1,0 +1,109 @@
+name: "App: expose"
+
+# Opens the dev storefront to ONE address, so a person can use it in a browser.
+#   expose  installs the `gateway-public` release: a second, internet-facing ALB in front of the
+#           same services, reachable only from the CIDR in the dev environment secret
+#           DEV_VIEWER_CIDR (for example 203.0.113.7/32). Run it again after the address changes.
+#   remove  uninstalls it. The internal ALB and the e2e test are not touched.
+#
+# Runs on the in-VPC runner as cloudbatch818-loria-retail-deploy-dev; one job, one approval.
+# The address is a secret so this public repo and its logs never show it. scripts/viewer_cidr.py
+# refuses an open range: 0.0.0.0/0, a prefix wider than /24, a private address, or anything that
+# is not an IPv4 CIDR.
+# Plain HTTP, no login, and the API has unauthenticated admin endpoints: that is why it is
+# limited to a single address, and why it is for dev only.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Open the storefront to the viewer address, or take it away
+        type: choice
+        options:
+          - expose
+          - remove
+        default: expose
+
+run-name: app-expose ${{ inputs.action }}
+
+permissions:
+  contents: read
+  id-token: write
+
+# Shares the group with the other app workflows so they never overlap.
+concurrency:
+  group: app-dev
+  cancel-in-progress: false
+
+env:
+  EKS_CLUSTER: loria-retail-dev
+  NAMESPACE: retail
+  HELM_CHART: deploy/helm/retail-service
+  HELM_VALUES: deploy/helm/values
+  RELEASE: gateway-public
+
+jobs:
+  expose:
+    runs-on: [self-hosted, retail-vpc]
+    environment: dev
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_DEPLOY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Open or close the storefront
+        env:
+          ACTION: ${{ inputs.action }}
+          VIEWER_CIDR: ${{ secrets.DEV_VIEWER_CIDR }}
+        run: |
+          set -euo pipefail
+          # Always name the context explicitly.
+          aws eks update-kubeconfig --name "$EKS_CLUSTER" --alias "$EKS_CLUSTER" --region "$AWS_REGION"
+          helm_cmd=(helm --kube-context "$EKS_CLUSTER" --namespace "$NAMESPACE")
+
+          if [ "$ACTION" = "remove" ]; then
+            "${helm_cmd[@]}" uninstall "$RELEASE" --wait --timeout 5m || echo "${RELEASE} was not installed"
+            echo "- Public storefront removed." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # The rule that keeps this from opening to everyone lives in a tested script (one public
+          # IPv4 network, no wider than a /24). It reads the secret from the environment, not from
+          # an argument, and never repeats it.
+          VIEWER_CIDR=$(python3 scripts/viewer_cidr.py)
+
+          # The address goes into a values file only the runner user can read, removed on exit
+          # even if Helm fails. It never appears on a command line.
+          umask 077
+          viewer_values="${RUNNER_TEMP}/viewer.yaml"
+          trap 'rm -f "$viewer_values"' EXIT
+          printf 'ingress:\n  annotations:\n    alb.ingress.kubernetes.io/inbound-cidrs: "%s"\n' "$VIEWER_CIDR" > "$viewer_values"
+
+          "${helm_cmd[@]}" upgrade --install --rollback-on-failure --wait --timeout 5m \
+            "$RELEASE" "$HELM_CHART" \
+            -f "${HELM_VALUES}/values-ingress-public-dev.yaml" -f "$viewer_values"
+
+          host=""
+          for _ in $(seq 1 60); do
+            host=$(kubectl --context "$EKS_CLUSTER" --namespace "$NAMESPACE" get ingress "$RELEASE" \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+            [ -n "$host" ] && break
+            sleep 10
+          done
+          if [ -z "$host" ]; then
+            echo "the Ingress has no ALB address after 10 minutes" >&2
+            kubectl --context "$EKS_CLUSTER" --namespace "$NAMESPACE" describe ingress "$RELEASE" || true
+            exit 1
+          fi
+          {
+            echo "### Storefront"
+            echo
+            echo "Open **http://${host}** from the allowed address. The ALB needs a few minutes to"
+            echo "start answering after it first appears; refresh until the page loads."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "http://${host}"
