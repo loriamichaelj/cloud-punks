@@ -6,6 +6,7 @@ nameOverride: ""
 image:
   repository: ""        # required for a workload, e.g. retail/order-service
   tag: ""               # required for a workload: set by the deploy target (dev-<git sha>), never "latest"
+  digest: ""            # optional sha256:...; when set the image is repository@digest and the tag is ignored (promotion)
   pullPolicy: IfNotPresent
 
 # Set false for a release that renders only an Ingress or the backing-service names.

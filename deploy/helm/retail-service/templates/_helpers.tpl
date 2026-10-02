@@ -15,8 +15,13 @@ app.kubernetes.io/name: {{ include "retail.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
+{{/* repo@digest when image.digest is set (promotion pins what was tested), otherwise repo:tag. */}}
 {{- define "retail.image" -}}
+{{- if .Values.image.digest -}}
+{{- required "image.repository is required" .Values.image.repository -}}@{{- .Values.image.digest -}}
+{{- else -}}
 {{- required "image.repository is required" .Values.image.repository -}}:{{- required "image.tag is required (the deploy target sets it)" .Values.image.tag -}}
+{{- end -}}
 {{- end -}}
 
 {{/* Hardened container settings, shared by the Deployment and the migration Job. */}}

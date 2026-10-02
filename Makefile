@@ -138,6 +138,7 @@ k8s-lint:
 			if command -v kubeconform >/dev/null; then kubeconform -strict -summary -ignore-missing-schemas /tmp/k8s-lint-$$env-$$r.yaml || exit 1; fi; \
 		done; \
 	done
+	@helm template d $(CHART) -f $(HV)/values-ui-dev.yaml --set image.repository=r/ui --set image.digest=sha256:abc | grep -q 'image: "r/ui@sha256:abc"' || { echo "image.digest is not rendered as repository@digest"; exit 1; }
 	@helm lint deploy/helm/secret-store --set region=us-east-1 >/dev/null || { echo "helm lint failed: secret-store"; exit 1; }
 	@command -v kubeconform >/dev/null || echo "kubeconform not installed: rendered manifests were not schema-checked"
 
