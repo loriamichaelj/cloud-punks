@@ -5,38 +5,17 @@ locals {
   env        = var.target_environment
   prefix     = "cloudbatch818-loria-retail"
 
-  sub_pull_request = "${var.oidc_subject_prefix}:pull_request"
-  sub_environment  = "${var.oidc_subject_prefix}:environment:${local.env}"
+  sub_environment = "${var.oidc_subject_prefix}:environment:${local.env}"
 
   bucket_arn = "arn:aws:s3:::${var.state_bucket_name}"
 }
 
-# Plan role: reads everything, reads state, and may only create and remove
-# lock files. Fork PRs get no OIDC token, so they cannot assume it.
-data "aws_iam_policy_document" "tf_plan" {
-  statement {
-    sid       = "ListStateBucket"
-    actions   = ["s3:ListBucket", "s3:GetBucketLocation"]
-    resources = [local.bucket_arn]
-  }
-
-  statement {
-    sid       = "ReadState"
-    actions   = ["s3:GetObject"]
-    resources = ["${local.bucket_arn}/*"]
-  }
-
-  statement {
-    sid       = "WriteLockfilesOnly"
-    actions   = ["s3:PutObject", "s3:DeleteObject"]
-    resources = ["${local.bucket_arn}/*.tflock"]
-  }
-}
-
-# Apply role: broad by design (DESIGN.md section 13, accepted gap). IAM is the
-# one area kept narrow: it can manage only cloudbatch818-loria-retail-dev-* roles and
-# policies, so it cannot edit the tf-plan, tf-apply or deploy roles.
-data "aws_iam_policy_document" "tf_apply" {
+# Terraform role, for both plan and apply: broad by design (DESIGN.md section 13,
+# accepted gap). It trusts only the dev environment, so every use passes the
+# environment's reviewer. IAM is the one area kept narrow: it can manage only
+# cloudbatch818-loria-retail-dev-* roles and policies, so it cannot edit the
+# bootstrap, terraform or deploy roles.
+data "aws_iam_policy_document" "tf" {
   statement {
     sid       = "StateForEnvironment"
     actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
@@ -172,21 +151,12 @@ data "aws_iam_policy_document" "deploy" {
   }
 }
 
-module "tf_plan" {
+module "tf" {
   source = "../modules/github-oidc"
 
-  role_name           = "${local.prefix}-tf-plan-${local.env}"
-  subject             = local.sub_pull_request
-  managed_policy_arns = ["arn:aws:iam::aws:policy/ReadOnlyAccess"]
-  inline_policies     = { state-read-and-lock = data.aws_iam_policy_document.tf_plan.json }
-}
-
-module "tf_apply" {
-  source = "../modules/github-oidc"
-
-  role_name       = "${local.prefix}-tf-apply-${local.env}"
+  role_name       = "${local.prefix}-tf-${local.env}"
   subject         = local.sub_environment
-  inline_policies = { platform = data.aws_iam_policy_document.tf_apply.json }
+  inline_policies = { platform = data.aws_iam_policy_document.tf.json }
 }
 
 module "deploy" {

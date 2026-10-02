@@ -4,8 +4,8 @@ locals {
   account_id = data.aws_caller_identity.current.account_id
 
   # Created by the bootstrap stack; see infra/terraform/bootstrap.
-  tf_apply_role_arn = "arn:aws:iam::${local.account_id}:role/cloudbatch818-loria-retail-tf-apply-dev"
-  deploy_role_arn   = "arn:aws:iam::${local.account_id}:role/cloudbatch818-loria-retail-deploy-dev"
+  tf_role_arn     = "arn:aws:iam::${local.account_id}:role/cloudbatch818-loria-retail-tf-dev"
+  deploy_role_arn = "arn:aws:iam::${local.account_id}:role/cloudbatch818-loria-retail-deploy-dev"
 }
 
 module "network" {
@@ -31,7 +31,7 @@ module "eks" {
   vpc_id          = module.network.vpc_id
   subnet_ids      = module.network.private_app_subnet_ids
 
-  admin_role_arns = { tf-apply = local.tf_apply_role_arn }
+  admin_role_arns = { tf = local.tf_role_arn }
   deploy_role_arn = local.deploy_role_arn
   addon_versions  = var.addon_versions
 }

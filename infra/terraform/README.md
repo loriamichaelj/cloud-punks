@@ -11,9 +11,9 @@ Applied only from GitHub Actions (ADR-14). Locally: `terraform fmt`, `terraform 
 | `modules/eks/` | Private-endpoint cluster, secrets KMS key, access entries, one-node AL2023 arm64 managed node group, add-ons |
 | `modules/github-oidc/` | One IAM role trusting one exact GitHub OIDC `sub`. Reads the hand-made OIDC provider with a `data` source |
 
-State lives in `loria-retail-tfstate-<account-id>-<region>`, created by `bootstrap.yml`. Keys are `<stack>/terraform.tfstate` for `bootstrap` and `<env>/<stack>/terraform.tfstate` for environments; `cloudbatch818-loria-retail-tf-apply-<env>` can touch only `<env>/*`.
+State lives in `loria-retail-tfstate-<account-id>-<region>`, created by `bootstrap.yml`. Keys are `<stack>/terraform.tfstate` for `bootstrap` and `<env>/<stack>/terraform.tfstate` for environments; `cloudbatch818-loria-retail-tf-<env>` can touch only `<env>/*`.
 
-CI role names start with `cloudbatch818-loria-retail-`, inside the `cloudbatch818-loria-*` the manual `cloudbatch818-loria-retail-bootstrap` role may manage. Roles the platform stacks create (workload, cluster, runner roles) use `cloudbatch818-loria-retail-<env>-*`, the only IAM prefix `cloudbatch818-loria-retail-tf-apply-<env>` may manage.
+CI role names start with `cloudbatch818-loria-retail-`, inside the `cloudbatch818-loria-*` the manual `cloudbatch818-loria-retail-bootstrap` role may manage. Roles the platform stacks create (workload, cluster, runner roles) use `cloudbatch818-loria-retail-<env>-*`, the only IAM prefix `cloudbatch818-loria-retail-tf-<env>` may manage.
 
 Choices to revisit:
 
