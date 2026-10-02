@@ -27,7 +27,7 @@ We build a four-service retail order platform that runs end-to-end on localhost 
 | 1a — Local (Compose on OrbStack) | Services, data layer, events, tests | Day 1–2 | Acceptance test passes on `make up` |
 | 1b — UI (React) | `ui/` single-page app and nginx image, gateway `/` route, Playwright journeys (M8; section 15) | Day 2 (late) | Browser journeys pass on Compose via `make ui-e2e` |
 | 1c — Local Kubernetes (OrbStack) | Helm chart for every process including the UI, probes, HPA, ingress, rollback on the local cluster | Day 3 (morning) | Same test (API acceptance and UI journeys) passes via local ingress; `helm rollback` demonstrated |
-| 2 — Cloud infra, built through CI | Manual OIDC provider + `cloudbatch818-loria-retail-bootstrap` role; `bootstrap.yml` (state bucket); minimal `infra.yml`; Terraform, ECR, EKS, in-VPC runners; the 1b chart with dev values. No AWS access exists outside GitHub Actions (ADR-14) | Day 3 | Same test passes against the EKS ingress, run from a workflow |
+| 2 — Cloud infra, built through CI | Manual OIDC provider + `cloudbatch818-loria-retail-bootstrap` role; `bootstrap.yml` (state bucket); minimal `infra-create.yml`; Terraform, ECR, EKS, in-VPC runners; the 1b chart with dev values. No AWS access exists outside GitHub Actions (ADR-14) | Day 3 | Same test passes against the EKS ingress, run from a workflow |
 | 3 — CI/CD | Full `pr.yml`/`main.yml`/`promote.yml`, scans, promotion, rollback, `infra-destroy.yml` | Day 4 | PR-to-prod pipeline with a demonstrated rollback |
 | 4 — Reliability | Dashboards, SLOs, alarms, failure drills, runbooks | Day 5 | Each drill in section 11 detected and recovered |
 
@@ -531,7 +531,7 @@ retail-platform/
 ├── README.md                     # run instructions
 ├── deploy/helm/                  # retail-service chart, values/ (per release, per env), third-party/ (Traefik)
 ├── infra/terraform/              # Phase 2 (placeholder)
-├── .github/workflows/            # Phases 2–3 (placeholder): bootstrap, infra, infra-destroy, pr, main, promote
+├── .github/workflows/            # Phases 2–3 (placeholder): bootstrap, state-bucket, infra-create, infra-destroy, pr, main, promote
 ├── Makefile
 ├── .env.example                  # committed; .env is git-ignored
 └── pyproject.toml                # uv workspace root, ruff, mypy, pytest config
@@ -702,15 +702,15 @@ Bring-up order:
 
 1. **Manual, once, by the owner (console or CloudShell):** create the IAM OIDC provider `token.actions.githubusercontent.com` (audience `sts.amazonaws.com`) and the role `cloudbatch818-loria-retail-bootstrap`. Trust: `aud = sts.amazonaws.com` and `sub = <sub prefix>:environment:bootstrap`, where the prefix is `repo:<owner>@<owner id>/<repo>@<repo id>` because this repo uses immutable OIDC subjects (check `gh api repos/<owner>/<repo>/actions/oidc/customization/sub`). Permissions: S3 on the state bucket, and IAM create/update on `role/cloudbatch818-loria-*` and `policy/cloudbatch818-loria-*`, with an explicit Deny on IAM actions against its own role (its name matches the prefix, so the Allow would otherwise cover it). Create the GitHub Environment `bootstrap` (required reviewer, deployment branch limited to `dev`) and set `AWS_ROLE_ARN_BOOTSTRAP` and `AWS_REGION`. Nothing else is created by hand. Because this role can mint roles it is effectively admin; the pinned `sub`, the reviewer gate, and `workflow_dispatch`-only trigger are its controls.
 2. **`bootstrap.yml` (`workflow_dispatch`, environment `bootstrap`), job 1:** idempotent AWS CLI calls (not Terraform; there is no state to start from) create `loria-retail-tfstate-<account-id>-<region>` with versioning, SSE, all public access blocked, a TLS-only bucket policy and noncurrent-version expiry. **Job 2:** `terraform apply` of `infra/terraform/bootstrap/` (state key `bootstrap/terraform.tfstate`), which uses the `github-oidc` module to create the roles in the table below.
-3. **`infra.yml` on GitHub-hosted runners** applies `envs/<env>/platform` (network, eks, data, events, ecr, runners). The EKS endpoint is private, but creating the cluster only needs the AWS API, so hosted runners suffice.
-4. **`infra.yml` on the in-VPC runners** applies `envs/<env>/cluster-addons` (AWS Load Balancer Controller, External Secrets Operator, namespace, `ExternalSecret`/ingress class). Terraform's `helm`/`kubernetes` providers need the private API, so this stack cannot run on hosted runners.
+3. **`infra-create.yml` on GitHub-hosted runners** applies `envs/<env>/platform` (network, eks, data, events, ecr, runners). The EKS endpoint is private, but creating the cluster only needs the AWS API, so hosted runners suffice.
+4. **`infra-create.yml` on the in-VPC runners** applies `envs/<env>/cluster-addons` (AWS Load Balancer Controller, External Secrets Operator, namespace, `ExternalSecret`/ingress class). Terraform's `helm`/`kubernetes` providers need the private API, so this stack cannot run on hosted runners.
 5. `main.yml` builds, pushes to ECR, and runs `helm upgrade --install --atomic` and e2e on the in-VPC runners.
 
 | Role | Trust `sub` | Permissions | Used by |
 | --- | --- | --- | --- |
 | `cloudbatch818-loria-retail-bootstrap` (manual) | `environment:bootstrap` | State bucket S3; IAM on `cloudbatch818-loria-*` | `bootstrap.yml` |
 | `cloudbatch818-loria-retail-tf-plan-dev` | `pull_request` | ReadOnlyAccess, state read, write `*.tflock` only | `pr.yml` plan (hosted). Fork PRs get no OIDC token, so they get no role |
-| `cloudbatch818-loria-retail-tf-apply-<env>` | `environment:<env>` | Broad service access (accepted least-privilege gap for this week, recorded here); IAM limited to `cloudbatch818-loria-retail-dev-*` so it cannot edit the CI roles; state limited to `<env>/*` | `infra.yml` apply |
+| `cloudbatch818-loria-retail-tf-apply-<env>` | `environment:<env>` | Broad service access (accepted least-privilege gap for this week, recorded here); IAM limited to `cloudbatch818-loria-retail-dev-*` so it cannot edit the CI roles; state limited to `<env>/*` | `infra-create.yml` apply, `infra-destroy.yml` |
 | `cloudbatch818-loria-retail-deploy-<env>` | `environment:<env>` | ECR push/pull, `eks:DescribeCluster`; EKS access entry with `AmazonEKSEditPolicy` scoped to namespace `retail` | `main.yml`, `promote.yml`, drills (runners) |
 
 Terraform references the OIDC provider with a `data` source (an account can hold one provider per URL) and never manages `cloudbatch818-loria-retail-bootstrap`. Tear-down is `infra-destroy.yml` (manual, environment-gated); `bootstrap` resources are never destroyed by it.
@@ -741,8 +741,8 @@ Terraform references the OIDC provider with a `data` source (an account can hold
 | `pr.yml` | Pull request (hosted runners only) | Path-filtered matrix: ruff, mypy, pytest (unit + integration via Compose), a `ui/**` job (`npm ci`, eslint, `tsc`, vitest, production build within the bundle budget, Playwright against Compose), Docker build, Trivy image + config scan (fail on fixable HIGH/CRITICAL), `terraform fmt -check`, `validate`, tflint, Checkov, `helm lint` + kubeconform, `terraform plan` via `cloudbatch818-loria-retail-tf-plan-dev` posted as PR comment |
 | `main.yml` | Push to `dev` | Build once (hosted) → push `sha-<sha>` to ECR → on `retail-vpc` runners: OIDC assume `cloudbatch818-loria-retail-deploy-dev` → `helm upgrade --install --atomic --wait --timeout 10m` → e2e acceptance against dev |
 | `promote.yml` | Manual / tag | GitHub Environment `prod` with required reviewers → deploy the **same image digest** (never rebuild) on `retail-vpc` runners → smoke test → record release |
-| `infra.yml` | Changes under `infra/` | Plan on PR (hosted); apply on merge per env with environment approval: `platform` stack on hosted runners, then `cluster-addons` on `retail-vpc` runners |
-| `infra-destroy.yml` | `workflow_dispatch`, environment-gated | Destroys an env (cluster-addons first, then platform); never touches `bootstrap`. Supports the idle-cost rule in §14 |
+| `infra-create.yml` | Changes under `infra/` | Plan on PR (hosted); apply on merge per env with environment approval: `platform` stack on hosted runners, then `cluster-addons` on `retail-vpc` runners |
+| `infra-destroy.yml` | `workflow_dispatch`, environment-gated | Destroys an env (cluster-addons first, then platform); never touches `bootstrap`. Supports the idle-cost rule in §14. Today it removes the `dev/platform` stack: a saved `plan -destroy`, then a second approval to apply it |
 
 Non-negotiables: each OIDC trust policy is pinned to an exact `sub` (`environment:<env>` or `pull_request`; never a wildcard or `ref:*`); third-party actions pinned by commit SHA; branch protection with required checks (none on `dev` for now, so the `dev` push and the environment gates are the only controls); no long-lived AWS keys in GitHub; self-hosted runners never serve `pull_request` or fork code (public repo). Rollback = `helm rollback <release> <revision>` or redeploy the previous digest; works only because migrations are expand/contract (section 5).
 

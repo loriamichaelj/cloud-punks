@@ -5,7 +5,7 @@ Applied only from GitHub Actions (ADR-14). Locally: `terraform fmt`, `terraform 
 | Path | Purpose |
 | --- | --- |
 | `bootstrap/` | The `cloudbatch818-loria-*` roles for CI. State key `bootstrap/terraform.tfstate`. Run by `bootstrap.yml` |
-| `envs/dev/platform/` | Dev network, ECR and EKS. State key `dev/platform/terraform.tfstate`. Applied by `infra.yml` (not written yet) |
+| `envs/dev/platform/` | Dev network, ECR and EKS. State key `dev/platform/terraform.tfstate`. Created by `infra-create.yml`, removed by `infra-destroy.yml` |
 | `modules/network/` | VPC over 3 AZs: public, private-app (/20) and private-data subnets, one NAT in dev, S3 and DynamoDB gateway endpoints, interface endpoints |
 | `modules/ecr/` | `loria-retail/<service>` repositories: immutable tags, scan on push, keep 30 |
 | `modules/eks/` | Private-endpoint cluster, secrets KMS key, access entries, one-node AL2023 arm64 managed node group, add-ons |

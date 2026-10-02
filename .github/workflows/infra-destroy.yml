@@ -1,19 +1,15 @@
-name: infra
+name: infra-destroy
 
-# dev/platform stack (network, ecr, eks).
-# - pull_request: plan only, as cloudbatch818-loria-retail-tf-plan-dev, posted as a PR comment.
-# - workflow_dispatch: two jobs as cloudbatch818-loria-retail-tf-apply-dev, each approved by
-#   the `dev` environment's required reviewer. `plan` writes the plan to the
-#   state bucket and prints it; `apply` runs only after a second approval and
-#   applies exactly that saved plan. Apply is manual on purpose: it creates a
-#   cluster that costs money.
+# Tears down the dev/platform stack (network, ecr, eks). Two jobs as
+# cloudbatch818-loria-retail-tf-apply-dev, each approved by the `dev`
+# environment's required reviewer: `plan` runs `terraform plan -destroy`,
+# saves it to the state bucket and prints it; `destroy` runs only after a
+# second approval and applies exactly that saved plan.
+# It never touches the bootstrap stack, the state bucket or the CI roles.
 on:
-  pull_request:
-    paths:
-      - "infra/terraform/envs/dev/platform/**"
-      - "infra/terraform/modules/**"
-      - ".github/workflows/infra.yml"
   workflow_dispatch:
+
+run-name: infra-destroy
 
 permissions:
   contents: read
@@ -29,64 +25,13 @@ defaults:
   run:
     working-directory: infra/terraform/envs/dev/platform
 
-# Dispatch runs queue behind each other; PR runs are grouped per ref.
+# Shares infra-create's group so the two never touch the stack at once.
 concurrency:
-  group: infra-${{ github.event_name == 'workflow_dispatch' && 'dev-platform' || github.ref }}
+  group: infra-dev-platform
   cancel-in-progress: false
 
 jobs:
-  pr-plan:
-    # Fork PRs get no OIDC token and no role. Skip them rather than fail.
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: read
-      id-token: write
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
-        with:
-          terraform_version: 1.16.4
-          terraform_wrapper: false
-
-      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN_TF_PLAN }}
-          aws-region: ${{ vars.AWS_REGION }}
-
-      - name: Init
-        run: |
-          account_id=$(aws sts get-caller-identity --query Account --output text)
-          terraform init \
-            -backend-config="bucket=loria-retail-tfstate-${account_id}-${TF_VAR_aws_region}" \
-            -backend-config="key=${STATE_KEY}" \
-            -backend-config="region=${TF_VAR_aws_region}"
-
-      - name: Plan
-        run: terraform plan -lock-timeout=5m -no-color -out=tfplan
-
-      - name: Post the plan
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-        run: |
-          {
-            echo "### terraform plan: dev/platform"
-            echo
-            echo '```'
-            terraform show -no-color tfplan 2>&1 | head -c 60000 || echo "no plan was produced"
-            echo '```'
-          } > comment.md
-          gh pr comment "$PR_URL" --body-file comment.md --edit-last --create-if-none
-
   plan:
-    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: dev
     timeout-minutes: 20
@@ -121,7 +66,7 @@ jobs:
         id: plan
         run: |
           set +e
-          terraform plan -detailed-exitcode -lock-timeout=5m -no-color -out=tfplan
+          terraform plan -destroy -detailed-exitcode -lock-timeout=5m -no-color -out=tfplan
           code=$?
           set -e
           # 0 = no changes, 2 = changes, anything else is an error.
@@ -134,7 +79,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "### terraform plan: dev/platform"
+            echo "### terraform destroy: dev/platform"
             echo '```'
             terraform show -no-color tfplan 2>&1 | head -c 100000 || echo "no plan was produced"
             echo '```'
@@ -147,7 +92,7 @@ jobs:
         if: steps.plan.outputs.has_changes == 'true'
         run: |
           account_id=$(aws sts get-caller-identity --query Account --output text)
-          key="dev/plans/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tfplan"
+          key="dev/plans/destroy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tfplan"
           aws s3 cp tfplan "s3://loria-retail-tfstate-${account_id}-${TF_VAR_aws_region}/${key}"
           echo "plan_key=${key}" >> "$GITHUB_OUTPUT"
           echo "plan_sha256=$(sha256sum tfplan | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
@@ -156,9 +101,9 @@ jobs:
         if: failure()
         run: terraform state list || true
 
-  apply:
+  destroy:
     needs: plan
-    if: github.event_name == 'workflow_dispatch' && needs.plan.outputs.has_changes == 'true'
+    if: needs.plan.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
     environment: dev
     timeout-minutes: 90
@@ -195,15 +140,15 @@ jobs:
           echo "${PLAN_SHA256}  tfplan" | sha256sum --check
 
       # A saved plan is refused if the state changed since it was made.
-      - name: Apply
+      - name: Destroy
         run: terraform apply -lock-timeout=5m -no-color tfplan
 
-      - name: Outputs
+      - name: Remaining resources
         run: |
           {
-            echo "### Outputs"
-            echo '```json'
-            terraform output -json
+            echo "### Resources left in dev/platform state"
+            echo '```'
+            terraform state list || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 

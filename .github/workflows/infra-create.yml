@@ -1,0 +1,234 @@
+name: infra-create
+
+# dev/platform stack (network, ecr, eks).
+# - pull_request: plan only, as cloudbatch818-loria-retail-tf-plan-dev, posted as a PR comment.
+# - workflow_dispatch: pick an action. Jobs run as cloudbatch818-loria-retail-tf-apply-dev,
+#   each approved by the `dev` environment's required reviewer.
+#     plan     the `plan` job only: print the plan, change nothing.
+#     apply    `plan`, then `apply` after a second approval, applying exactly
+#              the saved plan.
+#   Apply is manual on purpose: it creates a cluster that costs money.
+#   Tearing the stack down is infra-destroy.yml.
+on:
+  pull_request:
+    paths:
+      - "infra/terraform/envs/dev/platform/**"
+      - "infra/terraform/modules/**"
+      - ".github/workflows/infra-create.yml"
+  workflow_dispatch:
+    inputs:
+      action:
+        description: What to do with the dev/platform stack
+        type: choice
+        options:
+          - plan
+          - apply
+        default: plan
+
+run-name: infra-create ${{ github.event_name == 'workflow_dispatch' && inputs.action || 'pr plan' }}
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  TF_VAR_aws_region: ${{ vars.AWS_REGION }}
+  STATE_KEY: dev/platform/terraform.tfstate
+
+defaults:
+  run:
+    working-directory: infra/terraform/envs/dev/platform
+
+# Dispatch runs queue behind each other; PR runs are grouped per ref.
+concurrency:
+  group: infra-${{ github.event_name == 'workflow_dispatch' && 'dev-platform' || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  pr-plan:
+    # Fork PRs get no OIDC token and no role. Skip them rather than fail.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.4
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_TF_PLAN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Init
+        run: |
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          terraform init \
+            -backend-config="bucket=loria-retail-tfstate-${account_id}-${TF_VAR_aws_region}" \
+            -backend-config="key=${STATE_KEY}" \
+            -backend-config="region=${TF_VAR_aws_region}"
+
+      - name: Plan
+        run: terraform plan -lock-timeout=5m -no-color -out=tfplan
+
+      - name: Post the plan
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          {
+            echo "### terraform plan: dev/platform"
+            echo
+            echo '```'
+            terraform show -no-color tfplan 2>&1 | head -c 60000 || echo "no plan was produced"
+            echo '```'
+          } > comment.md
+          gh pr comment "$PR_URL" --body-file comment.md --edit-last --create-if-none
+
+  plan:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 20
+    outputs:
+      has_changes: ${{ steps.plan.outputs.has_changes }}
+      plan_key: ${{ steps.save.outputs.plan_key }}
+      plan_sha256: ${{ steps.save.outputs.plan_sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.4
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_TF_APPLY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Init
+        run: |
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          terraform init \
+            -backend-config="bucket=loria-retail-tfstate-${account_id}-${TF_VAR_aws_region}" \
+            -backend-config="key=${STATE_KEY}" \
+            -backend-config="region=${TF_VAR_aws_region}"
+
+      - name: Plan
+        id: plan
+        run: |
+          set +e
+          terraform plan -detailed-exitcode -lock-timeout=5m -no-color -out=tfplan
+          code=$?
+          set -e
+          # 0 = no changes, 2 = changes, anything else is an error.
+          if [ "$code" -ne 0 ] && [ "$code" -ne 2 ]; then
+            exit "$code"
+          fi
+          echo "has_changes=$([ "$code" -eq 2 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Plan summary
+        if: always()
+        env:
+          ACTION: ${{ inputs.action }}
+        run: |
+          {
+            echo "### terraform ${ACTION}: dev/platform"
+            echo '```'
+            terraform show -no-color tfplan 2>&1 | head -c 100000 || echo "no plan was produced"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The plan can hold sensitive values, so it goes to the private state
+      # bucket (dev/*), not to a workflow artifact on a public repo.
+      - name: Save the plan
+        id: save
+        if: steps.plan.outputs.has_changes == 'true' && inputs.action != 'plan'
+        run: |
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          key="dev/plans/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tfplan"
+          aws s3 cp tfplan "s3://loria-retail-tfstate-${account_id}-${TF_VAR_aws_region}/${key}"
+          echo "plan_key=${key}" >> "$GITHUB_OUTPUT"
+          echo "plan_sha256=$(sha256sum tfplan | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: terraform state list || true
+
+  apply:
+    needs: plan
+    if: github.event_name == 'workflow_dispatch' && inputs.action != 'plan' && needs.plan.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 90
+    env:
+      PLAN_KEY: ${{ needs.plan.outputs.plan_key }}
+      PLAN_SHA256: ${{ needs.plan.outputs.plan_sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.4
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_TF_APPLY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Init
+        run: |
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          terraform init \
+            -backend-config="bucket=loria-retail-tfstate-${account_id}-${TF_VAR_aws_region}" \
+            -backend-config="key=${STATE_KEY}" \
+            -backend-config="region=${TF_VAR_aws_region}"
+
+      - name: Fetch the approved plan
+        run: |
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          aws s3 cp "s3://loria-retail-tfstate-${account_id}-${TF_VAR_aws_region}/${PLAN_KEY}" tfplan
+          echo "${PLAN_SHA256}  tfplan" | sha256sum --check
+
+      # A saved plan is refused if the state changed since it was made.
+      - name: Apply
+        run: terraform apply -lock-timeout=5m -no-color tfplan
+
+      - name: Outputs
+        run: |
+          {
+            echo "### Outputs"
+            echo '```json'
+            terraform output -json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Delete the saved plan
+        if: always()
+        run: |
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          aws s3 rm "s3://loria-retail-tfstate-${account_id}-${TF_VAR_aws_region}/${PLAN_KEY}" || true
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          terraform show -no-color tfplan || true
+          terraform state list || true
