@@ -4,18 +4,18 @@ Every workflow is independent: none calls another, each has its own concurrency 
 
 | Workflow | Trigger | Environment | Role (variable) | Concurrency group |
 | --- | --- | --- | --- | --- |
-| `aws-state-bucket.yml` | `workflow_dispatch` | `bootstrap` | `cloudbatch818-loria-retail-bootstrap` (`AWS_ROLE_ARN_BOOTSTRAP`) | `aws-state-bucket` |
-| `aws-ci-roles.yml` | `workflow_dispatch` | `bootstrap` | `cloudbatch818-loria-retail-bootstrap` (`AWS_ROLE_ARN_BOOTSTRAP`) | `aws-ci-roles` |
+| `bootstrap-state-bucket.yml` | `workflow_dispatch` | `bootstrap` | `cloudbatch818-loria-retail-bootstrap` (`AWS_ROLE_ARN_BOOTSTRAP`) | `bootstrap-state-bucket` |
+| `bootstrap-ci-roles.yml` | `workflow_dispatch` | `bootstrap` | `cloudbatch818-loria-retail-bootstrap` (`AWS_ROLE_ARN_BOOTSTRAP`) | `bootstrap-ci-roles` |
 | `platform-create.yml` | `workflow_dispatch` with an `action` choice: `plan` (print the plan) or `apply` (plan, then apply after a second approval) | `dev` | `cloudbatch818-loria-retail-tf-dev` (`AWS_ROLE_ARN_TF`) | `platform-dev` |
 | `platform-destroy.yml` | `workflow_dispatch` (a saved `plan -destroy`, then a second approval to apply it) | `dev` | `cloudbatch818-loria-retail-tf-dev` (`AWS_ROLE_ARN_TF`) | `platform-dev` |
 
 ## Run order
 
-1. `aws-state-bucket.yml`: creates `loria-retail-tfstate-<account-id>-<region>`. Safe to run again.
-2. `aws-ci-roles.yml`: creates the CI roles. Fails early if the bucket is missing.
+1. `bootstrap-state-bucket.yml`: creates `loria-retail-tfstate-<account-id>-<region>`. Safe to run again.
+2. `bootstrap-ci-roles.yml`: creates the CI roles. Fails early if the bucket is missing.
 3. `platform-create.yml`: the network, ECR repositories and EKS cluster. Run `plan` first.
 4. `platform-destroy.yml`: removes the platform stack when the environment is idle. The bucket and the CI roles stay.
 
 `platform-create` and `platform-destroy` share a group so they never touch the stack at once.
 
-The application workflows come later: `app-build-push.yml`, then `app-deploy.yml` and `app-promote.yml`.
+The application workflows come later: `app-images.yml`, then `app-deploy.yml`. Only the `dev` environment exists for now.

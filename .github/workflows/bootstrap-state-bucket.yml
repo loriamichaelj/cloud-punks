@@ -1,20 +1,20 @@
-name: "AWS: state bucket"
+name: "Bootstrap: state bucket"
 
 # Creates (or re-asserts the settings of) the Terraform state bucket
 # loria-retail-tfstate-<account-id>-<region>. Idempotent: safe to run again.
-# Run it first: aws-ci-roles.yml expects the bucket to exist. No other
+# Run it first: bootstrap-ci-roles.yml expects the bucket to exist. No other
 # workflow calls this one.
 on:
   workflow_dispatch:
 
-run-name: aws-state-bucket
+run-name: bootstrap-state-bucket
 
 permissions:
   contents: read
   id-token: write
 
 concurrency:
-  group: aws-state-bucket
+  group: bootstrap-state-bucket
   cancel-in-progress: false
 
 jobs:

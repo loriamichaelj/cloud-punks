@@ -1,19 +1,19 @@
-name: "AWS: CI roles"
+name: "Bootstrap: CI roles"
 
 # Creates the cloudbatch818-loria-* CI roles with the bootstrap Terraform stack.
-# Needs the state bucket from aws-state-bucket.yml; it calls no other workflow.
+# Needs the state bucket from bootstrap-state-bucket.yml; it calls no other workflow.
 # Manual only; the `bootstrap` environment's required reviewer is the gate.
 on:
   workflow_dispatch:
 
-run-name: aws-ci-roles
+run-name: bootstrap-ci-roles
 
 permissions:
   contents: read
   id-token: write
 
 concurrency:
-  group: aws-ci-roles
+  group: bootstrap-ci-roles
   cancel-in-progress: false
 
 jobs:
@@ -51,7 +51,7 @@ jobs:
           account_id=$(aws sts get-caller-identity --query Account --output text)
           bucket="loria-retail-tfstate-${account_id}-${TF_VAR_aws_region}"
           if ! aws s3api head-bucket --bucket "$bucket"; then
-            echo "State bucket ${bucket} is missing or not accessible: run aws-state-bucket first" >&2
+            echo "State bucket ${bucket} is missing or not accessible: run bootstrap-state-bucket first" >&2
             exit 1
           fi
           echo "TF_VAR_state_bucket_name=${bucket}" >> "$GITHUB_ENV"

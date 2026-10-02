@@ -13,7 +13,7 @@ variable "oidc_subject_prefix" {
 }
 
 variable "state_bucket_name" {
-  description = "Terraform state bucket created by aws-state-bucket.yml."
+  description = "Terraform state bucket created by bootstrap-state-bucket.yml."
   type        = string
 }
 
