@@ -10,14 +10,14 @@ order-service ─► PostgreSQL (order_db) + outbox ─► relay ─► EventBri
 product-service ─► PostgreSQL (product_db) + Valkey cache        inventory, notification ─► DynamoDB
 ```
 
-EventBridge, SQS, DynamoDB and Lambda run in LocalStack, so no AWS account or credential is ever involved.
+Locally, EventBridge, SQS, DynamoDB and Lambda run in LocalStack, so no AWS account or credential is involved. The same images also run on AWS EKS, built and operated only by GitHub Actions (see "Running on AWS (dev)" below).
 
 ## Prerequisites
 
 - Docker with Compose (developed on OrbStack, Apple Silicon)
 - [`uv`](https://docs.astral.sh/uv/) and Python 3.13
 - Node 24 (`ui/.nvmrc`), only for the `ui-*` targets
-- A LocalStacc auth token: <https://app.localstack.cloud>
+- A LocalStack auth token: <https://app.localstack.cloud>
 
 ## Run it
 
@@ -93,6 +93,10 @@ gateway/           nginx routing, mirrors the future ALB rules
 local/             Compose file, LocalStack bootstrap, PostgreSQL init, seed data, Prometheus and Grafana config
 tests/e2e/         acceptance steps and failure drills
 docs/              DESIGN.md, ADR notes, generated OpenAPI snapshots
+deploy/helm/        the retail-service chart, the secret-store chart, and the values per release (local and dev)
+infra/terraform/    the bootstrap, dev/platform and dev/cluster-addons stacks and their modules (applied only from workflows)
+scripts/            DLQ tools, OpenAPI export, db_init, the k8s_compose shim, viewer_cidr; their tests are in scripts/tests
+.github/workflows/  bootstrap-*, platform-*, addons-* and app-* workflows (see its README)
 ```
 
 ## Local Kubernetes (OrbStack)
@@ -110,4 +114,19 @@ make k8s-resilience      # delete each workload's pod under load; no order is lo
 
 Open <http://retail.k8s.orb.local/>. `make k8s-down` removes the releases and `make up` brings the Compose processes back. How it works and what differs from Compose: `docs/adr/README.md`.
 
-Next: the cloud, pipeline and Terraform strategy pass (section 13 of the design), then AWS.
+## Running on AWS (dev)
+
+The dev environment runs in `us-east-1`: one EKS node, RDS for PostgreSQL, ElastiCache for Valkey, DynamoDB, EventBridge and SQS, behind an internal ALB. No AWS credential exists on any laptop (ADR-14). Every change is a workflow, started by hand, with an approval on the `bootstrap` or `dev` GitHub Environment. The acceptance suite (steps 1 to 10, minus the Lambda test) passes against it from `app-deploy`.
+
+Bring-up, in order (details and the teardown order are in `.github/workflows/README.md`):
+
+1. `bootstrap-state-bucket`, then `bootstrap-ci-roles`: the Terraform state bucket and the CI roles. Needs the one-time manual setup in `infra/terraform/README.md` (OIDC provider, bootstrap role, Environments, variables).
+2. `platform-create` (plan, then apply): network, ECR, EKS, data stores, queues, the in-VPC runner. Then store the runner's GitHub token by hand, as that README says.
+3. `addons-create`: the load balancer controller, External Secrets, the secret store.
+4. `app-database`, `app-images`, `app-deploy`, then `app-seed` and `app-deploy` once more (the first deploy creates the schema; the seed needs it).
+5. `app-expose` (optional): a browser view for one address, held in the `DEV_VIEWER_CIDR` environment secret.
+
+Tear down in the reverse order: `app-destroy`, `addons-destroy`, `platform-destroy`. Dev costs roughly $300 a month while it runs (a list-price estimate, not measured), so destroy it when idle. Those workflows have not been run yet.
+
+Not built yet: the pull-request and promotion pipeline (`pr.yml`, `promote.yml`), the low-stock Lambda in the cloud, alarms and dashboards, HTTPS and a domain. See DESIGN.md section 13 and its open questions; what was built, what differs from the design and what went wrong on the way are in `docs/adr/README.md`, "Cloud (dev on AWS) as built".
+

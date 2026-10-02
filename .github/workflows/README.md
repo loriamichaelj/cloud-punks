@@ -27,17 +27,17 @@ Every workflow is independent: none calls another, each has its own concurrency 
 5. `app-database.yml`: on the runner, the application databases, roles and their four Secrets Manager passwords. Needs `platform-create` and the db role from `bootstrap-ci-roles`. Safe to run again.
 6. `app-build.yml`: lint, unit tests and a build of every image. Pushes nothing and needs no AWS, so it can run any time.
 7. `app-images.yml`: pushes the images to ECR. Needs the repositories from `platform-create`.
-8. `app-deploy.yml`: deploys a pushed tag to the cluster. Its e2e step needs data and a cloud mode, see below.
-9. `app-seed.yml`: after the first `app-deploy` (its `product-service` release migrates the schema), loads the catalog and stock. The app serves an empty catalog until this has run.
+8. `app-deploy.yml`: deploys a pushed tag to the cluster and runs the acceptance suite. On a fresh environment its e2e step is red the first time, because the catalog is empty (see 9).
+9. `app-seed.yml`: after the first `app-deploy` (its `product-service` release migrates the schema), loads the catalog and stock. Then run `app-deploy` again, or just use the app.
 10. `app-expose.yml` (optional): opens the storefront to one browser address, see below.
 
 Tearing down, in this order:
 
-1. `app-destroy.yml`: removes the app (images, and the Helm releases once they exist). Needs the deploy role's `ecr:BatchDeleteImage`, which `bootstrap-ci-roles` grants.
+1. `app-destroy.yml`: removes the app (the image tag you name, or all, and with `uninstall_releases` every Helm release in `retail`, including `gateway-public`). Needs the deploy role's `ecr:BatchDeleteImage`, which `bootstrap-ci-roles` grants.
 2. `addons-destroy.yml`: removes the add-ons while the cluster still runs, so the load balancer controller can delete the ALBs it created.
 3. `platform-destroy.yml`: removes the platform stack. It refuses to start while the addons stack still has resources. The bucket and the CI roles stay.
 
-`platform-create`, `platform-destroy`, `addons-create` and `addons-destroy` share the group `platform-dev`, so none of them overlap. `app-images`, `app-build`, `app-deploy` and `app-destroy` share `app-dev`.
+`platform-create`, `platform-destroy`, `addons-create` and `addons-destroy` share the group `platform-dev`, so none of them overlap. `app-build`, `app-images`, `app-database`, `app-seed`, `app-deploy`, `app-expose` and `app-destroy` share `app-dev`.
 
 `app-build.yml` runs today. `app-deploy.yml` installs every release and the internal ALB, then runs the acceptance suite in cloud mode (`E2E_K8S=1 E2E_CLOUD=1`): orders go through the ALB, the four APIs are port-forwarded to the runner's localhost, and `scripts/k8s_compose.py` stands in for Compose with kubectl. Two checks are skipped there because the cloud stack cannot offer them yet: the dead-letter-queue count and the low-stock Lambda test. Run `app-seed.yml` once first, or the catalog is empty and step 1 fails. The drills and the UI journeys are not run in the cloud. `app-build.yml` checks and `app-images.yml` publishes; they do not overlap. Only the `dev` environment exists for now.
 
@@ -52,3 +52,4 @@ The internal ALB is reachable only from inside the VPC, and no laptop has AWS ac
 
 `scripts/viewer_cidr.py` refuses anything wider than a `/24`, any private address, and `0.0.0.0/0`. The ALB is plain HTTP, there is no login, and the API's admin endpoints are unauthenticated, which is why it is limited to one address and meant for dev only. The "demo tools" page of the UI is not in the cloud build (`VITE_DEMO_TOOLS` is off outside local), so stock and prices cannot be set from the browser.
 
+**Not yet exercised:** the three teardown workflows (`app-destroy`, `addons-destroy`, `platform-destroy`) and the `remove` action of `app-expose` have never been run. Run them once in dev before relying on them.

@@ -4,6 +4,8 @@ One file per ADR when a decision in DESIGN.md section 2 changes. Until then this
 
 ## Change history (was the DESIGN.md status line)
 
+**v2.4 (2 Oct 2026): Phase 2 is built.** The platform runs in dev on AWS: three Terraform stacks applied only from GitHub Actions, eleven Helm releases on one EKS node, and the acceptance suite passing through the dev ALB from a workflow (9 passed, 1 skipped). New in this version: the cloud workflows (`bootstrap-*`, `platform-*`, `addons-*`, `app-*`), the in-VPC runner, the `db_init` and seed jobs, a cloud mode for the acceptance suite, configurable DynamoDB table names, a viewer ALB limited to one address, and the section "Cloud (dev on AWS) as built" below. DESIGN.md's status, phase table, Phase 2 block, workflow table, open questions and risks were updated to match.
+
 Status: v2.3, UI restyled (v2.3: light theme, product art, category colours; see "UI restyle" below); M0–M10 built; Phase 1 is complete (v2.2: M10 built — the `retail-service` Helm chart, local values, Traefik ingress, `make k8s-*`, cluster e2e and pod-kill tests; v2.1: CLAUDE.md's separate UI section merged into Workflow, Must and Must not (DESIGN.md section 14 mirrors it), the "no Helm before M9" rule dropped, DESIGN.md metrics, Make targets and layout updated; M9 built — stuck-order sweeper, queue-depth metric, failure drills as Make targets and e2e cases, DLQ tools, Prometheus and Grafana profile, README; v2.0: M8 built — the React UI, `ui` Compose service, gateway `/` route, OpenAPI snapshots and `ui-*` targets, browser journeys; v1.9: M7 built — notification API contract, consumer, Lambda, steps 6, 9 and 10 in `make e2e`; v1.8: M6 built — reservation record attributes, consumer processes and shutdown, acceptance step 6 moved to M7, M6 test rules; v1.7: milestones renumbered; v1.6: section 15 and ADR-16/17; v1.5: order API contract, outbox relay behavior, test isolation rules and the corrected bus-unavailable drill; v1.4: inventory API contract and hermetic unit tests; v1.3: product API contract and cache/outage behavior from M3, HTTP client moved to httpx2; v1.2: layout, bootstrap and tooling notes updated from M0–M2; OrbStack sized for an 8 GB Mac; v1.1: facts verified 30 Sep 2026; AWS access is GitHub-OIDC-only, so Phases 2–3 are reordered around a bootstrap workflow and in-VPC runners; bootstrap script and spec gaps fixed)
 
 v1.8 also corrected M6's done-when from acceptance steps 1–8 to 1–5, 7 and 8, because step 6 needs M7's notifications.
@@ -202,6 +204,77 @@ The owner asked for a more presentable, colourful, light UI with product assets.
 - **Resources.** Give the OrbStack VM 6 GB on an 8 GB Mac (`orbctl config set memory_mib 6144`, then `orbctl stop`; it restarts on the next Docker command), or 8 GB or more on a larger machine. The limit is a cap, not a reservation, but equalling the Mac's total RAM risks swapping. The LocalStack Lambda runtime adds a container on top of the stack. Local values request 50m CPU / 128Mi per pod so 13 processes plus Traefik fit. HPA needs metrics-server: install it if `kubectl --context orbstack top nodes` fails.
 - **Context safety.** Every `k8s-*` Make target passes `--kube-context orbstack` / `--context orbstack` explicitly, so a local command can never land on an EKS cluster that happens to be the current context.
 
+## Cloud (dev on AWS) as built (Phase 2, 30 Sep to 2 Oct 2026)
+
+**Result.** Dev runs in `us-east-1`. `app-deploy.yml` installs every release and runs `tests/e2e/test_acceptance.py` through the internal ALB: 9 passed, 1 skipped (the low-stock Lambda test, on purpose). Nothing was created or changed from a laptop; no AWS credential exists outside GitHub Actions (ADR-14). The unit gate (`make lint test`) and the hosted `app-build.yml` check are green on the same commit.
+
+### What exists
+
+| Stack or release | Contents | Applied by | State |
+| --- | --- | --- | --- |
+| Manual, once | IAM OIDC provider, the `cloudbatch818-loria-retail-bootstrap` role, the `bootstrap` and `dev` GitHub Environments | the owner, in the console | none |
+| `bootstrap` | the `tf-dev`, `deploy-dev` and `db-dev` roles and their policies | `bootstrap-ci-roles.yml` | `bootstrap/terraform.tfstate` |
+| `dev/platform` (133) | network 35, ECR 10, EKS 25, data 14, events 20, the runner 10, workload roles and one security-group rule 19 | `platform-create.yml` | `dev/platform/terraform.tfstate` |
+| `dev/cluster-addons` (12) | the `retail` namespace, AWS Load Balancer Controller 3.5.0, External Secrets Operator 2.11.0, the `ClusterSecretStore`, two Pod Identity roles, a Role and binding for ExternalSecrets | `addons-create.yml`, on the runner | `dev/cluster-addons/terraform.tfstate` |
+| Helm releases (11) | `secrets`, the eight processes, `ui`, `gateway`; optionally `gateway-public` | `app-deploy.yml`, `app-expose.yml` | in the cluster |
+
+The platform in detail: a VPC over three AZs with one NAT and seven interface endpoints in one AZ; five immutable-tag ECR repositories `loria-retail/<name>`; Kubernetes 1.36 with a private endpoint and one m7g.large AL2023 arm64 node; RDS for PostgreSQL 17 (`db.t4g.small`, Single-AZ), ElastiCache for Valkey 9.0 (one `cache.t4g.micro`, TLS), three DynamoDB tables, one KMS key; the `loria-retail-events` bus with three rules, three queues and their DLQs, and a 7-day archive; one ephemeral arm64 runner (`retail-vpc`) in an Auto Scaling group of one.
+
+### Names and roles
+
+Everything Terraform and the workflows create is prefixed `loria-` (bucket, cluster `loria-retail-dev`, repositories, queues, tables, the ALBs). IAM roles are `cloudbatch818-loria-retail-...`, the only prefix the manual bootstrap role may manage. Roles: `tf-dev` (plan, apply and destroy of both stacks; IAM only under `...-dev-*`; state only under `dev/*`), `deploy-dev` (ECR push, pull and delete; `eks:DescribeCluster`; EKS Edit in `retail`; the group `retail-deployers` for ExternalSecrets), `db-dev` (read the RDS master secret, create and read `loria-retail-dev/*` secrets, `PutItem` on the inventory table), six workload roles by Pod Identity (a service account is named after its Helm release), and the runner's instance role (Session Manager, and read of the token secret). The `bootstrap` and `dev` Environments require the owner as reviewer and accept only the `dev` branch.
+
+### Secrets
+
+The runner's GitHub token (a fine-grained PAT, *Administration: read and write*, one repository) is put in Secrets Manager by hand as plaintext; Terraform only creates the empty secret. The four database passwords are generated by `scripts/db_init.py` and stored as JSON `{"password": ...}` under `loria-retail-dev/<svc>-<owner|app>-db`; no workflow prints them. The address allowed to reach the viewer ALB is the `dev` environment secret `DEV_VIEWER_CIDR` (a variable would be printed in this public repo's logs).
+
+### Deploy flow and its one quirk
+
+The run order and the teardown order are in `.github/workflows/README.md`. `app-deploy` installs the `secrets` release first (a migration hook runs before its own release creates anything), then the eight processes, `ui` and `gateway`, finds the ALB address from the Ingress, and runs the acceptance suite. On a fresh environment its e2e step is red until `app-seed.yml` has run, because the schema is created by the product migration hook during that first deploy and the catalog starts empty. Seed, then deploy again.
+
+### Cloud mode for the acceptance suite
+
+Orders go through the internal ALB (`E2E_GATEWAY_URL`). What the ALB does not expose is reached as `make k8s-e2e` does locally: the workflow port-forwards the four APIs to the runner's `localhost`, and `scripts/k8s_compose.py` answers the suite's "compose" commands with kubectl (scale a consumer to 0 and back, read logs, scrape `/metrics`). The shim takes its cluster from `K8S_CONTEXT` and `K8S_NAMESPACE` (default `orbstack`, always named). `E2E_CLOUD=1` skips the dead-letter-queue count in step 9 and the Lambda test. The drills and the UI journeys are not run in the cloud.
+
+What a pass shows: orders flow through the outbox, the relay, EventBridge, SQS, both consumers and DynamoDB; idempotency; stock is never oversold under a burst; a consumer can be stopped and recovers; one correlation id appears in every service's logs; the cache counts hits. It also shows that the Pod Identity roles, queue policies, KMS permissions, database grants and secrets all work.
+
+### Deviations from DESIGN.md
+
+- Dev only. No prod roles, no `promote.yml`, no `pr.yml`. `main.yml` became `app-images.yml` and `app-deploy.yml`, both `workflow_dispatch` for now, plus a hosted `app-build.yml` check.
+- One Terraform role for plan, apply and destroy, trusted by the `dev` Environment only. There is no PR plan: a PR run would use broad credentials without the reviewer.
+- ECR uses basic scan-on-push, not Inspector enhanced scanning (the apply role has no `inspector2` rights).
+- `DB_SSLMODE=require` in dev, not `verify-full`: the images do not carry the RDS CA bundle.
+- Valkey has TLS and a security-group limit but no AUTH token (a generated token would be in Terraform state).
+- Dev RDS has deletion protection off and no final snapshot, so it can be destroyed. EKS add-on versions and the PostgreSQL minor are not pinned.
+- The low-stock Lambda and its rule are not deployed (packaging needs the `hashicorp/archive` provider).
+- The application databases and roles come from `scripts/db_init.py` run by a workflow, not from a bootstrap migration.
+- DynamoDB table names are read from `INVENTORY_TABLE`, `RESERVATIONS_TABLE` and `NOTIFICATIONS_TABLE` (defaults are the local names), so the cloud tables carry the `loria-` prefix.
+- Runner registration is a PAT-driven `--ephemeral` loop on one EC2 instance, not JIT registration or actions-runner-controller.
+- Interface endpoints sit in one AZ; the ALB health check accepts 200 to 499 so one check serves the APIs and the UI.
+- A second, internet-facing ALB (`gateway-public`) exists for browser access, because no laptop has AWS access. The internal ALB is unchanged.
+- `dev` is the only branch and has no protection; the Environments are the gate.
+
+### What went wrong first
+
+1. **Immutable OIDC subject.** The repository issues subjects as `repo:<owner>@<id>/<repo>@<id>:...`, so the default trust never matched. The first `bootstrap` run failed at role assumption; the prefix is now built from the run context.
+2. **A JSON-wrapped secret.** The Secrets Manager console defaults to key/value; the stored PAT came out as JSON and GitHub answered 401. Store it as plaintext.
+3. **Stale images.** Images pushed before the table-name change would have failed their readiness checks against `loria-inventory`. Tags are immutable and `app-deploy` defaults to `sha-<this commit>`, so build and deploy from the same commit, and pass an explicit tag only for images you know are current.
+4. **`AmazonEKSEditPolicy` and custom resources.** The first deploy failed with `cannot get resource "externalsecrets"`. The deploy role's access entry now carries the group `retail-deployers`, and a namespaced Role grants that group `externalsecrets`.
+5. **Migration hooks run first.** A hook cannot read an `ExternalSecret` its own release has not created yet, so the secrets are a release of their own.
+6. **A custom resource before its CRD.** The `ClusterSecretStore` goes in through a tiny local chart after the operator; a `kubernetes_manifest` would not plan on a rebuilt cluster.
+7. **The suite assumed a laptop.** Eight of ten tests failed at first on direct `localhost` access, Compose commands, LocalStack and an empty catalog. Seeding and the cloud mode fixed it.
+8. **A cosmetic no-op diff.** `rds.force_ssl` is `pending-reboot` on AWS; setting that in Terraform stopped the in-place change on every plan.
+9. **GitHub showed a finished job as in progress** once (the run itself was complete). It did not recur.
+10. **PostgreSQL 17.** `GRANT <owner> TO <master>` followed by `CREATE DATABASE ... OWNER` worked on RDS first time.
+
+### Still open
+
+The list is in DESIGN.md's open questions: the Lambda, TLS verification, a Valkey token, pinned versions, HTTPS and a domain, alarms and dashboards, and the Phase 3 pipeline. Also: the three teardown workflows (`app-destroy`, `addons-destroy`, `platform-destroy`) and the viewer's `remove` action have never been run, and the failure drills have not been run against dev.
+
+### Rough run-rate
+
+A list-price estimate for `us-east-1`, not measured: EKS control plane about $73 a month, the node about $60, NAT about $33 plus data, seven interface endpoints about $51, RDS about $26, Valkey about $12, the runner about $12, and each ALB about $17. About $300 a month, or $10 a day, with the viewer ALB included. Destroying dev when idle is the saving.
+
 ## Decided questions
 
 - [x] Cloud database is Amazon RDS for PostgreSQL 17, not Aurora (decided 1 Oct 2026). Dev is a single Single-AZ instance; RDS Proxy is optional and off by default with one node. DESIGN.md sections 2, 3, 5, 8, 10 and 13 updated.
@@ -217,7 +290,13 @@ The owner asked for a more presentable, colourful, light UI with product assets.
 - [x] Bootstrap: OIDC provider and `cloudbatch818-loria-retail-bootstrap` role created by hand; state bucket via `bootstrap-state-bucket.yml` (decided 30 Sep 2026).
 - [x] EKS access: self-hosted ephemeral runners in the VPC, private endpoint (decided 30 Sep 2026). Repo is public, so the runner restrictions in section 13 apply.
 - [x] No domain yet (30 Sep 2026): dev uses HTTP on the internal ALB; HTTPS/ACM is deferred until a domain exists.
-- [x] Runner mechanism: EC2 Auto Scaling group with ephemeral, JIT-registered runners (30 Sep 2026).
+- [x] Branches (1 Oct 2026): `dev` is the only branch and the default; `main` was deleted; there is no branch protection. The `bootstrap` and `dev` Environments accept only the `dev` branch and require the owner as reviewer.
+- [x] Names (1 to 2 Oct 2026): resources are prefixed `loria-`, IAM roles `cloudbatch818-loria-retail-`.
+- [x] One Terraform role for plan, apply and destroy, trusted by the `dev` Environment only; no PR plan (2 Oct 2026).
+- [x] The application databases and roles are created by `scripts/db_init.py`, run by `app-database.yml` as a dedicated `db` role; passwords live in Secrets Manager (2 Oct 2026).
+- [x] Browser access to dev (2 Oct 2026): a second, internet-facing ALB allowed from one address held in an environment secret, because no laptop has AWS access. The internal ALB and the e2e path are unchanged.
+- [x] The acceptance suite runs in the cloud with kubectl standing in for Compose and two checks skipped (2 Oct 2026).
+- [x] Runner mechanism: EC2 Auto Scaling group with ephemeral runners (30 Sep 2026). Superseded 2 Oct 2026: one instance registers with a fine-grained PAT in an `--ephemeral` loop, not JIT; see "Cloud (dev on AWS) as built".
 
 ## Working notes moved out of CLAUDE.md
 
