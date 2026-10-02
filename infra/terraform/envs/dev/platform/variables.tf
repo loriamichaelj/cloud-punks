@@ -46,3 +46,9 @@ variable "db_skip_final_snapshot" {
   type        = bool
   default     = true
 }
+
+variable "github_repository" {
+  description = "owner/repo the in-VPC runner registers with."
+  type        = string
+  default     = "loriamichaelj/retail-platform"
+}

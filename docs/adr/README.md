@@ -213,6 +213,7 @@ The owner asked for a more presentable, colourful, light UI with product assets.
 - [x] LocalStack: free Hobby plan token (non-commercial use), not paid (30 Sep 2026). The token goes in the git-ignored `.env` as `LOCALSTACK_AUTH_TOKEN`. CI use of the Hobby token is unresolved; decide in the pipeline-strategy pass.
 - [x] Apple Silicon confirmed (30 Sep 2026): arm64 images, Graviton nodes, multi-arch builds.
 - [x] Environments: the remote repo (https://github.com/loriamichaelj/retail-platform) carries the **dev environment only** (30 Sep 2026). Prod roles, the `prod` Environment and `promote.yml` are deferred; the prod rows in section 13 are illustrative until a prod decision is made.
+- [x] In-VPC runners: one ephemeral arm64 EC2 runner in an Auto Scaling group of one, registered with a fine-grained PAT held in Secrets Manager; jobs cannot reach the instance role (decided 2 Oct 2026; DESIGN.md section 13).
 - [x] Bootstrap: OIDC provider and `cloudbatch818-loria-retail-bootstrap` role created by hand; state bucket via `bootstrap-state-bucket.yml` (decided 30 Sep 2026).
 - [x] EKS access: self-hosted ephemeral runners in the VPC, private endpoint (decided 30 Sep 2026). Repo is public, so the runner restrictions in section 13 apply.
 - [x] No domain yet (30 Sep 2026): dev uses HTTP on the internal ALB; HTTPS/ACM is deferred until a domain exists.

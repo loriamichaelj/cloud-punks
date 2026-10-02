@@ -9,6 +9,7 @@ Applied only from GitHub Actions (ADR-14). Locally: `terraform fmt`, `terraform 
 | `modules/network/` | VPC over 3 AZs: public, private-app (/20) and private-data subnets, one NAT in dev, S3 and DynamoDB gateway endpoints, interface endpoints |
 | `modules/ecr/` | `loria-retail/<service>` repositories: immutable tags, scan on push, keep 30 |
 | `modules/eks/` | Private-endpoint cluster, secrets KMS key, access entries, one-node AL2023 arm64 managed node group, add-ons |
+| `modules/runners/` | One ephemeral in-VPC GitHub runner (label `retail-vpc`): launch template, Auto Scaling group of one, instance role, security group, the empty Secrets Manager secret for the PAT |
 | `modules/events/` | EventBridge bus, the three routing rules, queues with DLQs (SSE, `aws:SourceArn` queue policies) and the 7-day archive |
 | `modules/data/` | RDS for PostgreSQL 17, ElastiCache for Valkey (TLS), the three DynamoDB tables, one KMS key |
 | `modules/github-oidc/` | One IAM role trusting one exact GitHub OIDC `sub`. Reads the hand-made OIDC provider with a `data` source |
@@ -30,3 +31,6 @@ Naming: everything Terraform and the workflows create is prefixed `loria-` (stat
 - RDS runs `engine_version = "17"`, so AWS picks the default 17.x minor. Pin the minor once the first apply shows it. `product_db`, `order_db` and the app roles inside them are created by the bootstrap migration, which also needs app-user secrets in Secrets Manager; neither exists yet.
 - Dev RDS has deletion protection off and no final snapshot, so `platform-destroy` can remove it. DESIGN.md asks for protection: set `db_deletion_protection = true` for prod.
 - The DynamoDB tables are named `loria-inventory`, `loria-inventory-reservations` and `loria-notifications`. The services read the names from `INVENTORY_TABLE`, `RESERVATIONS_TABLE` and `NOTIFICATIONS_TABLE` (defaults are the local names).
+- The runner needs a one-time manual step after `platform-create` applies it. Create a fine-grained personal access token for this repository with *Administration: read and write*, then store it as the secret's value (the secret is named in the `runner_github_token_secret` output, `loria-retail-dev-runner-github-token`). The instance retries every 30 seconds until the secret has a value, then registers. Terraform never sees the token.
+- Also set Settings > Actions > General > "Approval for running fork pull request workflows" to *Require approval for all outside collaborators*. Self-hosted runners in a public repo must never run fork code; the workflows that target `retail-vpc` run only on `workflow_dispatch`.
+- The runner is the only instance that can reach the private cluster API from outside the cluster. Its security group is allowed into the cluster security group on 443.

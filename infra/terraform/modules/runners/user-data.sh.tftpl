@@ -1,0 +1,94 @@
+#!/bin/bash
+# Boot script for the in-VPC GitHub runner. Written for a Terraform template: every
+# literal $ { } sequence is avoided, shell variables are plain $NAME.
+set -euxo pipefail
+exec > >(tee /var/log/runner-bootstrap.log) 2>&1
+
+dnf install -y jq git tar gzip libicu iptables-nft python3-pip
+
+cd /tmp
+
+# --- tools the deploy and destroy workflows use ---------------------------------
+curl -fsSLo kubectl "https://dl.k8s.io/release/v${kubectl_version}/bin/linux/arm64/kubectl"
+echo "${kubectl_sha256}  kubectl" | sha256sum -c -
+install -m 0755 kubectl /usr/local/bin/kubectl
+
+curl -fsSLo helm.tgz "https://get.helm.sh/helm-v${helm_version}-linux-arm64.tar.gz"
+echo "${helm_sha256}  helm.tgz" | sha256sum -c -
+tar -xzf helm.tgz linux-arm64/helm
+install -m 0755 linux-arm64/helm /usr/local/bin/helm
+
+pip3 install --no-cache-dir "uv==${uv_version}"
+export UV_PYTHON_INSTALL_DIR=/opt/uv-python
+/usr/local/bin/uv python install "${python_version}"
+ln -sf "$(/usr/local/bin/uv python find "${python_version}")" "/usr/local/bin/python${python_version}"
+
+# --- the runner ------------------------------------------------------------------
+useradd --create-home --shell /bin/bash runner
+mkdir -p /opt/actions-runner
+cd /opt/actions-runner
+curl -fsSLo runner.tgz "https://github.com/actions/runner/releases/download/v${runner_version}/actions-runner-linux-arm64-${runner_version}.tar.gz"
+echo "${runner_sha256}  runner.tgz" | sha256sum -c -
+tar -xzf runner.tgz
+rm runner.tgz
+chown -R runner:runner /opt/actions-runner
+
+# --- register, run one job, deregister, repeat -------------------------------------
+cat > /usr/local/bin/runner-loop.sh <<'LOOP'
+#!/bin/bash
+set -uo pipefail
+cd /opt/actions-runner
+while true; do
+  # The PAT lives in Secrets Manager and is read only here, by root. The job user
+  # (runner) cannot reach the instance role: see the iptables rule in the unit.
+  pat=$(aws secretsmanager get-secret-value --region "$RUNNER_REGION" \
+    --secret-id "$RUNNER_SECRET_ID" --query SecretString --output text 2>/dev/null)
+  if [ -z "$pat" ] || [ "$pat" = "None" ]; then
+    echo "no GitHub token in $RUNNER_SECRET_ID yet; waiting"
+    sleep 30
+    continue
+  fi
+  token=$(curl -fsS -X POST \
+    -H "Authorization: Bearer $pat" -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/repos/$RUNNER_REPO/actions/runners/registration-token" | jq -r .token)
+  unset pat
+  if [ -z "$token" ] || [ "$token" = "null" ]; then
+    echo "could not get a registration token; retrying"
+    sleep 30
+    continue
+  fi
+  rm -rf /opt/actions-runner/_work
+  runuser -u runner -- ./config.sh --unattended --ephemeral --replace \
+    --url "https://github.com/$RUNNER_REPO" --token "$token" \
+    --labels "$RUNNER_LABELS" --name "$(hostname)-$(date +%s)"
+  unset token
+  runuser -u runner -- ./run.sh
+  sleep 2
+done
+LOOP
+chmod 0755 /usr/local/bin/runner-loop.sh
+
+cat > /etc/systemd/system/github-runner.service <<UNIT
+[Unit]
+Description=Ephemeral GitHub Actions runner loop
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Environment=RUNNER_REPO=${github_repository}
+Environment=RUNNER_REGION=${region}
+Environment=RUNNER_SECRET_ID=${secret_id}
+Environment=RUNNER_LABELS=${labels}
+# Jobs run as the runner user and get AWS access only through OIDC. Refuse their
+# traffic to the instance metadata service so they cannot borrow the instance role.
+ExecStartPre=/bin/sh -c 'iptables -C OUTPUT -d 169.254.169.254 -m owner --uid-owner runner -j REJECT 2>/dev/null || iptables -A OUTPUT -d 169.254.169.254 -m owner --uid-owner runner -j REJECT'
+ExecStart=/usr/local/bin/runner-loop.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now github-runner.service

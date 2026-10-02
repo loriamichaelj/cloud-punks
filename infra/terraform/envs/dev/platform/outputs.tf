@@ -45,3 +45,12 @@ output "cache_url" {
 output "table_names" {
   value = module.data.table_names
 }
+
+output "runner_github_token_secret" {
+  description = "Store the fine-grained PAT in this secret before the runner can register."
+  value       = module.runners.github_token_secret_name
+}
+
+output "runner_autoscaling_group" {
+  value = module.runners.autoscaling_group_name
+}

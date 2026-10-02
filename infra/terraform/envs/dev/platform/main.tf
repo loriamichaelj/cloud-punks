@@ -55,3 +55,14 @@ module "data" {
   db_deletion_protection = var.db_deletion_protection
   db_skip_final_snapshot = var.db_skip_final_snapshot
 }
+
+module "runners" {
+  source = "../../../modules/runners"
+
+  name                      = var.cluster_name
+  iam_name_prefix           = "cloudbatch818-loria-retail-dev"
+  vpc_id                    = module.network.vpc_id
+  subnet_ids                = module.network.private_app_subnet_ids
+  cluster_security_group_id = module.eks.cluster_security_group_id
+  github_repository         = var.github_repository
+}
