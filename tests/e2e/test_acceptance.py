@@ -24,10 +24,14 @@ from conftest import (
     wait_for,
     wait_for_status,
 )
-from cwlogs import find_log_message
+from cwlogs import find_log_message, releases_that_logged
 
 # LocalStack's function is named low-stock-alert; the cloud's carries the loria- prefix.
 LAMBDA_LOG_GROUP = os.environ.get("E2E_LAMBDA_LOG_GROUP", "/aws/lambda/low-stock-alert")
+# Where Container Insights writes the application containers' logs (the cloud only).
+APP_LOG_GROUP = os.environ.get(
+    "E2E_APP_LOG_GROUP", "/aws/containerinsights/loria-retail-dev/application"
+)
 
 
 def _logs() -> Any:
@@ -215,3 +219,44 @@ def test_step_10_one_correlation_id_runs_through_every_service(
         return seen if expected <= seen else None
 
     assert wait_for("the correlation id in every service's logs", services_that_logged)
+
+
+@pytest.mark.skipif(
+    not E2E_CLOUD, reason="Container Insights ships logs to CloudWatch only in the cloud"
+)
+def test_cloud_one_order_is_traced_across_the_services_in_cloudwatch(
+    http: httpx2.Client, customer: str
+) -> None:
+    """P4.2 done-when: one correlation id, found in CloudWatch in every process that handled the order."""
+    correlation_id = f"e2e-corr-{uuid.uuid4().hex[:12]}"
+    started_s = int(time.time()) - 60
+    set_stock(http, SKU_A, 20)
+    created = http.post(
+        "/api/v1/orders",
+        json={"customer_id": customer, "items": [{"sku": SKU_A, "quantity": 1}]},
+        headers={"Idempotency-Key": f"e2e-{uuid.uuid4()}", "X-Correlation-ID": correlation_id},
+    )
+    wait_for_status(http, created.json()["order_id"], "CONFIRMED")
+    expected = {
+        "order-service",
+        "inventory-service",
+        "inventory-consumer",
+        "order-consumer",
+        "notification-consumer",
+    }
+    last: dict[str, int] = {}
+
+    def traced() -> dict[str, int] | None:
+        nonlocal last
+        last = releases_that_logged(
+            _logs(), APP_LOG_GROUP, correlation_id, start_s=started_s, end_s=int(time.time()) + 60
+        )
+        return last if expected <= last.keys() else None
+
+    # Fluent Bit ships in batches and Logs Insights lags behind it, so allow a few minutes.
+    try:
+        wait_for("the correlation id in CloudWatch", traced, timeout_s=300, interval_s=15)
+    except AssertionError as error:
+        raise AssertionError(
+            f"{error}; releases seen: {sorted(last)}; missing: {sorted(expected - last.keys())}"
+        ) from None

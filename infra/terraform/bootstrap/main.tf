@@ -137,6 +137,20 @@ data "aws_iam_policy_document" "deploy" {
     resources = ["arn:aws:logs:${var.aws_region}:${local.account_id}:log-group:${var.low_stock_log_group}:*"]
   }
 
+  # The acceptance suite traces one order across the services in the application container logs.
+  # StartQuery is limited to this group; the other two actions cannot be limited to a resource.
+  statement {
+    sid       = "QueryContainerLogs"
+    actions   = ["logs:StartQuery"]
+    resources = ["arn:aws:logs:${var.aws_region}:${local.account_id}:log-group:${var.container_log_group}:*"]
+  }
+
+  statement {
+    sid       = "ReadQueryResults"
+    actions   = ["logs:GetQueryResults", "logs:StopQuery"]
+    resources = ["*"]
+  }
+
   statement {
     sid       = "EcrLogin"
     actions   = ["ecr:GetAuthorizationToken"]

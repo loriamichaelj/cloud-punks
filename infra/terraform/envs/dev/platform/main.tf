@@ -33,6 +33,10 @@ module "eks" {
   admin_role_arns = { tf = local.tf_role_arn }
   deploy_role_arn = local.deploy_role_arn
   addon_versions  = var.addon_versions
+
+  node_min_size     = 1
+  node_desired_size = var.node_desired_size
+  node_max_size     = var.node_desired_size + 1 # a node-group update brings a replacement up before the old node drains
 }
 
 module "events" {

@@ -189,8 +189,10 @@ jobs:
       # the suite's "compose" commands with kubectl (scale a consumer to 0 and back, read logs,
       # scrape /metrics). E2E_CLOUD=1 skips the dead letter queue count (the deploy role may not
       # read the queues) and points the low-stock Lambda test at the real CloudWatch log group
-      # (E2E_LAMBDA_LOG_GROUP, which the deploy role may read). The drills and the UI journeys are
-      # not run.
+      # (E2E_LAMBDA_LOG_GROUP, which the deploy role may read). One more cloud-only test traces an
+      # order across the services in CloudWatch with Logs Insights, on the Container Insights
+      # application log group (E2E_APP_LOG_GROUP; the deploy role may query that one group). The
+      # drills and the UI journeys are not run.
       # Steps 2 to 10 write test stock for two SKUs and place orders for e2e-* customers in dev.
       - name: E2E acceptance
         env:
@@ -210,6 +212,7 @@ jobs:
 
           E2E_K8S=1 E2E_CLOUD=1 \
           E2E_LAMBDA_LOG_GROUP=/aws/lambda/loria-low-stock-alert \
+          E2E_APP_LOG_GROUP=/aws/containerinsights/loria-retail-dev/application \
           K8S_CONTEXT="$EKS_CLUSTER" K8S_NAMESPACE="$NAMESPACE" \
           E2E_COMPOSE="$PWD/.venv/bin/python $PWD/scripts/k8s_compose.py" \
           PYTHONPATH=tests/e2e \

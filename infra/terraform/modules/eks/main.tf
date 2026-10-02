@@ -214,10 +214,6 @@ resource "aws_eks_node_group" "default" {
     max_unavailable = 1
   }
 
-  lifecycle {
-    ignore_changes = [scaling_config[0].desired_size]
-  }
-
   depends_on = [
     aws_iam_role_policy_attachment.node,
     aws_eks_addon.early,

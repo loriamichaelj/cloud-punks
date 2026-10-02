@@ -65,3 +65,15 @@ variable "monthly_budget_usd" {
   type        = number
   default     = 350
 }
+
+variable "node_desired_size" {
+  description = "Nodes in the managed group. Two since Phase 4: one node's 29 pods and 2 vCPU could not hold the app plus Container Insights, Prometheus and Grafana (measured 2 Oct 2026: 25 of 29 pods, 67% of CPU requested)."
+  type        = number
+  default     = 2
+}
+
+variable "log_retention_days" {
+  description = "Retention of the Container Insights log groups."
+  type        = number
+  default     = 7
+}

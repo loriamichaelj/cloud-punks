@@ -41,6 +41,12 @@ variable "low_stock_log_group" {
   default     = "/aws/lambda/loria-low-stock-alert"
 }
 
+variable "container_log_group" {
+  description = "Where Container Insights writes the application containers' logs. The deploy role may run Logs Insights queries on this one group so the acceptance suite can trace an order. Must match the platform stack (/aws/containerinsights/<cluster>/application)."
+  type        = string
+  default     = "/aws/containerinsights/loria-retail-dev/application"
+}
+
 variable "inventory_table_name" {
   description = "DynamoDB inventory table the db role may seed (PutItem only). Must match the name the data module creates."
   type        = string

@@ -2,7 +2,8 @@
 
 from typing import Any
 
-from cwlogs import MAX_PAGES, find_log_message
+import pytest
+from cwlogs import MAX_PAGES, find_log_message, releases_that_logged
 
 
 class FakeLogs:
@@ -54,3 +55,71 @@ def test_a_service_that_never_stops_returning_a_token_is_given_up_on() -> None:
     logs = FakeLogs([{"events": [], "nextToken": "again"}])
     assert find_log_message(logs, "g", "01ABC", since_ms=0) is None
     assert len(logs.calls) == MAX_PAGES
+
+
+class FakeInsights:
+    """start_query returns an id; get_query_results answers with the given statuses in order."""
+
+    def __init__(self, answers: list[dict[str, Any]]) -> None:
+        self.answers = answers
+        self.started: list[dict[str, Any]] = []
+        self.stopped = False
+
+    def start_query(self, **params: Any) -> dict[str, str]:
+        self.started.append(params)
+        return {"queryId": "q1"}
+
+    def get_query_results(self, queryId: str) -> dict[str, Any]:
+        return self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
+
+    def stop_query(self, queryId: str) -> None:
+        self.stopped = True
+
+
+def row(pod: str, lines: str) -> list[dict[str, str]]:
+    return [{"field": "kubernetes.pod_name", "value": pod}, {"field": "lines", "value": lines}]
+
+
+def test_pods_are_folded_into_their_releases_and_lines_are_summed() -> None:
+    logs = FakeInsights(
+        [
+            {"status": "Running", "results": []},
+            {
+                "status": "Complete",
+                "results": [
+                    row("order-service-78d4568df6-dsh4m", "3"),
+                    row("order-service-78d4568df6-sfjtx", "1"),
+                    row("inventory-consumer-7b49f77c58-65vz6", "2"),
+                ],
+            },
+        ]
+    )
+    seen = releases_that_logged(logs, "g", "e2e-corr-abc", start_s=10, end_s=20)
+    assert seen == {"order-service": 4, "inventory-consumer": 2}
+    assert logs.started[0]["startTime"] == 10
+    assert 'like "e2e-corr-abc"' in logs.started[0]["queryString"]
+
+
+def test_nothing_matched_is_an_empty_result() -> None:
+    logs = FakeInsights([{"status": "Complete", "results": []}])
+    assert releases_that_logged(logs, "g", "e2e-corr-abc", start_s=0, end_s=1) == {}
+
+
+def test_a_failed_query_is_an_error_not_an_empty_result() -> None:
+    logs = FakeInsights([{"status": "Failed", "results": []}])
+    with pytest.raises(AssertionError, match="Failed"):
+        releases_that_logged(logs, "g", "e2e-corr-abc", start_s=0, end_s=1)
+
+
+def test_a_query_that_never_finishes_is_stopped() -> None:
+    logs = FakeInsights([{"status": "Running", "results": []}])
+    with pytest.raises(AssertionError, match="did not finish"):
+        releases_that_logged(logs, "g", "e2e-corr-abc", start_s=0, end_s=1, timeout_s=0)
+    assert logs.stopped
+
+
+def test_an_id_that_could_change_the_query_is_refused() -> None:
+    logs = FakeInsights([{"status": "Complete", "results": []}])
+    with pytest.raises(ValueError, match="not a plain id"):
+        releases_that_logged(logs, "g", 'x" | stats count(*) by @log', start_s=0, end_s=1)
+    assert logs.started == []
