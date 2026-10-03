@@ -52,8 +52,9 @@ LocalStack keeps its state in memory, so after any restart of it run `make seed`
 | `ui-e2e` | Browser journeys (Playwright, headless Chromium) |
 | `drills`, `drill-<name>` | The failure drills alone (below) |
 | `dlq-peek q=<queue>-dlq`, `dlq-redrive q=<queue>-dlq` | Inspect a dead-letter queue, or move its messages back to the source queue |
-| `obs-up`, `obs-down` | Prometheus and Grafana |
-| `k8s-ingress`, `k8s-deploy`, `k8s-monitoring`, `k8s-e2e`, `k8s-resilience`, `k8s-rollback r=<release>`, `k8s-down` | The same platform on OrbStack Kubernetes (below) |
+| `obs-up`, `obs-down` | Prometheus and Grafana (Compose) |
+| `rules-test` | Unit-test the Prometheus alert rules with promtool (part of `lint`; skipped when Docker is not running) |
+| `k8s-ingress`, `k8s-deploy`, `k8s-monitoring`, `k8s-monitoring-open`, `k8s-e2e`, `k8s-resilience`, `k8s-rollback r=<release>`, `k8s-down` | The same platform on OrbStack Kubernetes (below) |
 | `openapi` | Rewrite the OpenAPI snapshots in `docs/openapi/` |
 
 The full check, from nothing:
@@ -116,17 +117,18 @@ Open <http://retail.k8s.orb.local/>. `make k8s-down` removes the releases and `m
 
 ## Running on AWS (dev)
 
-The dev environment runs in `us-east-1`: one EKS node, RDS for PostgreSQL, ElastiCache for Valkey, DynamoDB, EventBridge and SQS, behind an internal ALB. No AWS credential exists on any laptop (ADR-14). Every change is a workflow, started by hand, with an approval on the `bootstrap` or `dev` GitHub Environment. The acceptance suite (steps 1 to 10, including the low-stock Lambda, minus the dead-letter-queue count) passes against it from `app-deploy`, and `app-prepare` checks that the pods run the images ECR holds.
+The dev environment runs in `us-east-1`: two EKS nodes, RDS for PostgreSQL, ElastiCache for Valkey, DynamoDB, EventBridge and SQS, behind an internal ALB. No AWS credential exists on any laptop (ADR-14). Every change is a workflow, started by hand, with an approval on the `bootstrap` or `dev` GitHub Environment. The acceptance suite (steps 1 to 10, including the low-stock Lambda, minus the dead-letter-queue count, plus a CloudWatch trace of one order and checks that Prometheus, Alertmanager and Grafana work: 14 tests) passes against it from `app-deploy`. `app-prepare` runs the checks, builds and pushes the images, and verifies that the pods run the images ECR holds.
 
 Bring-up, in order (details and the teardown order are in `.github/workflows/README.md`):
 
 1. `bootstrap-state-bucket`, then `bootstrap-ci-roles`: the Terraform state bucket and the CI roles. Needs the one-time manual setup in `infra/terraform/README.md` (OIDC provider, bootstrap role, Environments, variables).
-2. `platform-create` (plan, then apply): network, ECR, EKS, data stores, queues, the in-VPC runner. Then store the runner's GitHub token by hand, as that README says.
-3. `addons-create`: the load balancer controller, External Secrets, the secret store.
+2. `platform-create` (plan, then apply): network, ECR, EKS (two nodes), data stores, queues, the in-VPC runner, the CloudWatch alarms and the Container Insights add-on. Set the `dev` environment secret `ALARM_EMAIL` first (an address for alarm and budget emails; confirm the subscription email AWS sends). Then store the runner's GitHub token by hand, as that README says.
+3. `addons-create`: the load balancer controller, External Secrets, the secret store, and the Role Prometheus needs.
 4. `app-database`, `app-prepare`, `app-deploy`, then `app-seed` and `app-deploy` once more (the first deploy creates the schema; the seed needs it).
-5. `app-expose` (optional): a browser view for one address, held in the `DEV_VIEWER_CIDR` environment secret.
+5. `alarms-create` (plan, then apply), once `app-deploy` has made the load balancer: the two ALB alarms.
+6. `app-expose` (optional): a browser view for one address, held in the `DEV_VIEWER_CIDR` environment secret. It also serves the Grafana dashboards at `/grafana`.
 
-Tear down in the reverse order: `app-destroy`, `addons-destroy`, `platform-destroy`. Dev costs roughly $300 a month while it runs (a list-price estimate, not measured), so destroy it when idle. Those workflows have not been run yet.
+Tear down in the reverse order: `alarms-destroy`, `app-destroy`, `addons-destroy`, `platform-destroy`. Dev costs roughly $360 a month while it runs (a list-price estimate, not measured; the budget alert is $350), so destroy it when idle. Those workflows have not been run yet.
 
-Pull requests are checked by `pr.yml` (lint, tests, image and config scans, Terraform checks, one required `ci` gate); `app-rollback.yml` and `promote.yml` exist, but neither has run, and stage and prod are not deployed. Phase 4 (observability and reliability) is built: CloudWatch alarms and logs, Prometheus, Alertmanager and a view-only Grafana with the service level indicators, and five runbooks in `docs/runbooks/`. The failure drills were skipped, so no alarm has fired in dev and the path from a failure to an email is unproven. Not built yet: HTTPS and a domain. See DESIGN.md section 13 and its open questions; what was built, what differs from the design and what went wrong on the way are in `docs/adr/README.md`, "Cloud (dev on AWS) as built".
+Pull requests are checked by `pr.yml` (lint, tests, image and config scans, Terraform checks, one required `ci` gate); `app-rollback.yml` and `promote.yml` exist, but neither has run, and stage and prod are not deployed. Phase 4 (observability and reliability) is built: CloudWatch alarms and logs, Prometheus, Alertmanager and a view-only Grafana with the service level indicators, and five runbooks in `docs/runbooks/` (start at its README: every alarm and alert maps to one). `cluster-capacity` shows how full the cluster is and which pods are unhealthy; `drills` is built and has not been run. The failure drills were skipped, so no alarm has fired in dev and the path from a failure to an email is unproven. Not built yet: HTTPS and a domain. See DESIGN.md section 13 and its open questions; what was built, what differs from the design and what went wrong on the way are in `docs/adr/README.md`, "Cloud (dev on AWS) as built".
 
