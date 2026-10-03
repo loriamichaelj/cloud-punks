@@ -1,0 +1,123 @@
+name: "Drills"
+
+# One failure drill on the dev EKS cluster (DESIGN.md sections 11 and 13): break one thing by changing
+# configuration, watch the platform notice, put it back, watch it recover. Nothing in AWS is stopped or
+# edited. Runs on the in-VPC runner as cloudbatch818-loria-retail-deploy-dev, behind the `dev` approval.
+#
+#   consumer-down  scales the inventory consumer to 0, places five orders, waits for the relay to count them
+#                  stuck and for the OrdersStuck alert to fire (about 10 minutes), then restores it.
+#   bus-down       points the order relay at a bus that does not exist, places three orders, waits for the
+#                  outbox to pile up and the OutboxLag alert to fire (about 5 minutes), then restores it.
+#
+# The test asserts what Prometheus can show. The emails the alarms and alerts send are what a person checks
+# by eye; the run summary lists the ones to expect. The orders and stock these drills change are e2e-* test
+# data in dev. Poison, duplicate, cache-down and DB-down are added in later increments of Phase 4.
+on:
+  workflow_dispatch:
+    inputs:
+      drill:
+        description: "Which failure to cause"
+        type: choice
+        required: true
+        options:
+          - consumer-down
+          - bus-down
+
+run-name: drills ${{ inputs.drill }}
+
+permissions:
+  contents: read
+  id-token: write
+
+# Shares the group with the deploy so a drill never runs during one.
+concurrency:
+  group: app-dev
+  cancel-in-progress: false
+
+env:
+  EKS_CLUSTER: loria-retail-dev
+  NAMESPACE: retail
+  DRILL: ${{ inputs.drill }}
+
+jobs:
+  drill:
+    runs-on: [self-hosted, retail-vpc]
+    environment: dev
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_DEPLOY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Point kubectl at dev and find the gateway
+        run: |
+          set -euo pipefail
+          # Always name the context explicitly.
+          aws eks update-kubeconfig --name "$EKS_CLUSTER" --alias "$EKS_CLUSTER" --region "$AWS_REGION"
+          kubectl --context "$EKS_CLUSTER" --namespace "$NAMESPACE" get deploy inventory-consumer order-relay prometheus >/dev/null
+          host=$(kubectl --context "$EKS_CLUSTER" --namespace "$NAMESPACE" get ingress gateway \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          [ -n "$host" ] || { echo "the gateway Ingress has no ALB address: run app-deploy first" >&2; exit 1; }
+          echo "E2E_GATEWAY_URL=http://${host}" >> "$GITHUB_ENV"
+
+      - name: Run the drill
+        env:
+          UV_PYTHON_DOWNLOADS: never
+        run: |
+          set -euo pipefail
+          uv sync --all-packages --locked
+          kube=(kubectl --context "$EKS_CLUSTER" --namespace "$NAMESPACE")
+
+          pids=""
+          trap 'kill $pids 2>/dev/null || true' EXIT
+          # The four APIs (assert_platform_whole checks their readiness) and Prometheus.
+          for pair in product-service:8001 inventory-service:8002 order-service:8003 notification-service:8004 prometheus:9090; do
+            "${kube[@]}" port-forward "svc/${pair%%:*}" "${pair##*:}:${pair##*:}" >/dev/null 2>&1 &
+            pids="$pids $!"
+          done
+          sleep 5
+
+          E2E_K8S=1 E2E_CLOUD=1 \
+          E2E_PROMETHEUS_URL=http://localhost:9090 \
+          K8S_CONTEXT="$EKS_CLUSTER" K8S_NAMESPACE="$NAMESPACE" \
+          E2E_COMPOSE="$PWD/.venv/bin/python $PWD/scripts/k8s_compose.py" \
+          PYTHONPATH=tests/e2e:scripts \
+            uv run --frozen --no-sync pytest tests/e2e/test_cloud_drills.py \
+              -k "cloud_drill_${DRILL//-/_}" -q
+
+      # The drill restores what it changed in a `finally`. This step is the net under that, for a runner that
+      # was cancelled or killed: it removes the override and scales the consumer back, and does nothing if
+      # there is nothing to put back.
+      - name: Put everything back
+        if: always()
+        run: |
+          set +e
+          kube=(kubectl --context "$EKS_CLUSTER" --namespace "$NAMESPACE")
+          "${kube[@]}" set env deploy/order-relay EVENT_BUS_NAME-
+          desired=$("${kube[@]}" get deploy inventory-consumer -o jsonpath='{.metadata.annotations.retail\.io/desired-replicas}')
+          "${kube[@]}" scale deploy/inventory-consumer --replicas="${desired:-1}"
+          for d in inventory-consumer order-relay; do "${kube[@]}" rollout status "deploy/$d" --timeout=180s; done
+          "${kube[@]}" get deploy inventory-consumer order-relay
+
+      - name: What to look for in the inbox
+        if: always()
+        run: |
+          case "$DRILL" in
+            consumer-down)
+              expect="- CloudWatch alarm \`loria-retail-dev-queue-age-to-inventory\` (ALARM a few minutes after the consumer stops, then OK)
+          - Prometheus alert \`OrdersStuck\` through Alertmanager (about 8 minutes in, then resolved)" ;;
+            bus-down)
+              expect="- Prometheus alert \`OutboxLag\` through Alertmanager (a few minutes in, then resolved)" ;;
+          esac
+          {
+            echo "### Drill \`${DRILL}\`: emails to expect on the SNS topic"
+            echo
+            echo "$expect"
+            echo
+            echo "A missing email means that link of the chain (rule, Alertmanager, SNS, subscription) is broken."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -58,7 +58,7 @@ test: sync
 	@echo "pytest scripts"
 	@PYTHONPATH=scripts $(RUN) pytest scripts/tests -q
 	@echo "pytest e2e helpers"
-	@PYTHONPATH=tests/e2e $(RUN) pytest tests/e2e/test_cwlogs.py -q
+	@PYTHONPATH=tests/e2e:scripts $(RUN) pytest tests/e2e/test_cwlogs.py tests/e2e/test_cloud_helpers.py -q
 	@echo "pytest functions/low-stock-alert"
 	@$(RUN) pytest functions/low-stock-alert/tests -q
 	@$(MAKE) --no-print-directory ui-test
