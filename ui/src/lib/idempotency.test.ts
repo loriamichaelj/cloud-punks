@@ -32,6 +32,15 @@ describe('idempotency key lifecycle', () => {
     expect(keyFor('c|x')).toMatch(/^[A-Za-z0-9._:-]{1,64}$/);
   });
 
+  it('still returns a valid key where randomUUID is unavailable (plain http)', () => {
+    vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) });
+    try {
+      expect(keyFor('c|insecure')).toMatch(/^[A-Za-z0-9._:-]{1,64}$/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('ignores a corrupt stored attempt', () => {
     window.localStorage.setItem(ATTEMPT_KEY, '{"fingerprint":1}');
     expect(keyFor('c|x')).toMatch(/^[0-9a-f-]{36}$/);

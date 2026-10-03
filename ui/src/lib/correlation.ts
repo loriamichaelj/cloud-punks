@@ -3,7 +3,8 @@
 
 export const CORRELATION_HEADER = 'X-Correlation-ID';
 
-export function newCorrelationId(): string {
+/** A random id that is safe in a header: a UUID, or 32 hex characters where randomUUID is missing. */
+export function randomId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
   }
@@ -11,4 +12,8 @@ export function newCorrelationId(): string {
   const bytes = new Uint8Array(16);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+export function newCorrelationId(): string {
+  return randomId();
 }

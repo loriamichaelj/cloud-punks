@@ -2,6 +2,7 @@
 // is reused on retry, refresh, network error and 503, so a double submit creates one order. A
 // changed basket gets a new key: reusing the old one would be 422 IDEMPOTENCY_KEY_REUSED.
 
+import { randomId } from './correlation';
 import { readJson, removeKey, writeJson } from './storage';
 
 export const ATTEMPT_KEY = 'retail.checkout.v1';
@@ -18,7 +19,7 @@ function isAttempt(value: unknown): value is Attempt {
 }
 
 function newKey(): string {
-  return crypto.randomUUID();
+  return randomId();
 }
 
 /** The key for this basket: the stored one if the basket is unchanged, otherwise a fresh one. */
