@@ -386,6 +386,15 @@ jobs:
             repo="${ref%%:*}"
             tag="${ref##*:}"
             running="${image_id##*@}"    # sha256:...
+            # Only our own images are in ECR. The monitoring release runs upstream images (Prometheus,
+            # Alertmanager, Grafana), pinned by tag in its chart: list them, but there is nothing to compare.
+            case "$repo" in
+              loria-retail/*) ;;
+              *)
+                echo "| \`${pod}\` | \`${repo}:${tag:0:11}…\` | \`${running:0:19}\` | not from ECR | third party |" >> "$report"
+                continue
+                ;;
+            esac
             ecr=$(aws ecr describe-images --repository-name "$repo" --image-ids "imageTag=${tag}" \
               --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || echo "MISSING")
             if [ "$ecr" = "$running" ]; then verdict="match"; else verdict="**MISMATCH**"; problems=$((problems + 1)); fi
@@ -400,7 +409,8 @@ jobs:
             echo "| --- | --- | --- |"
           } >> "$report"
           tags="${RUNNER_TEMP}/tags.txt"
-          cut -f2 "$pods" | sed 's/.*://' | sort -u > "$tags"
+          # Only our own images carry a sha-<commit> tag to compare with the code.
+          grep -F 'loria-retail/' "$pods" | cut -f2 | sed 's/.*://' | sort -u > "$tags"
           while read -r tag; do
             commit="${tag#sha-}"
             if ! git cat-file -e "${commit}^{commit}" 2>/dev/null; then
