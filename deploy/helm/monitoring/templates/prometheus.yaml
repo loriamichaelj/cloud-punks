@@ -35,7 +35,7 @@ spec:
       labels: {{- include "monitoring.labels" (dict "root" . "name" "prometheus") | nindent 8 }}
       annotations:
         # A changed scrape config restarts the pod: Prometheus is not told to reload.
-        checksum/config: {{ include (print $.Template.BasePath "/prometheus-config.yaml") . | sha256sum }}
+        checksum/config: {{ cat (include (print $.Template.BasePath "/prometheus-config.yaml") .) (include (print $.Template.BasePath "/prometheus-rules.yaml") .) | sha256sum }}
     spec:
       serviceAccountName: prometheus
       securityContext:
@@ -71,9 +71,12 @@ spec:
           securityContext: {{- include "monitoring.containerSecurityContext" . | nindent 12 }}
           volumeMounts:
             - { name: config, mountPath: /etc/prometheus, readOnly: true }
+            - { name: rules, mountPath: /etc/prometheus/rules, readOnly: true }
             - { name: data, mountPath: /prometheus }
       volumes:
         - name: config
           configMap: { name: prometheus-config }
+        - name: rules
+          configMap: { name: prometheus-rules }
         - name: data
           emptyDir: {}

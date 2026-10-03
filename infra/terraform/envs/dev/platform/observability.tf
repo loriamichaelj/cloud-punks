@@ -96,3 +96,32 @@ resource "aws_cloudwatch_query_definition" "trace_correlation_id" {
     | limit 200
   EOT
 }
+
+# --- Alertmanager (P4.4) -----------------------------------------------------------------------------
+# Publishes the Prometheus alerts to the same SNS topic the CloudWatch alarms use. The monitoring chart
+# runs it as the ServiceAccount `alertmanager` in the app namespace; the topic is encrypted, so the role
+# needs the key as well as sns:Publish.
+
+data "aws_iam_policy_document" "alertmanager" {
+  statement {
+    sid       = "PublishAlerts"
+    actions   = ["sns:Publish"]
+    resources = [module.monitoring.topic_arn]
+  }
+
+  statement {
+    sid       = "UseTheTopicKey"
+    actions   = ["kms:GenerateDataKey*", "kms:Decrypt"]
+    resources = [module.monitoring.topic_kms_key_arn]
+  }
+}
+
+module "alertmanager_role" {
+  source = "../../../modules/pod-identity-role"
+
+  role_name       = "${local.workload_iam}-alertmanager"
+  cluster_name    = var.cluster_name
+  namespace       = local.app_namespace
+  service_account = "alertmanager"
+  policy_json     = data.aws_iam_policy_document.alertmanager.json
+}

@@ -1,0 +1,81 @@
+# promtool unit tests for retail.yml: `make rules-test`. Each alert is shown to fire on the condition it is
+# for and to stay quiet on the nearest condition that is fine.
+rule_files:
+  - retail.yml
+
+evaluation_interval: 15s
+
+tests:
+  - interval: 15s
+    name: an outbox row older than a minute for a minute fires OutboxLag
+    input_series:
+      - series: outbox_oldest_unpublished_age_seconds{service="order-relay"}
+        values: "0+10x40" # 0, 10, 20 ... 400 seconds old, one step each 15 s
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: OutboxLag # 60 s is not above 60 yet
+        exp_alerts: []
+      - eval_time: 3m # old enough for over a minute now
+        alertname: OutboxLag
+        exp_alerts:
+          - exp_labels: { severity: page, service: order-relay }
+            exp_annotations:
+              summary: "The oldest unpublished outbox row is 2m 0s old"
+              runbook: docs/runbooks/outbox-lag.md
+
+  - interval: 15s
+    name: a draining outbox does not fire
+    input_series:
+      - series: outbox_oldest_unpublished_age_seconds{service="order-relay"}
+        values: "5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: OutboxLag
+        exp_alerts: []
+
+  - interval: 15s
+    name: stuck orders fire after two minutes, and NaN does not fire
+    input_series:
+      - series: orders_stuck{service="order-relay"}
+        values: "0 0 3x20"
+      - series: orders_stuck{service="order-relay-db-down"}
+        values: "NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: OrdersStuck
+        exp_alerts:
+          - exp_labels: { severity: page, service: order-relay }
+            exp_annotations:
+              summary: "3 orders have been PENDING for over five minutes"
+              runbook: docs/runbooks/stuck-queue.md
+
+  - interval: 1m
+    name: four restarts in ten minutes fire, three do not
+    input_series:
+      # the start time changes at each restart
+      - series: process_start_time_seconds{job="retail", service="order-consumer", pod="order-consumer-a"}
+        values: "100 100 200 300 400 500 500 500 500 500 500 500"
+      - series: process_start_time_seconds{job="retail", service="inventory-consumer", pod="inventory-consumer-a"}
+        values: "100 100 200 300 400 400 400 400 400 400 400 400"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: PodRestartingRepeatedly
+        exp_alerts:
+          - exp_labels: { severity: page, job: retail, service: order-consumer, pod: order-consumer-a }
+            exp_annotations:
+              summary: "order-consumer (order-consumer-a) restarted 4 times in 10 minutes"
+              runbook: docs/runbooks/unhealthy-pods.md
+
+  - interval: 15s
+    name: an unreachable target fires after two minutes
+    input_series:
+      - series: up{job="retail", service="product-service", pod="product-service-a"}
+        values: "1 1 0x20"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: TargetDown
+        exp_alerts:
+          - exp_labels: { severity: page, job: retail, service: product-service, pod: product-service-a }
+            exp_annotations:
+              summary: "product-service (product-service-a) cannot be scraped"
+              runbook: docs/runbooks/unhealthy-pods.md

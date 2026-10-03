@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-rules
+  labels: {{- include "monitoring.labels" (dict "root" . "name" "prometheus") | nindent 4 }}
+data:
+{{- range $path, $_ := .Files.Glob "rules/retail.yml" }}
+  {{ base $path }}: |-
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}

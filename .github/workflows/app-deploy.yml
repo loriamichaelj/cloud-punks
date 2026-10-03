@@ -148,9 +148,13 @@ jobs:
 
           # Prometheus and Grafana. Last, so a problem here never blocks the application. The Role
           # Prometheus needs comes from the cluster-addons stack (addons-create.yml), not from this chart.
-          echo "== monitoring (Prometheus and Grafana)"
+          # Alertmanager publishes to the topic the CloudWatch alarms use; its ARN is built here so the
+          # account id stays out of the repository.
+          echo "== monitoring (Prometheus, Alertmanager and Grafana)"
           "${helm_cmd[@]}" upgrade --install --rollback-on-failure --wait --timeout 6m \
-            monitoring deploy/helm/monitoring
+            monitoring deploy/helm/monitoring \
+            --set "alertmanager.snsTopicArn=arn:aws:sns:${AWS_REGION}:${account_id}:loria-retail-dev-alarms" \
+            --set "alertmanager.region=${AWS_REGION}"
 
           "${kube[@]}" get pods
 
@@ -198,8 +202,8 @@ jobs:
       # (E2E_LAMBDA_LOG_GROUP, which the deploy role may read). One more cloud-only test traces an
       # order across the services in CloudWatch with Logs Insights, on the Container Insights
       # application log group (E2E_APP_LOG_GROUP; the deploy role may query that one group). Two
-      # more check the monitoring release: Prometheus scrapes every process, and Grafana is up with
-      # its dashboard. The drills and the UI journeys are not run.
+      # more check the monitoring release: Prometheus scrapes every process and has its alert rules
+      # wired to Alertmanager, and Grafana is up with its dashboard. The drills and the UI journeys are not run.
       # Steps 2 to 10 write test stock for two SKUs and place orders for e2e-* customers in dev.
       - name: E2E acceptance
         env:
@@ -211,7 +215,7 @@ jobs:
 
           pids=""
           trap 'kill $pids 2>/dev/null || true' EXIT
-          for pair in product-service:8001 inventory-service:8002 order-service:8003 notification-service:8004 prometheus:9090 grafana:3000; do
+          for pair in product-service:8001 inventory-service:8002 order-service:8003 notification-service:8004 prometheus:9090 alertmanager:9093 grafana:3000; do
             "${kube[@]}" port-forward "svc/${pair%%:*}" "${pair##*:}:${pair##*:}" >/dev/null 2>&1 &
             pids="$pids $!"
           done
@@ -221,6 +225,7 @@ jobs:
           E2E_LAMBDA_LOG_GROUP=/aws/lambda/loria-low-stock-alert \
           E2E_APP_LOG_GROUP=/aws/containerinsights/loria-retail-dev/application \
           E2E_PROMETHEUS_URL=http://localhost:9090 \
+          E2E_ALERTMANAGER_URL=http://localhost:9093 \
           E2E_GRAFANA_URL=http://localhost:3000 \
           K8S_CONTEXT="$EKS_CLUSTER" K8S_NAMESPACE="$NAMESPACE" \
           E2E_COMPOSE="$PWD/.venv/bin/python $PWD/scripts/k8s_compose.py" \

@@ -31,6 +31,7 @@ LAMBDA_LOG_GROUP = os.environ.get("E2E_LAMBDA_LOG_GROUP", "/aws/lambda/low-stock
 # Prometheus and Grafana of the monitoring release, port-forwarded by app-deploy (the cloud only).
 PROMETHEUS_URL = os.environ.get("E2E_PROMETHEUS_URL", "http://localhost:9090")
 GRAFANA_URL = os.environ.get("E2E_GRAFANA_URL", "http://localhost:3000")
+ALERTMANAGER_URL = os.environ.get("E2E_ALERTMANAGER_URL", "http://localhost:9093")
 # Where Container Insights writes the application containers' logs (the cloud only).
 APP_LOG_GROUP = os.environ.get(
     "E2E_APP_LOG_GROUP", "/aws/containerinsights/loria-retail-dev/application"
@@ -316,3 +317,17 @@ def test_cloud_grafana_serves_the_dashboard_view_only() -> None:
     )
     write = httpx2.post(f"{GRAFANA_URL}/grafana/api/folders", json={"title": "x"}, timeout=10)
     assert write.status_code == 403, write.text
+
+
+@pytest.mark.skipif(not E2E_CLOUD, reason="the monitoring release runs only in the cloud cluster")
+def test_cloud_alert_rules_are_loaded_and_alertmanager_is_connected() -> None:
+    """P4.4: the four rules are in Prometheus and healthy, and Prometheus reaches a ready Alertmanager."""
+    rules = httpx2.get(f"{PROMETHEUS_URL}/api/v1/rules", timeout=10).json()["data"]["groups"]
+    loaded = {rule["name"]: rule for group in rules for rule in group["rules"]}
+    assert {"OutboxLag", "OrdersStuck", "PodRestartingRepeatedly", "TargetDown"} <= loaded.keys()
+    assert all(rule["health"] == "ok" for rule in loaded.values()), loaded
+
+    managers = httpx2.get(f"{PROMETHEUS_URL}/api/v1/alertmanagers", timeout=10).json()["data"]
+    assert managers["activeAlertmanagers"], "Prometheus has no Alertmanager to send to"
+
+    assert httpx2.get(f"{ALERTMANAGER_URL}/-/ready", timeout=10).status_code == 200

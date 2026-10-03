@@ -8,6 +8,16 @@ prometheus:
     requests: { cpu: 100m, memory: 256Mi }
     limits: { memory: 512Mi }
 
+alertmanager:
+  image: quay.io/prometheus/alertmanager:v0.34.1
+  # The SNS topic the CloudWatch alarms use; app-deploy.yml passes it (the account id stays out of the
+  # repository). Empty, as locally, means Alertmanager runs and shows alerts but notifies nobody.
+  snsTopicArn: ""
+  region: us-east-1
+  resources:
+    requests: { cpu: 25m, memory: 64Mi }
+    limits: { memory: 128Mi }
+
 grafana:
   image: docker.io/grafana/grafana:13.2.3
   # Where the viewer ALB sends it (the "App: expose" Ingress routes this path to the grafana Service).

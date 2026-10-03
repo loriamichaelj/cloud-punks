@@ -6,3 +6,8 @@ output "topic_arn" {
 output "alarm_names" {
   value = sort([for a in aws_cloudwatch_metric_alarm.this : a.alarm_name])
 }
+
+output "topic_kms_key_arn" {
+  description = "The key that encrypts the topic. A publisher needs kms:GenerateDataKey on it as well as sns:Publish."
+  value       = aws_kms_key.alarms.arn
+}

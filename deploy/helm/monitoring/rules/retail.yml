@@ -1,0 +1,44 @@
+# Alert rules for the retail platform (DESIGN.md section 13, Phase 4). Plain YAML on purpose: the chart
+# ships this file in a ConfigMap, and rules/retail_test.yml unit-tests the same file with promtool.
+# Alertmanager sends what fires here to the SNS alarm topic, so it arrives with the CloudWatch alarms.
+# Each alert names the runbook to open (docs/runbooks/).
+groups:
+  - name: retail
+    rules:
+      # The oldest event waiting in the order outbox is older than the relay should ever leave it: the
+      # relay is down, or the bus is unreachable. Orders are still accepted (the outbox holds them).
+      - alert: OutboxLag
+        expr: outbox_oldest_unpublished_age_seconds > 60
+        for: 1m
+        labels: { severity: page }
+        annotations:
+          summary: "The oldest unpublished outbox row is {{ $value | humanizeDuration }} old"
+          runbook: docs/runbooks/outbox-lag.md
+
+      # Orders PENDING for over five minutes (counted by the relay's sweeper): a consumer is down or the
+      # saga is stuck. The gauge is NaN when the database cannot be read, which does not fire this.
+      - alert: OrdersStuck
+        expr: orders_stuck > 0
+        for: 2m
+        labels: { severity: page }
+        annotations:
+          summary: "{{ $value }} orders have been PENDING for over five minutes"
+          runbook: docs/runbooks/stuck-queue.md
+
+      # A process that restarted more than three times in ten minutes: a crash loop, or a kill loop from a
+      # failing probe. Read from the process's own start time, so no cluster metrics are needed.
+      - alert: PodRestartingRepeatedly
+        expr: changes(process_start_time_seconds{job="retail"}[10m]) > 3
+        labels: { severity: page }
+        annotations:
+          summary: "{{ $labels.service }} ({{ $labels.pod }}) restarted {{ $value }} times in 10 minutes"
+          runbook: docs/runbooks/unhealthy-pods.md
+
+      # Prometheus cannot scrape a process for two minutes: it is down, not ready, or unreachable.
+      - alert: TargetDown
+        expr: up{job="retail"} == 0
+        for: 2m
+        labels: { severity: page }
+        annotations:
+          summary: "{{ $labels.service }} ({{ $labels.pod }}) cannot be scraped"
+          runbook: docs/runbooks/unhealthy-pods.md

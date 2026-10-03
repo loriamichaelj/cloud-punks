@@ -16,7 +16,7 @@ export IMAGE_TAG
 
 RUN = uv run --frozen --no-sync
 
-.PHONY: k8s-monitoring help lock sync fmt lint test itest e2e drills drill-consumer-down drill-poison drill-duplicate drill-bus-down drill-cache-down drill-db-down dlq-peek dlq-redrive obs-up obs-down k8s-lint k8s-build k8s-build-multiarch k8s-secrets k8s-ingress k8s-deploy k8s-e2e k8s-resilience k8s-rollback k8s-down up down reset logs seed openapi ui-install ui-dev ui-types ui-lint ui-typecheck ui-test ui-build ui-e2e ui-types-check openapi-check
+.PHONY: rules-test k8s-monitoring help lock sync fmt lint test itest e2e drills drill-consumer-down drill-poison drill-duplicate drill-bus-down drill-cache-down drill-db-down dlq-peek dlq-redrive obs-up obs-down k8s-lint k8s-build k8s-build-multiarch k8s-secrets k8s-ingress k8s-deploy k8s-e2e k8s-resilience k8s-rollback k8s-down up down reset logs seed openapi ui-install ui-dev ui-types ui-lint ui-typecheck ui-test ui-build ui-e2e ui-types-check openapi-check
 
 help:
 	@echo "Targets: lock sync fmt lint test itest e2e up down reset logs s=<service> seed openapi ui-*"
@@ -46,7 +46,7 @@ lint: sync
 		$(RUN) mypy --config-file pyproject.toml --cache-dir .mypy_cache/$$s services/$$s/app || exit 1; \
 	done
 	$(RUN) mypy --config-file pyproject.toml --cache-dir .mypy_cache/functions functions/low-stock-alert/handler.py
-	@$(MAKE) --no-print-directory openapi-check ui-types-check ui-lint ui-typecheck ui-build k8s-lint
+	@$(MAKE) --no-print-directory openapi-check ui-types-check ui-lint ui-typecheck ui-build k8s-lint rules-test
 
 test: sync
 	@echo "pytest libs/common (coverage gate: 80%)"
@@ -201,6 +201,14 @@ k8s-deploy: k8s-build k8s-secrets
 	$(HELM) upgrade --install --rollback-on-failure --wait --timeout 3m gateway $(CHART) -f $(HV)/values-ingress-local.yaml
 	$(KUBECTL) get pods
 	@echo "Open http://retail.k8s.orb.local/  (make seed if LocalStack was restarted; make k8s-e2e to verify)"
+
+# Unit tests for the Prometheus alert rules, with promtool from the pinned Prometheus image. Needs Docker;
+# without it the tests are skipped with a message (CI has Docker and runs them).
+PROMETHEUS_IMAGE := quay.io/prometheus/prometheus:v3.15.0
+rules-test:
+	@if docker info >/dev/null 2>&1; then \
+		docker run --rm -v "$(CURDIR)/deploy/helm/monitoring/rules:/r:ro" --entrypoint promtool $(PROMETHEUS_IMAGE) test rules /r/retail_test.yml || exit 1; \
+	else echo "docker is not running: alert rules were not unit-tested"; fi
 
 # Prometheus and Grafana on the local cluster, scraping the pods `k8s-deploy` started. Grafana is at
 # http://localhost:13000/grafana/ while `make k8s-monitoring-open` runs (a port-forward).

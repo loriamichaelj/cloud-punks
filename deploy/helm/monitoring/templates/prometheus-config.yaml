@@ -9,6 +9,14 @@ data:
       scrape_interval: {{ .Values.prometheus.scrapeInterval }}
       evaluation_interval: {{ .Values.prometheus.scrapeInterval }}
 
+    rule_files:
+      - /etc/prometheus/rules/*.yml
+
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets: ["alertmanager:9093"]
+
     scrape_configs:
       # Every running application pod that exposes a port named http: the APIs serve /metrics on their
       # service port, the consumers and the relay on the side port 9000. The `service` label is the

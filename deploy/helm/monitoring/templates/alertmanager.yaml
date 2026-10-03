@@ -1,0 +1,78 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alertmanager
+  labels: {{- include "monitoring.labels" (dict "root" . "name" "alertmanager") | nindent 4 }}
+# Pod Identity injects its own token; the pod needs no Kubernetes API access.
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  labels: {{- include "monitoring.labels" (dict "root" . "name" "alertmanager") | nindent 4 }}
+spec:
+  selector: {{- include "monitoring.selector" (dict "root" . "name" "alertmanager") | nindent 4 }}
+  ports:
+    - name: http
+      port: 9093
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  labels: {{- include "monitoring.labels" (dict "root" . "name" "alertmanager") | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {{- include "monitoring.selector" (dict "root" . "name" "alertmanager") | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "monitoring.labels" (dict "root" . "name" "alertmanager") | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/alertmanager-config.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: alertmanager
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: alertmanager
+          image: {{ .Values.alertmanager.image | quote }}
+          args:
+            - --config.file=/etc/alertmanager/alertmanager.yml
+            - --storage.path=/alertmanager
+            - --web.listen-address=:9093
+            # One replica: no gossip cluster, so no second port and no peers to look for.
+            - --cluster.listen-address=
+          ports:
+            - name: http
+              containerPort: 9093
+          startupProbe:
+            httpGet: { path: /-/ready, port: http }
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: { path: /-/ready, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /-/healthy, port: http }
+            periodSeconds: 10
+            failureThreshold: 6
+          resources: {{- toYaml .Values.alertmanager.resources | nindent 12 }}
+          securityContext: {{- include "monitoring.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - { name: config, mountPath: /etc/alertmanager, readOnly: true }
+            - { name: data, mountPath: /alertmanager }
+      volumes:
+        - name: config
+          configMap: { name: alertmanager-config }
+        - name: data
+          emptyDir: {}
