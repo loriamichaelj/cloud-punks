@@ -5,6 +5,8 @@ name: "Cluster: capacity"
 #   - pods per namespace, against the pods each node allows
 #   - CPU and memory requested by all pods, against what each node can allocate
 #   - what the nodes and the heaviest pods actually use right now (metrics-server)
+#   - which pods are not Ready or have restarted, and the recent warning events (the first thing
+#     docs/runbooks/unhealthy-pods.md asks for)
 # Changes nothing. Runs on the in-VPC runner as cloudbatch818-loria-retail-tf-dev, because the deploy
 # role's cluster access stops at the `retail` namespace and this needs nodes and every namespace; one job,
 # one approval from the `dev` environment's reviewer.
@@ -68,6 +70,25 @@ jobs:
               echo "== ${node}"
               "${kube[@]}" describe node "$node" | awk '/^Allocated resources:/ {on=1} /^Events:/ {on=0} on && /^ +(cpu|memory|Resource|--------)/'
             done
+            echo '```'
+            echo
+            echo "### Pods that are not Ready, or have restarted"
+            echo
+            echo '```'
+            "${kube[@]}" get pods -A -o json | jq -r '
+              .items[]
+              | . as $p
+              | ([$p.status.containerStatuses[]? | select(.ready | not)] | length) as $notready
+              | ([$p.status.containerStatuses[]?.restartCount] | add // 0) as $restarts
+              | select($p.status.phase != "Running" or $notready > 0 or $restarts > 0)
+              | "\($p.metadata.namespace)/\($p.metadata.name)  phase=\($p.status.phase)  notReady=\($notready)  restarts=\($restarts)  last=\([$p.status.containerStatuses[]? | (.lastState.terminated.reason // .state.waiting.reason // "")] | map(select(. != "")) | join(","))"' | sed 's/  last=$//'
+            [ "${PIPESTATUS[1]}" -eq 0 ] || true
+            echo '```'
+            echo
+            echo "### Warning events, newest last"
+            echo
+            echo '```'
+            "${kube[@]}" get events -A --field-selector type=Warning --sort-by=.lastTimestamp 2>&1 | tail -n 25
             echo '```'
             echo
             echo "### In use right now"
