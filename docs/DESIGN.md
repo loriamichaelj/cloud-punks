@@ -1,6 +1,6 @@
 # Retail Microservices Platform — Design Doc
 
-Author: M.L. · Status: M0–M10 built (Phase 1 complete); Phase 2 built and running in dev on AWS (2 Oct 2026); Phase 3 built (2 Oct 2026, release v0.1.0); Phase 4 not started. Change history and as-built notes: `docs/adr/README.md`.
+Author: M.L. · Status: M0–M10 built (Phase 1 complete); Phase 2 built and running in dev on AWS (2 Oct 2026); Phase 3 built (2 Oct 2026, release v0.1.0); Phase 4 built and applied in dev (3 Oct 2026, release v0.1.5) except that the failure drills were skipped, so its exit criterion is not met. Change history and as-built notes: `docs/adr/README.md`.
 
 ## 1. Overview
 
@@ -29,7 +29,7 @@ We build a four-service retail order platform that runs end-to-end on localhost 
 | 1c — Local Kubernetes (OrbStack) | Helm chart for every process including the UI, probes, HPA, ingress, rollback on the local cluster | Day 3 (morning) | Same test (API acceptance and UI journeys) passes via local ingress; `helm rollback` demonstrated |
 | 2 — Cloud infra, built through CI (built 2 Oct 2026) | Manual OIDC provider + `cloudbatch818-loria-retail-bootstrap` role; `bootstrap-state-bucket.yml`, `bootstrap-ci-roles.yml`; minimal `platform-create.yml`; Terraform, ECR, EKS, in-VPC runners; the 1b chart with dev values. No AWS access exists outside GitHub Actions (ADR-14) | Day 3 | Same test passes against the EKS ingress, run from a workflow. **Met:** `app-deploy.yml` runs the acceptance suite through the dev ALB (10 passed, none skipped; the dead-letter-queue count inside step 9 is not checked in the cloud) |
 | 3 — CI/CD (built 2 Oct 2026) | `pr.yml` with one required `ci` gate, Trivy image and config scans, Checkov, tflint, actionlint; protected `stage` and `prod` branches and Environments; `promote.yml`; `app-rollback.yml`; release `v0.1.0`. The deploy and destroy workflows already exist from Phase 2. No push trigger for the deploy (decided) | Day 4 | **Met in part:** a pull request is gated by `ci` (shown red, then green, on PR #1). Not demonstrated: `app-rollback.yml` has never run, and `promote.yml` has never run because stage and prod are not deployed |
-| 4 — Reliability (scoped 2 Oct 2026, P4.1 to P4.7 in section 13) | Dashboards, SLOs, alarms, failure drills, runbooks | Day 5 | Each drill in section 11 detected and recovered |
+| 4 — Reliability (built 2 to 3 Oct 2026, P4.1 to P4.7 in section 13) | Dashboards, SLOs, alarms, failure drills, runbooks. Built: 19 CloudWatch alarms, Container Insights logs, Prometheus, Alertmanager and a view-only Grafana with the four SLIs, five runbooks. A second node. `drills.yml` (consumer-down, bus-down) is built; the other four drills are not | Day 5 | **Not met:** each drill in section 11 detected and recovered. The drills were skipped (owner's decision, 3 Oct 2026), so no alarm or alert has fired in dev and the path from a failure to an email is unproven. Met: the logs trace one order across the services in CloudWatch, Prometheus scrapes all eight processes, and the cloud acceptance suite passes 14 of 14 |
 
 This document is detailed for Phase 1 and gives forward-compatible contracts for Phases 2–4 so nothing built locally has to be rewritten.
 
@@ -493,7 +493,7 @@ retail-platform/
 ├── docs/
 │   ├── DESIGN.md                 # this document
 │   ├── adr/                      # one file per ADR when decisions change
-│   └── runbooks/                 # Phase 4
+│   └── runbooks/                 # Phase 4 (P4.6): five runbooks and an index
 ├── libs/common/                  # installable package: retail_common
 │   └── retail_common/
 │       ├── config.py             # BaseServiceSettings, AwsSettings
@@ -695,7 +695,7 @@ Phase 1 is complete when M10 (local Kubernetes) is done. Only then start Phase 2
 
 ## 13. Phases 2–4: cloud, CI/CD, reliability
 
-These are contracts Phase 1 must not violate, not a full spec; each phase gets its own design pass before build. Items marked **verify** depend on current AWS versions or pricing. **Provisional:** Phases 3 and 4 are still contracts. Phase 2 is built (below); the remote repo holds the dev environment only.
+These are contracts Phase 1 must not violate, not a full spec; each phase gets its own design pass before build. Items marked **verify** depend on current AWS versions or pricing. Phases 2, 3 and 4 are built (below); the remote repo deploys the dev environment only, and Phase 4's failure drills were not run.
 
 ### Phase 2 — Bootstrap, Terraform, ECR, EKS, Helm, all through CI (Day 3)
 
@@ -760,6 +760,8 @@ Terraform references the OIDC provider with a `data` source (an account can hold
 Non-negotiables: each OIDC trust policy is pinned to an exact `sub` (`environment:<env>`; never a wildcard or `ref:*`); third-party actions pinned by commit SHA; branch protection: `stage` and `prod` accept only a pull request with one approving review (stale approvals dismissed, the last pusher cannot approve) and a passing, up-to-date `ci`, for admins too, with no force push or deletion; `dev` blocks force pushes and deletion only, so the owner pushes to it directly and the `dev` Environment gate is the control on what reaches AWS (the `stage` and `prod` Environments accept only their own branch and need a reviewer); no long-lived AWS keys in GitHub; self-hosted runners never serve `pull_request` or fork code (public repo). Rollback = `app-rollback.yml` (`helm rollback <release> <revision>`) or redeploy the previous digest; works only because migrations are expand/contract (section 5).
 
 ### Phase 4 — Observability and reliability (Day 5)
+
+**Status: built and applied in dev (2 to 3 Oct 2026), release v0.1.5, with one exit criterion not met.** What exists: the `monitoring` module (SNS topic with its own key, 17 CloudWatch alarms, a $350 budget alert), the `alb-alarms` stack (2 alarms), a second node, the CloudWatch Observability add-on with 7-day log groups and a saved trace query, the `monitoring` chart (Prometheus, Alertmanager, a view-only Grafana at `/grafana` on the viewer ALB, the four SLIs as headline panels, four alert rules unit-tested with promtool), `cluster-capacity.yml`, `drills.yml`, and five runbooks with an index and a test that keeps them in step. The cloud acceptance suite is 14 tests. **Not met:** "each drill in section 11 detected and recovered". The drills were skipped, so nothing has fired in dev; the failure-to-email path is configured, subscribed and unit-tested, never exercised; the runbooks are written from the design, not from a drill. What went wrong and what was learned on the way is in `docs/adr/README.md`, "Observability and reliability as built (Phase 4)". The scope and decisions follow.
 
 | SLI | SLO (28-day) | Source |
 | --- | --- | --- |
@@ -849,13 +851,14 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 - [x] Visual design: decided 1 Oct 2026, a light colourful theme with product art; see `docs/adr/README.md`.
 - [ ] Later hosting: serve the static files from S3 + CloudFront instead of a container? Not before the cloud strategy pass.
 - [ ] Should `reserved` stock ever be released or committed? This design never releases (no cancellation). Needed before adding cancellations in a later week.
-- [x] Pipeline, cloud and Terraform strategy: decided and built for dev (Phase 2); the choices are in `docs/adr/README.md`. Phases 3 and 4 remain provisional.
-- [ ] Budget ceiling for the week's AWS spend (EKS control plane, NAT, RDS, ElastiCache run 24/7; one node and RDS instead of Aurora are decided). Decides single-NAT, instance sizes, and whether to destroy dev nightly. A rough list-price estimate for what is built (not measured) is about $300 a month, about $10 a day, in `docs/adr/README.md`.
+- [x] Pipeline, cloud and Terraform strategy: decided and built for dev (Phase 2); the choices are in `docs/adr/README.md`. Phases 3 and 4 are built for dev too.
+- [x] Budget ceiling: an AWS Budgets alert at $350 a month with a forecast warning (3 Oct 2026). The estimate for what runs 24/7 is now about $360 a month (the second node), so it warns until dev is destroyed when idle. The original question: Budget ceiling for the week's AWS spend (EKS control plane, NAT, RDS, ElastiCache run 24/7; one node and RDS instead of Aurora are decided). Decides single-NAT, instance sizes, and whether to destroy dev nightly. A rough list-price estimate for what is built (not measured) is about $300 a month, about $10 a day, in `docs/adr/README.md`.
 - [x] The low-stock Lambda in the cloud: built 2 Oct 2026 in the `events` module, packaged by `scripts/package_lambda.py` (no `archive` provider); the cloud acceptance suite checks it.
 - [ ] Database TLS: dev uses `DB_SSLMODE=require`. `verify-full` needs the RDS CA bundle in the images.
 - [ ] A Valkey AUTH token (it has TLS and a security-group limit now), pinned EKS add-on versions and a pinned PostgreSQL minor.
 - [ ] HTTPS and a domain (ACM certificate, Route 53). Until then dev is plain HTTP.
-- [ ] Alarms and dashboards (Phase 4), including dead-letter-queue alarms; the cloud acceptance suite skips the dead-letter count until they exist.
+- [x] Alarms and dashboards (Phase 4): built, including the dead-letter-queue alarms. Still open: the cloud acceptance suite still skips the dead-letter count (the deploy role may not read the queues), and no alarm has been seen to fire in dev.
+- [ ] The failure drills on EKS (section 11): skipped on 3 Oct 2026. `drills.yml` has `consumer-down` and `bus-down`; poison, duplicate, cache-down and DB-down are not built.
 - [x] Phase 3 (2 Oct 2026): `pr.yml`, Trivy, branch protection, stage and prod branches and Environments, `promote.yml`, `app-rollback.yml` and release `v0.1.0`. The deploy keeps `workflow_dispatch` only. Still open: run `app-rollback` once in dev; a promotion has never run; the owner cannot approve their own pull request into `stage` or `prod`, so a first promotion needs a second reviewer or a deliberate relaxation of that rule.
 
 Decided questions are recorded in `docs/adr/README.md`.
@@ -877,6 +880,7 @@ Decided questions are recorded in `docs/adr/README.md`.
 | `cloudbatch818-loria-retail-bootstrap` can create IAM roles | Effectively admin if the trust is widened or the workflow is edited | Exact `sub` pin to `environment:bootstrap`, required reviewer, `workflow_dispatch` only, the `bootstrap` environment accepts only the `dev` branch (branch protection on `.github/` is not set up yet) |
 | No local way to run plan/apply/kubectl | Slow feedback; cloud errors surface only in CI | Static checks locally; workflows dump diagnostics on failure; small, frequent infra PRs |
 | Public viewer ALB (`app-expose.yml`) | Anyone at the allowed address reaches an app with no login and unauthenticated admin endpoints, over plain HTTP | Dev only; one address from an environment secret (masked, never in the repo); `scripts/viewer_cidr.py` refuses anything wider than a /24, private addresses and `0.0.0.0/0`; `remove` deletes it |
+| The alarm and alert path is untested | An outage could pass without an email: a wrong rule, a muted subscription or a broken Alertmanager role would not show until a real failure | Rules are unit-tested (`make rules-test`), the subscription is confirmed, a cloud test checks the rules are loaded and Alertmanager is ready, and the runbook index is tested against the alarms. Not covered: a failure that actually fires one. Run `drills.yml` (`bus-down`, then `consumer-down`) to close this |
 | One node holds every pod | Pods stay `Pending` if the node's pod limit (about 29) or CPU is reached, for example when an HPA scales up or a monitoring stack is added | Measured 2 Oct 2026 (`cluster-capacity.yml`): 25 of 29 pods, 1300m of 1930m CPU requested (67%), only 3% used. Phase 4 would not fit, so dev has two nodes (about 58 pods); run `cluster-capacity.yml` after a change that adds pods |
 | Teardown workflows never run | `app-destroy`, `addons-destroy` and `platform-destroy` are untested end to end; a destroy could hang on an ALB or a security group | Order is fixed (app, addons, platform); `platform-destroy` refuses while the addons state has resources; run them once in dev before relying on them |
 

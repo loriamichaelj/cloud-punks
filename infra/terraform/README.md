@@ -9,7 +9,7 @@ Status: all three stacks are applied in dev (2 Oct 2026). The record of what was
 | Stack | State key | What it holds | Workflows |
 | --- | --- | --- | --- |
 | `bootstrap/` | `bootstrap/terraform.tfstate` | The CI roles: `tf-dev`, `deploy-dev` and `db-dev`, with their policies | `bootstrap-ci-roles.yml` |
-| `envs/dev/platform/` | `dev/platform/terraform.tfstate` | Network, ECR, EKS, data stores, events, the in-VPC runner, the workload roles, the alarms (161 resources) | `platform-create.yml`, `platform-destroy.yml` |
+| `envs/dev/platform/` | `dev/platform/terraform.tfstate` | Network, ECR, EKS, data stores, events, the in-VPC runner, the workload roles, the alarms, Container Insights and the Alertmanager role (175 resources) | `platform-create.yml`, `platform-destroy.yml` |
 | `envs/dev/cluster-addons/` | `dev/cluster-addons/terraform.tfstate` | The `retail` namespace, the AWS Load Balancer Controller, External Secrets Operator, the `ClusterSecretStore`, their Pod Identity roles, and the RBAC the deploy role needs, and the Role that lets Prometheus list pods (14 resources). Runs on the in-VPC runner because the cluster API is private | `addons-create.yml`, `addons-destroy.yml` |
 | `envs/dev/alb-alarms/` | `dev/alb-alarms/terraform.tfstate` | The ALB's 5xx-rate and p95-latency alarms (2 resources). Separate because the ALB does not exist when the platform stack is planned; the ALB's identifier and the SNS topic are passed in or derived from a name, so it destroys cleanly after the ALB is gone | `alarms-create.yml`, `alarms-destroy.yml` |
 

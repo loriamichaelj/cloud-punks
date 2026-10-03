@@ -4,6 +4,8 @@ One file per ADR when a decision in DESIGN.md section 2 changes. Until then this
 
 ## Change history (was the DESIGN.md status line)
 
+**v2.6 (3 Oct 2026): Phase 4 is built, with the failure drills skipped.** Dev now has alarms, logs, metrics, dashboards, alert notifications and runbooks: a second node; 19 CloudWatch alarms and an SNS topic with its own key; a $350 budget alert; Container Insights with 7-day log groups; Prometheus, Alertmanager and a view-only Grafana carrying the four SLIs; four unit-tested alert rules; five runbooks. The cloud acceptance suite is 14 tests, all passing. See "Observability and reliability as built (Phase 4)" below. Not met: DESIGN.md's exit criterion that each drill is detected and recovered. `drills.yml` exists and has never run, so no alarm has fired in dev.
+
 **v2.5 (2 Oct 2026): Phase 3 is built.** `pr.yml` checks every pull request and reports through one `ci` gate; Trivy scans the five images and the configuration; `stage` and `prod` branches and Environments exist behind a reviewed pull request; `promote.yml` (by digest) and `app-rollback.yml` exist; the chart can deploy by `image.digest`; the first release is `v0.1.0`. See "CI/CD as built (Phase 3)" below. Not run: `app-rollback` and `promote` (nothing is deployed to stage or prod).
 
 **v2.4 (2 Oct 2026): Phase 2 is built.** The platform runs in dev on AWS: three Terraform stacks applied only from GitHub Actions, eleven Helm releases on one EKS node, and the acceptance suite passing through the dev ALB from a workflow (10 passed, none skipped). New in this version: the cloud workflows (`bootstrap-*`, `platform-*`, `addons-*`, `app-*`), the in-VPC runner, the `db_init` and seed jobs, the low-stock Lambda, `app-verify`, a cloud mode for the acceptance suite, configurable DynamoDB table names, a viewer ALB limited to one address, and the section "Cloud (dev on AWS) as built" below. DESIGN.md's status, phase table, Phase 2 block, workflow table, open questions and risks were updated to match.
@@ -276,11 +278,11 @@ What a pass shows: a low-stock reservation reaches the Lambda and its record lan
 
 ### Still open
 
-The list is in DESIGN.md's open questions: TLS verification, a Valkey token, pinned versions, HTTPS and a domain, alarms and dashboards, and the Phase 4 work. Also: the three teardown workflows (`app-destroy`, `addons-destroy`, `platform-destroy`) and the viewer's `remove` action have never been run, `app-rollback` and `promote` have never been run, and the failure drills have not been run against dev.
+The list is in DESIGN.md's open questions: TLS verification, a Valkey token, pinned versions, HTTPS and a domain, and the Phase 4 drills (see "Observability and reliability as built"). Also: the three teardown workflows (`app-destroy`, `addons-destroy`, `platform-destroy`) and the viewer's `remove` action have never been run, `app-rollback` and `promote` have never been run, and the failure drills have not been run against dev.
 
 ### Rough run-rate
 
-A list-price estimate for `us-east-1`, not measured: EKS control plane about $73 a month, the node about $60, NAT about $33 plus data, seven interface endpoints about $51, RDS about $26, Valkey about $12, the runner about $12, and each ALB about $17. About $300 a month, or $10 a day, with the viewer ALB included. Destroying dev when idle is the saving.
+A list-price estimate for `us-east-1`, not measured: EKS control plane about $73 a month, the node about $60, NAT about $33 plus data, seven interface endpoints about $51, RDS about $26, Valkey about $12, the runner about $12, and each ALB about $17. About $300 a month, or $10 a day, with the viewer ALB included, before Phase 4. Phase 4 adds a second node (about $60), a KMS key, log ingestion and about 20 alarms (a few dollars), so about $360 a month, over the $350 budget alert. Destroying dev when idle is the saving.
 
 ## CI/CD as built (Phase 3, 2 Oct 2026)
 
@@ -305,6 +307,43 @@ A list-price estimate for `us-east-1`, not measured: EKS control plane about $73
 **One workflow before a deploy.** `app-prepare.yml` runs `prepare` (the tag, and whether this run may publish), `test`, `build`, `verify` and `notify`. `test` is one job with parallel matrix legs (`code`, `terraform`, `config-scan`, `workflows`, and an `image` leg per image), copied from `pr.yml`, so a pin changed in one is changed in the other. `build` lists each pushed digest in the run summary. A separate `manifest` job that recorded them as JSON was built and removed the same day: it added a job without a consumer. From a branch other than `dev` only `prepare`, `test` and `notify` run. AWS access is granted to `build` and `verify` only, never the test legs. The cost is two `dev` approvals per run, and that a run holds the `app-dev` group for a few minutes, so it cannot overlap a deploy. `verify` ends by printing the tag to paste into `app-deploy`.
 
 **Other.** The deploy has no push trigger (decided): a deploy needs the `dev` approval anyway, and a push to `dev` should not deploy by itself. ECR still does basic scan-on-push; Trivy in `pr.yml` is the gate before an image is pushed.
+
+## Observability and reliability as built (Phase 4, 2 to 3 Oct 2026)
+
+**Result.** Everything below is applied in dev and the cloud acceptance suite passes 14 of 14 (`app-deploy`, 3 Oct 2026). The failure drills were skipped, so the path from a real failure to an email is configured and confirmed subscribed but has never carried an alert.
+
+### What exists
+
+| Piece | Contents | Applied by |
+| --- | --- | --- |
+| `dev/platform` (175 resources) | the `monitoring` module (SNS topic and its KMS key, 17 alarms: queue age, dead letters, EventBridge rules, the Lambda, RDS; the $350 budget), a second node, the CloudWatch Observability add-on with its Pod Identity role, four log groups (7-day retention) and a saved Logs Insights query, the `alertmanager` Pod Identity role | `platform-create.yml` |
+| `dev/alb-alarms` (2) | the ALB 5xx-rate and p95-latency alarms. A separate stack because the ALB does not exist when the platform stack is planned; its identifier is looked up by name and passed in, so it also destroys after the ALB is gone | `alarms-create.yml`, `alarms-destroy.yml` |
+| `dev/cluster-addons` (14) | adds the Role and binding that let Prometheus list pods | `addons-create.yml` |
+| Helm release `monitoring` | Prometheus (discovers the app pods; 2 days in an emptyDir), Alertmanager (to SNS), Grafana (anonymous Viewer, no login, no admin user, no plugin downloads; `/grafana` on the viewer ALB), four alert rules, the dashboard | `app-deploy.yml` (last release) |
+| Workflows | `cluster-capacity.yml` (nodes, pods, requests, pods not Ready, warning events), `drills.yml` (not run), changes to `app-deploy.yml` (monitoring and the new tests) | |
+| Runbooks | five, with an index of every alarm and alert and a test that checks the index | |
+
+Alarm names, thresholds and the alerts are in `infra/terraform/README.md` and `deploy/helm/monitoring/rules/retail.yml`. Notifications: CloudWatch alarms and Alertmanager both publish to `loria-retail-dev-alarms`; one email subscription, confirmed by the owner.
+
+### What it proves, and what it does not
+
+Proved: one order's correlation id is found in CloudWatch in all five processes that handled it; Prometheus scrapes all eight application processes; the alert rules are loaded, healthy and wired to a ready Alertmanager; Grafana serves the dashboard and refuses anything but viewing; the rules fire on the conditions they are for and stay quiet otherwise (promtool, with two deliberate breaks); the runbooks and the alarms are listed against each other by a test.
+
+Not proved: any alarm or alert reaching the inbox; either drill (`consumer-down`, `bus-down`); a runbook followed against a real failure; the `Project` cost-allocation tag making the budget see cost (the owner must activate it in Billing); the dead-letter count in the acceptance suite (the deploy role cannot read the queues); the `pod not Ready` triage output of `cluster-capacity` on the real cluster.
+
+### What went wrong or was learned first
+
+1. **One node was not enough.** `cluster-capacity.yml` measured 25 of 29 pods and 67% of CPU requested; the add-on, Prometheus and Grafana would not fit, and prefix delegation would have raised the pod limit but not the CPU. The node group also ignored `desired_size`, so raising it in Terraform would have done nothing. Two nodes cost about $60 a month more.
+2. **Checkov resolves modules with the caller's variables** (a check passed on the module alone and failed on the dev stack): scan `envs/` as well as `modules/`.
+3. **CloudWatch alarms cannot publish to a topic encrypted with the AWS-managed key**, so the topic has its own key that lets the CloudWatch service use it.
+4. **Reading a log group the way LocalStack allows is not enough for CloudWatch** (one unbounded call, no paging): the Lambda test failed once and passed after a bounded, paged query. The cause of that one failure was never confirmed.
+5. **Rendering a chart and running its container are not running it in a cluster.** Grafana's probes had to follow its `/grafana` sub-path; Grafana 13 downloads default apps from grafana.com at startup unless preinstall is disabled; and it uses about 450 MiB, so a 256 MiB limit made it thrash and be killed. With the Role removed, Prometheus logs `pods is forbidden` and discovers nothing.
+6. **`app-prepare`'s `verify` failed once upstream images appeared in the namespace**, because it compared every pod with ECR. It now compares only `loria-retail/*` images and lists the rest as third party.
+7. **The local drills could not be reused in the cloud** (LocalStack queues, `psql`, a second container), and a stopped consumer stops reporting its own queue depth, so the cloud drills judge by `orders_stuck`, the outbox gauges and alert states. Cache-down and DB-down would differ from the local ones: recovery is a rollout, not "ready with no restarts", and the JSON 503 is read from the pod because the ALB answers when no pod is ready.
+
+### Still open after Phase 4
+
+The failure drills (`drills.yml` for two, nothing for four); an alarm seen to fire; the `Project` billing tag; the three teardown workflows (`app-destroy`, `addons-destroy`, `platform-destroy`, plus `alarms-destroy`) and the viewer's `remove` action never run; `app-rollback` and `promote` never run; HTTPS and a domain; a Valkey AUTH token; `verify-full` database TLS; pinned add-on and PostgreSQL versions; no restart workflow, database query tool or cloud dead-letter tooling beyond the SQS console.
 
 ## Decided questions
 
