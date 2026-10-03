@@ -61,10 +61,13 @@ jobs:
             "${kube[@]}" get pods -A --no-headers | awk '{print $1}' | sort | uniq -c | sort -rn
             echo '```'
             echo
-            echo "### Requested against allocatable (all pods)"
+            echo "### Requested against allocatable, per node (all pods)"
             echo
             echo '```'
-            "${kube[@]}" describe nodes | sed -n '/^Allocated resources:/,/^Events:/p' | sed '$d'
+            for node in $("${kube[@]}" get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'); do
+              echo "== ${node}"
+              "${kube[@]}" describe node "$node" | awk '/^Allocated resources:/ {on=1} /^Events:/ {on=0} on && /^ +(cpu|memory|Resource|--------)/'
+            done
             echo '```'
             echo
             echo "### In use right now"
