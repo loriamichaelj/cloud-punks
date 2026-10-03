@@ -28,6 +28,9 @@ from cwlogs import find_log_message, releases_that_logged
 
 # LocalStack's function is named low-stock-alert; the cloud's carries the loria- prefix.
 LAMBDA_LOG_GROUP = os.environ.get("E2E_LAMBDA_LOG_GROUP", "/aws/lambda/low-stock-alert")
+# Prometheus and Grafana of the monitoring release, port-forwarded by app-deploy (the cloud only).
+PROMETHEUS_URL = os.environ.get("E2E_PROMETHEUS_URL", "http://localhost:9090")
+GRAFANA_URL = os.environ.get("E2E_GRAFANA_URL", "http://localhost:3000")
 # Where Container Insights writes the application containers' logs (the cloud only).
 APP_LOG_GROUP = os.environ.get(
     "E2E_APP_LOG_GROUP", "/aws/containerinsights/loria-retail-dev/application"
@@ -260,3 +263,56 @@ def test_cloud_one_order_is_traced_across_the_services_in_cloudwatch(
         raise AssertionError(
             f"{error}; releases seen: {sorted(last)}; missing: {sorted(expected - last.keys())}"
         ) from None
+
+
+@pytest.mark.skipif(not E2E_CLOUD, reason="the monitoring release runs only in the cloud cluster")
+def test_cloud_prometheus_scrapes_every_process() -> None:
+    """P4.3: Prometheus discovers all eight application processes, and the SLI source metric exists."""
+    expected = {
+        "product-service",
+        "inventory-service",
+        "order-service",
+        "notification-service",
+        "inventory-consumer",
+        "order-consumer",
+        "order-relay",
+        "notification-consumer",
+    }
+
+    def query(expression: str) -> list[dict[str, Any]]:
+        response = httpx2.get(
+            f"{PROMETHEUS_URL}/api/v1/query", params={"query": expression}, timeout=10
+        )
+        assert response.status_code == 200, response.text
+        result: list[dict[str, Any]] = response.json()["data"]["result"]
+        return result
+
+    def all_up() -> set[str] | None:
+        up = {series["metric"].get("service", "") for series in query('up{job="retail"} == 1')}
+        return up if expected <= up else None
+
+    # The pods are new after a deploy and Prometheus scrapes every 15 s.
+    wait_for("Prometheus to scrape every process", all_up, timeout_s=180, interval_s=5)
+    # The requests the earlier tests made are the SLIs' source.
+    assert query('http_requests_total{route=~"/api/.*"}'), "no /api request metrics were scraped"
+
+
+@pytest.mark.skipif(not E2E_CLOUD, reason="the monitoring release runs only in the cloud cluster")
+def test_cloud_grafana_serves_the_dashboard_view_only() -> None:
+    """P4.3: Grafana is up under /grafana with the provisioned dashboard, and changes nothing."""
+    health = httpx2.get(f"{GRAFANA_URL}/grafana/api/health", timeout=10)
+    assert health.status_code == 200, health.text
+    assert health.json()["database"] == "ok"
+    dashboard = httpx2.get(f"{GRAFANA_URL}/grafana/api/dashboards/uid/retail-platform", timeout=10)
+    assert dashboard.status_code == 200, dashboard.text
+    titles = {panel["title"] for panel in dashboard.json()["dashboard"]["panels"]}
+    assert "Availability (target 99.5%)" in titles
+    # View only: no admin login, and an anonymous write is refused.
+    assert (
+        httpx2.get(
+            f"{GRAFANA_URL}/grafana/api/user", auth=("admin", "admin"), timeout=10
+        ).status_code
+        == 401
+    )
+    write = httpx2.post(f"{GRAFANA_URL}/grafana/api/folders", json={"title": "x"}, timeout=10)
+    assert write.status_code == 403, write.text

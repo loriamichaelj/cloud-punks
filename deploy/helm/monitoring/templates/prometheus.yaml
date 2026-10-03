@@ -1,0 +1,79 @@
+# The only ServiceAccount permission it needs is to list pods in this namespace; the Role and its
+# binding are created by the cluster-addons stack (the deploy role may not create RBAC).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  labels: {{- include "monitoring.labels" (dict "root" . "name" "prometheus") | nindent 4 }}
+automountServiceAccountToken: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  labels: {{- include "monitoring.labels" (dict "root" . "name" "prometheus") | nindent 4 }}
+spec:
+  selector: {{- include "monitoring.selector" (dict "root" . "name" "prometheus") | nindent 4 }}
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  labels: {{- include "monitoring.labels" (dict "root" . "name" "prometheus") | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # one pod owns the emptyDir; there is nothing to keep serving during a rollout
+  selector:
+    matchLabels: {{- include "monitoring.selector" (dict "root" . "name" "prometheus") | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "monitoring.labels" (dict "root" . "name" "prometheus") | nindent 8 }}
+      annotations:
+        # A changed scrape config restarts the pod: Prometheus is not told to reload.
+        checksum/config: {{ include (print $.Template.BasePath "/prometheus-config.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: prometheus
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: prometheus
+          image: {{ .Values.prometheus.image | quote }}
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time={{ .Values.prometheus.retention }}
+            - --web.listen-address=:9090
+          ports:
+            - name: http
+              containerPort: 9090
+          startupProbe:
+            httpGet: { path: /-/ready, port: http }
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: { path: /-/ready, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /-/healthy, port: http }
+            periodSeconds: 10
+            failureThreshold: 6
+          resources: {{- toYaml .Values.prometheus.resources | nindent 12 }}
+          securityContext: {{- include "monitoring.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - { name: config, mountPath: /etc/prometheus, readOnly: true }
+            - { name: data, mountPath: /prometheus }
+      volumes:
+        - name: config
+          configMap: { name: prometheus-config }
+        - name: data
+          emptyDir: {}

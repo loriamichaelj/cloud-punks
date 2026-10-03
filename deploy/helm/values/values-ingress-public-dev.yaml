@@ -27,4 +27,6 @@ ingress:
     - { path: /api/v1/inventory, service: inventory-service, port: 8002 }
     - { path: /api/v1/orders, service: order-service, port: 8003 }
     - { path: /api/v1/notifications, service: notification-service, port: 8004 }
+    # Read-only dashboards (the monitoring release): no login, no admin user, and the same one address.
+    - { path: /grafana, service: grafana, port: 3000 }
   default: { service: ui, port: 8005 }

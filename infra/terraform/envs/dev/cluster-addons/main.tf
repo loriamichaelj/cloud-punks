@@ -69,6 +69,44 @@ resource "kubernetes_role_binding_v1" "deployer_external_secrets" {
   }
 }
 
+# --- what Prometheus may do -----------------------------------------------------------------
+# The monitoring chart (installed by app-deploy.yml as the deploy role, which may not create RBAC)
+# runs Prometheus as the ServiceAccount `prometheus`. It discovers the application's pods, so it
+# needs to list them in this namespace, and nothing else. The chart creates the same Role itself only
+# for the local cluster (`rbac.create`).
+
+resource "kubernetes_role_v1" "prometheus_pod_reader" {
+  metadata {
+    name      = "prometheus-pod-reader"
+    namespace = kubernetes_namespace_v1.retail.metadata[0].name
+  }
+
+  rule {
+    api_groups = [""]
+    resources  = ["pods"]
+    verbs      = ["get", "list", "watch"]
+  }
+}
+
+resource "kubernetes_role_binding_v1" "prometheus_pod_reader" {
+  metadata {
+    name      = "prometheus-pod-reader"
+    namespace = kubernetes_namespace_v1.retail.metadata[0].name
+  }
+
+  role_ref {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "Role"
+    name      = kubernetes_role_v1.prometheus_pod_reader.metadata[0].name
+  }
+
+  subject {
+    kind      = "ServiceAccount"
+    name      = "prometheus"
+    namespace = kubernetes_namespace_v1.retail.metadata[0].name
+  }
+}
+
 # --- AWS Load Balancer Controller ------------------------------------------------------
 # Turns Ingress objects into ALBs. The chart also creates the `alb` IngressClass.
 

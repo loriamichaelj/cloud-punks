@@ -1,0 +1,26 @@
+{{- if .Values.rbac.create }}
+# Same Role and binding as the cluster-addons Terraform stack creates in AWS.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: prometheus-pod-reader
+  labels: {{- include "monitoring.labels" (dict "root" . "name" "prometheus") | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: prometheus-pod-reader
+  labels: {{- include "monitoring.labels" (dict "root" . "name" "prometheus") | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: prometheus-pod-reader
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: {{ .Release.Namespace }}
+{{- end }}

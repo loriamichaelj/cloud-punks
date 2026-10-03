@@ -1,0 +1,23 @@
+# Defaults for the dev cluster. Both run in the release's namespace (retail), next to the pods they watch.
+
+prometheus:
+  image: quay.io/prometheus/prometheus:v3.15.0
+  scrapeInterval: 15s
+  retention: 2d # kept in an emptyDir: a restart starts the history again, which is fine in dev
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 512Mi }
+
+grafana:
+  image: docker.io/grafana/grafana:13.2.3
+  # Where the viewer ALB sends it (the "App: expose" Ingress routes this path to the grafana Service).
+  subPath: /grafana
+  resources:
+    # Grafana 13 uses about 450 MiB once up, with a burst of CPU at the start; a 256 MiB limit made it thrash and be killed.
+    requests: { cpu: 100m, memory: 384Mi }
+    limits: { memory: 768Mi }
+
+# Prometheus lists pods in this namespace. In AWS the cluster-addons stack creates the Role and its binding
+# (the deploy role may not create RBAC), so this is false there; `make k8s-monitoring` sets it true.
+rbac:
+  create: false

@@ -53,7 +53,7 @@ LocalStack keeps its state in memory, so after any restart of it run `make seed`
 | `drills`, `drill-<name>` | The failure drills alone (below) |
 | `dlq-peek q=<queue>-dlq`, `dlq-redrive q=<queue>-dlq` | Inspect a dead-letter queue, or move its messages back to the source queue |
 | `obs-up`, `obs-down` | Prometheus and Grafana |
-| `k8s-ingress`, `k8s-deploy`, `k8s-e2e`, `k8s-resilience`, `k8s-rollback r=<release>`, `k8s-down` | The same platform on OrbStack Kubernetes (below) |
+| `k8s-ingress`, `k8s-deploy`, `k8s-monitoring`, `k8s-e2e`, `k8s-resilience`, `k8s-rollback r=<release>`, `k8s-down` | The same platform on OrbStack Kubernetes (below) |
 | `openapi` | Rewrite the OpenAPI snapshots in `docs/openapi/` |
 
 The full check, from nothing:

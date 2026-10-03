@@ -1,5 +1,6 @@
-# Local Prometheus for the `observability` Compose profile (make obs-up). On Kubernetes this
-# becomes kube-prometheus-stack ServiceMonitors (or AMP); the metric names do not change.
+# Local Prometheus for the `observability` Compose profile (make obs-up). On Kubernetes the
+# monitoring chart (deploy/helm/monitoring) discovers the pods instead of listing them here, and
+# serves the same dashboard (deploy/helm/monitoring/dashboards); the metric names do not change.
 global:
   scrape_interval: 5s # short on purpose: drills and the dashboard should react within seconds
   evaluation_interval: 15s

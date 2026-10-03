@@ -16,7 +16,7 @@ export IMAGE_TAG
 
 RUN = uv run --frozen --no-sync
 
-.PHONY: help lock sync fmt lint test itest e2e drills drill-consumer-down drill-poison drill-duplicate drill-bus-down drill-cache-down drill-db-down dlq-peek dlq-redrive obs-up obs-down k8s-lint k8s-build k8s-build-multiarch k8s-secrets k8s-ingress k8s-deploy k8s-e2e k8s-resilience k8s-rollback k8s-down up down reset logs seed openapi ui-install ui-dev ui-types ui-lint ui-typecheck ui-test ui-build ui-e2e ui-types-check openapi-check
+.PHONY: k8s-monitoring help lock sync fmt lint test itest e2e drills drill-consumer-down drill-poison drill-duplicate drill-bus-down drill-cache-down drill-db-down dlq-peek dlq-redrive obs-up obs-down k8s-lint k8s-build k8s-build-multiarch k8s-secrets k8s-ingress k8s-deploy k8s-e2e k8s-resilience k8s-rollback k8s-down up down reset logs seed openapi ui-install ui-dev ui-types ui-lint ui-typecheck ui-test ui-build ui-e2e ui-types-check openapi-check
 
 help:
 	@echo "Targets: lock sync fmt lint test itest e2e up down reset logs s=<service> seed openapi ui-*"
@@ -141,6 +141,11 @@ k8s-lint:
 		done; \
 	done
 	@helm template d $(CHART) -f $(HV)/values-ui-dev.yaml --set image.repository=r/ui --set image.digest=sha256:abc | grep -q 'image: "r/ui@sha256:abc"' || { echo "image.digest is not rendered as repository@digest"; exit 1; }
+	@for rbac in false true; do \
+		helm lint deploy/helm/monitoring --set rbac.create=$$rbac >/dev/null || { echo "helm lint failed: monitoring rbac=$$rbac"; exit 1; }; \
+		helm template monitoring deploy/helm/monitoring -n retail --set rbac.create=$$rbac > /tmp/k8s-lint-monitoring-$$rbac.yaml || exit 1; \
+		if command -v kubeconform >/dev/null; then kubeconform -strict -summary -ignore-missing-schemas /tmp/k8s-lint-monitoring-$$rbac.yaml || exit 1; fi; \
+	done
 	@helm lint deploy/helm/secret-store --set region=us-east-1 >/dev/null || { echo "helm lint failed: secret-store"; exit 1; }
 	@command -v kubeconform >/dev/null || echo "kubeconform not installed: rendered manifests were not schema-checked"
 
@@ -196,6 +201,15 @@ k8s-deploy: k8s-build k8s-secrets
 	$(HELM) upgrade --install --rollback-on-failure --wait --timeout 3m gateway $(CHART) -f $(HV)/values-ingress-local.yaml
 	$(KUBECTL) get pods
 	@echo "Open http://retail.k8s.orb.local/  (make seed if LocalStack was restarted; make k8s-e2e to verify)"
+
+# Prometheus and Grafana on the local cluster, scraping the pods `k8s-deploy` started. Grafana is at
+# http://localhost:13000/grafana/ while `make k8s-monitoring-open` runs (a port-forward).
+k8s-monitoring:
+	$(HELM) upgrade --install --rollback-on-failure --wait --timeout 3m monitoring deploy/helm/monitoring --set rbac.create=true
+	$(KUBECTL) get pods -l app.kubernetes.io/part-of=retail-monitoring
+
+k8s-monitoring-open:
+	$(KUBECTL) port-forward svc/grafana 13000:3000
 
 # The same acceptance steps and browser journeys as Compose, through the Traefik ingress. The
 # e2e suites stop and start processes through scripts/k8s_compose.py, which scales Deployments.

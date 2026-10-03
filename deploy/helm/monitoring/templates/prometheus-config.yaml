@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  labels: {{- include "monitoring.labels" (dict "root" . "name" "prometheus") | nindent 4 }}
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: {{ .Values.prometheus.scrapeInterval }}
+      evaluation_interval: {{ .Values.prometheus.scrapeInterval }}
+
+    scrape_configs:
+      # Every running application pod that exposes a port named http: the APIs serve /metrics on their
+      # service port, the consumers and the relay on the side port 9000. The `service` label is the
+      # Helm release name, as in the local Compose setup, so the dashboard is the same in both places.
+      - job_name: retail
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [{{ .Release.Namespace }}]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_part_of]
+            regex: retail-platform
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_phase]
+            regex: Running
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_container_port_name]
+            regex: http
+            action: keep
+          # The UI is nginx and serves no /metrics.
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            regex: ui
+            action: drop
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            target_label: service
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod

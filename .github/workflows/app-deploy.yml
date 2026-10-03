@@ -146,6 +146,12 @@ jobs:
           "${helm_cmd[@]}" upgrade --install --rollback-on-failure --wait --timeout 5m \
             gateway "$HELM_CHART" -f "${HELM_VALUES}/values-ingress-dev.yaml"
 
+          # Prometheus and Grafana. Last, so a problem here never blocks the application. The Role
+          # Prometheus needs comes from the cluster-addons stack (addons-create.yml), not from this chart.
+          echo "== monitoring (Prometheus and Grafana)"
+          "${helm_cmd[@]}" upgrade --install --rollback-on-failure --wait --timeout 6m \
+            monitoring deploy/helm/monitoring
+
           "${kube[@]}" get pods
 
       # The internal ALB takes a few minutes to get an address and healthy targets.
@@ -191,8 +197,9 @@ jobs:
       # read the queues) and points the low-stock Lambda test at the real CloudWatch log group
       # (E2E_LAMBDA_LOG_GROUP, which the deploy role may read). One more cloud-only test traces an
       # order across the services in CloudWatch with Logs Insights, on the Container Insights
-      # application log group (E2E_APP_LOG_GROUP; the deploy role may query that one group). The
-      # drills and the UI journeys are not run.
+      # application log group (E2E_APP_LOG_GROUP; the deploy role may query that one group). Two
+      # more check the monitoring release: Prometheus scrapes every process, and Grafana is up with
+      # its dashboard. The drills and the UI journeys are not run.
       # Steps 2 to 10 write test stock for two SKUs and place orders for e2e-* customers in dev.
       - name: E2E acceptance
         env:
@@ -204,7 +211,7 @@ jobs:
 
           pids=""
           trap 'kill $pids 2>/dev/null || true' EXIT
-          for pair in product-service:8001 inventory-service:8002 order-service:8003 notification-service:8004; do
+          for pair in product-service:8001 inventory-service:8002 order-service:8003 notification-service:8004 prometheus:9090 grafana:3000; do
             "${kube[@]}" port-forward "svc/${pair%%:*}" "${pair##*:}:${pair##*:}" >/dev/null 2>&1 &
             pids="$pids $!"
           done
@@ -213,6 +220,8 @@ jobs:
           E2E_K8S=1 E2E_CLOUD=1 \
           E2E_LAMBDA_LOG_GROUP=/aws/lambda/loria-low-stock-alert \
           E2E_APP_LOG_GROUP=/aws/containerinsights/loria-retail-dev/application \
+          E2E_PROMETHEUS_URL=http://localhost:9090 \
+          E2E_GRAFANA_URL=http://localhost:3000 \
           K8S_CONTEXT="$EKS_CLUSTER" K8S_NAMESPACE="$NAMESPACE" \
           E2E_COMPOSE="$PWD/.venv/bin/python $PWD/scripts/k8s_compose.py" \
           PYTHONPATH=tests/e2e \
