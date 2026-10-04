@@ -50,7 +50,7 @@ variable "db_skip_final_snapshot" {
 variable "github_repository" {
   description = "owner/repo the in-VPC runner registers with."
   type        = string
-  default     = "loriamichaelj/retail-platform"
+  default     = "loriamichaelj/cloud-punks"
 }
 
 variable "alarm_email" {

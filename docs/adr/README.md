@@ -538,6 +538,11 @@ Built from the plan the owner approved after the network review: a domain regist
 - **A certificate is recreated with every `dns` apply after a destroy,** since the private zone belongs to a VPC that `platform-destroy` removes. ACM issues in minutes; the certificate and zone cost nothing while destroyed.
 - **Certificate Transparency logs publish the two host names.**
 
+**A repository rename breaks two things, found on the first run (4 Oct 2026).** The repo was renamed from `retail-platform` to `cloud-punks` between the last deploy and this phase.
+
+- **The hand-made bootstrap role.** Its trust is pinned to `repo:<owner>@<id>/<repo>@<id>:environment:bootstrap`, and the repo name is part of it, so `Bootstrap: CI roles` failed at the sign-in step (`Not authorized to perform sts:AssumeRoleWithWebIdentity`, twelve retries) until the name in the trust policy was changed by hand in IAM. The other CI roles follow by themselves: Terraform builds their trust from the running repository's name, so one successful bootstrap run re-pointed all of them.
+- **The in-VPC runner.** `github_repository` (default in `envs/dev/platform/variables.tf`) is the repo the runner registers with, and its loop calls the registration-token API with `curl` without following redirects, so the old name gets a redirect and no token. Runners are single-use, so the failure shows only when the runner has to register again: `App: deploy` then waits for a runner for ever. The default now names `cloud-punks`; the runner is replaced by `platform-create` (the Auto Scaling group refreshes on a launch template change). If the repo is renamed again, change that default, apply `platform-create`, and fix the bootstrap trust policy first.
+
 ## Network isolation: the extent (4 Oct 2026)
 
 Asked by the owner: is the architecture air-gapped, and how far could it go with no AWS CLI and no CloudShell? It is not air-gapped. This records what is private, what is not, the options, and where the limit sits. The result is ADR-23 in DESIGN.md.
@@ -572,7 +577,7 @@ Asked by the owner: is the architecture air-gapped, and how far could it go with
 - [x] Python 3.13 / FastAPI confirmed (30 Sep 2026); ADR-01 stands.
 - [x] LocalStack: free Hobby plan token (non-commercial use), not paid (30 Sep 2026). The token goes in the git-ignored `.env` as `LOCALSTACK_AUTH_TOKEN`. Decided 2 Oct 2026: no LocalStack in CI; the cloud acceptance suite covers that layer.
 - [x] Apple Silicon confirmed (30 Sep 2026): arm64 images, Graviton nodes, multi-arch builds.
-- [x] Environments: the remote repo (https://github.com/loriamichaelj/retail-platform) carries the **dev environment only** (30 Sep 2026). Stage and prod have branches, Environments and `promote.yml` but no roles, cluster or values (2 Oct 2026); the prod rows in section 13 are illustrative until a prod decision is made.
+- [x] Environments: the remote repo (https://github.com/loriamichaelj/cloud-punks, renamed from `retail-platform` on 4 Oct 2026) carries the **dev environment only** (30 Sep 2026). Stage and prod have branches, Environments and `promote.yml` but no roles, cluster or values (2 Oct 2026); the prod rows in section 13 are illustrative until a prod decision is made.
 - [x] In-VPC runners: one ephemeral arm64 EC2 runner in an Auto Scaling group of one, registered with a fine-grained PAT held in Secrets Manager; jobs cannot reach the instance role (decided 2 Oct 2026; DESIGN.md section 13).
 - [x] Bootstrap: OIDC provider and `cloudbatch818-loria-retail-bootstrap` role created by hand; state bucket via `bootstrap-state-bucket.yml` (decided 30 Sep 2026).
 - [x] EKS access: self-hosted ephemeral runners in the VPC, private endpoint (decided 30 Sep 2026). Repo is public, so the runner restrictions in section 13 apply.
