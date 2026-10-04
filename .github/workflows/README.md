@@ -66,6 +66,17 @@ Once it is installed, every `app-deploy` also refreshes its routes from `values-
 
 **Not yet exercised:** the three teardown workflows (`app-destroy`, `addons-destroy`, `platform-destroy`) and the `remove` action of `app-expose` have never been run. Run them once in dev before relying on them.
 
+## Market activity emails
+
+Every sale, bid and listing on a CloudPunk emails the address in the `dev` environment secret `ALARM_EMAIL`, with the CloudPunk's picture (DESIGN.md section 16.11). It is part of the platform stack, so to turn it on (or after changing the function):
+
+1. `bootstrap-ci-roles`: the platform apply role gains `ses:*`. Once.
+2. `platform-create` (plan, then apply): the SES identity for the address, the `market-activity-email` function (its zip comes from `scripts/package_lambda.py`, which the workflow already runs), its rule, role and DLQ.
+3. Click the link in the "Amazon Web Services – Email Address Verification Request" email AWS sends to that address. Nothing is delivered until then. Once.
+4. `app-prepare`, then `app-deploy`: order-service starts writing the `MarketActivity` events.
+
+The sender is the same address (there is no domain of our own), so mark the first email "not spam" if it lands there. Without `ALARM_EMAIL` none of it is created.
+
 ## Pull requests, branches and releases
 
 `pr.yml` needs no secrets and no setup. It runs `make lint test`, builds and Trivy-scans the five images, checks Terraform (fmt, validate, tflint, Checkov) and the workflows (actionlint), and ends in `ci`. A change that touches only docs runs almost nothing; a change to `pr.yml` runs everything. Integration tests, drills and browser journeys are not in CI (they need LocalStack); `app-deploy.yml` runs the acceptance suite against AWS instead.

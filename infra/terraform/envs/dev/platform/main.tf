@@ -46,7 +46,11 @@ module "events" {
   iam_name_prefix = "cloudbatch818-loria-retail-dev"
 
   # Built by scripts/package_lambda.py: the platform workflows run it before plan and before apply.
-  lambda_zip_path = "${path.root}/../../../../../dist/low-stock-alert.zip"
+  lambda_zip_path       = "${path.root}/../../../../../dist/low-stock-alert.zip"
+  market_email_zip_path = "${path.root}/../../../../../dist/market-activity-email.zip"
+
+  # Market activity emails go to the same address as the alarms (DESIGN.md section 16.11).
+  activity_email = var.alarm_email
 }
 
 module "data" {

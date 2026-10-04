@@ -53,3 +53,12 @@ output "low_stock_rule_name" {
 output "low_stock_dlq_name" {
   value = aws_sqs_queue.low_stock_dlq.name
 }
+
+output "market_email_function_name" {
+  description = "The market-activity-email function, or null without an address."
+  value       = one(aws_lambda_function.market_email[*].function_name)
+}
+
+output "market_email_dlq_name" {
+  value = one(aws_sqs_queue.market_email_dlq[*].name)
+}

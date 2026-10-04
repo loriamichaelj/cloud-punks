@@ -46,6 +46,7 @@ lint: sync
 		$(RUN) mypy --config-file pyproject.toml --cache-dir .mypy_cache/$$s services/$$s/app || exit 1; \
 	done
 	$(RUN) mypy --config-file pyproject.toml --cache-dir .mypy_cache/functions functions/low-stock-alert/handler.py
+	$(RUN) mypy --config-file pyproject.toml --cache-dir .mypy_cache/functions-email functions/market-activity-email/handler.py
 	@$(MAKE) --no-print-directory openapi-check cloudpunks-check ui-art-check ui-types-check ui-lint ui-typecheck ui-build k8s-lint rules-test
 
 test: sync
@@ -61,6 +62,8 @@ test: sync
 	@PYTHONPATH=tests/e2e:scripts $(RUN) pytest tests/e2e/test_cwlogs.py tests/e2e/test_cloud_helpers.py -q
 	@echo "pytest functions/low-stock-alert"
 	@$(RUN) pytest functions/low-stock-alert/tests -q
+	@echo "pytest functions/market-activity-email"
+	@$(RUN) pytest functions/market-activity-email/tests -q
 	@$(MAKE) --no-print-directory ui-test
 
 # Integration tests run each service in-process against the real stores of the running stack

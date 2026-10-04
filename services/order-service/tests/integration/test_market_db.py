@@ -22,6 +22,7 @@ from app.domain.models import Order, OrderItem
 from app.domain.transitions import InventoryOutcome, TransitionService
 from app.events import order_created_event, order_status_updated_event
 from app.repo.market import PostgresMarketRepository
+from app.repo.orders import insert_order
 from app.repo.transitions import PostgresTransitionStore
 
 SELLER, BIDDER, OTHER = "itest-seller", "itest-bidder", "itest-other"
@@ -278,3 +279,116 @@ def test_a_withdrawn_bid_cannot_be_accepted_while_the_listing_is_still_open(
 
     assert statuses(engine, sku) == (["OPEN"], {bid_id: "WITHDRAWN"})
     assert count(engine, "SELECT count(*) FROM order_items WHERE sku = :s", s=sku) == 0
+
+
+# -- MarketActivity events (DESIGN.md section 16.11) --------------------------------------------
+
+
+def activity_events(engine: Engine, sku: str) -> list[dict[str, Any]]:
+    """The MarketActivity envelopes in the outbox for this CloudPunk, in the order written."""
+    with engine.connect() as c:
+        rows = c.execute(
+            text(
+                "SELECT payload FROM outbox WHERE detail_type = 'MarketActivity' "
+                "AND payload->'data'->>'sku' = :s ORDER BY id"
+            ),
+            {"s": sku},
+        ).scalars()
+        return list(rows)
+
+
+def test_each_market_change_writes_one_activity_event_and_a_replay_writes_none(
+    engine: Engine, market: MarketService, sku: str
+) -> None:
+    listing, _ = market.put_up(SELLER, sku)
+    market.put_up(SELLER, sku)  # already up: a replay
+    key = f"itest-{uuid.uuid4()}"
+    placed, _ = market.place_bid(BIDDER, key, sku, Decimal("12.50"))
+    market.place_bid(BIDDER, key, sku, Decimal("12.50"))  # the same key: a replay
+    market.withdraw_bid(BIDDER, placed.bid_id)
+    with pytest.raises(BidNotOpen):
+        market.withdraw_bid(BIDDER, placed.bid_id)  # refused: nothing happened
+    market.take_off(SELLER, sku)
+
+    events = activity_events(engine, sku)
+    data = [e["data"] for e in events]
+    assert [d["kind"] for d in data] == ["LISTED", "BID_PLACED", "BID_WITHDRAWN", "UNLISTED"]
+    assert [d["customer_id"] for d in data] == [SELLER, BIDDER, BIDDER, SELLER]
+    assert data[0]["listing_id"] == listing.listing_id
+    assert (data[1]["bid_id"], data[1]["amount"], data[1]["currency"]) == (
+        placed.bid_id,
+        "12.50",
+        "ETH",
+    )
+    assert data[2]["amount"] == "12.50"  # read back from the bid inside the transaction
+    assert {e["event_type"] for e in events} == {"MarketActivity"}
+    assert {e["producer"] for e in events} == {"order-service"}
+
+
+def test_a_confirmed_resale_writes_a_sale_from_the_seller_caused_by_the_inventory_event(
+    engine: Engine, market: MarketService, transitions: TransitionService, sku: str
+) -> None:
+    market.put_up(SELLER, sku)
+    order = market.accept_bid(SELLER, bid(market, BIDDER, sku, "25.00")).order
+    cause = event_id()
+
+    transitions.handle(cause, order.order_id, InventoryOutcome(reserved=True))
+    transitions.handle(cause, order.order_id, InventoryOutcome(reserved=True))  # redelivered
+
+    sales = [e for e in activity_events(engine, sku) if e["data"]["kind"] == "SALE"]
+    assert len(sales) == 1
+    sale = sales[0]
+    assert sale["causation_id"] == cause
+    assert {k: sale["data"][k] for k in ("customer_id", "counterparty", "amount", "order_id")} == {
+        "customer_id": BIDDER,
+        "counterparty": SELLER,
+        "amount": "25.00",
+        "order_id": order.order_id,
+    }
+
+
+def test_a_purchase_from_cloudpunks_is_a_sale_with_no_seller_and_a_rejection_is_none(
+    engine: Engine, transitions: TransitionService, sku: str
+) -> None:
+    now = datetime.now(UTC)
+    bought = Order(
+        str(ULID()),
+        BIDDER,
+        "PENDING",
+        None,
+        Decimal("30.00"),
+        "ETH",
+        (OrderItem(sku, 1, Decimal("30.00")),),
+        now,
+        now,
+    )
+    refused = Order(
+        str(ULID()),
+        OTHER,
+        "PENDING",
+        None,
+        Decimal("30.00"),
+        "ETH",
+        (OrderItem(sku, 1, Decimal("30.00")),),
+        now,
+        now,
+    )
+    with engine.begin() as connection:
+        for order in (bought, refused):
+            insert_order(
+                connection,
+                order,
+                idempotency_key=f"itest-{uuid.uuid4()}",
+                request_hash="0" * 64,
+                event=order_created_event(order),
+            )
+
+    transitions.handle(event_id(), bought.order_id, InventoryOutcome(reserved=True))
+    transitions.handle(
+        event_id(), refused.order_id, InventoryOutcome(reserved=False, reason="OUT_OF_STOCK")
+    )
+
+    data = [e["data"] for e in activity_events(engine, sku)]
+    assert [(d["kind"], d["customer_id"], d["counterparty"]) for d in data] == [
+        ("SALE", BIDDER, None)
+    ]

@@ -5,9 +5,12 @@ Every change runs in ONE transaction that first locks the CloudPunk's listing ro
 per CloudPunk: a bid can never be accepted twice, nor accepted after the listing was taken off,
 and two bids on one listing cannot both be accepted (DESIGN.md section 16, ADR-19). Locks are
 always taken listing first, then bid, here and in the order consumer, so they cannot deadlock.
+
+Each change that happens (not a replay, not a refusal) also writes its ``MarketActivity`` event to
+the outbox in that same transaction: LISTED, UNLISTED, BID_PLACED, BID_WITHDRAWN (DESIGN.md 16.11).
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from sqlalchemy import (
@@ -46,13 +49,15 @@ from app.domain.models import (
     CreateOutcome,
     Listing,
     ListingStatus,
+    MarketActivity,
     Order,
     OutboxEvent,
     Page,
     StoredBid,
 )
+from app.events import market_activity_event
 from app.repo.orders import fetch_order, insert_order, store_errors
-from app.repo.tables import ACTIVE_LISTING, bids, listings, order_items, orders
+from app.repo.tables import ACTIVE_LISTING, bids, listings, order_items, orders, outbox
 
 
 def _to_listing(row: Row[Any]) -> Listing:
@@ -98,13 +103,43 @@ def _close_open_bids(connection: Connection, listing_id: str) -> None:
     )
 
 
+def _bid_activity(kind: str, row: Row[Any]) -> MarketActivity:
+    return MarketActivity(
+        kind,
+        row.sku,
+        row.bidder_id,
+        amount=row.amount,
+        currency=row.currency,
+        listing_id=row.listing_id,
+        bid_id=row.bid_id,
+    )
+
+
 def _page[T](items: Sequence[T], page: int, size: int, total: int) -> Page[T]:
     return Page(items=tuple(items), page=page, size=size, total=int(total))
 
 
+type MakeActivityEvent = Callable[[MarketActivity], OutboxEvent]
+
+
+def write_activity(
+    connection: Connection, make_event: MakeActivityEvent, activity: MarketActivity
+) -> None:
+    """Put the activity's event in the outbox, inside the caller's transaction."""
+    event = make_event(activity)
+    connection.execute(
+        outbox.insert().values(
+            event_id=event.event_id, detail_type=event.detail_type, payload=event.payload
+        )
+    )
+
+
 class PostgresMarketRepository:
-    def __init__(self, engine: Engine) -> None:
+    def __init__(
+        self, engine: Engine, *, make_activity: MakeActivityEvent = market_activity_event
+    ) -> None:
         self._engine = engine
+        self._make_activity = make_activity
 
     # -- listings ------------------------------------------------------------------------------
 
@@ -145,6 +180,13 @@ class PostgresMarketRepository:
             row = connection.execute(
                 select(listings).where(listings.c.listing_id == listing.listing_id)
             ).one()
+            write_activity(
+                connection,
+                self._make_activity,
+                MarketActivity(
+                    "LISTED", listing.sku, listing.seller_id, listing_id=listing.listing_id
+                ),
+            )
             return _to_listing(row), True
 
     def take_off(self, sku: str, seller_id: str) -> Listing:
@@ -163,6 +205,11 @@ class PostgresMarketRepository:
                 .returning(*listings.c)
             ).one()
             _close_open_bids(connection, existing.listing_id)
+            write_activity(
+                connection,
+                self._make_activity,
+                MarketActivity("UNLISTED", sku, seller_id, listing_id=existing.listing_id),
+            )
             return _to_listing(row)
 
     def list_listings(
@@ -222,6 +269,7 @@ class PostgresMarketRepository:
                     raise RuntimeError("idempotency conflict without a stored bid")
                 return BidOutcome(stored=existing, created=False)
             row = connection.execute(select(bids).where(bids.c.bid_id == bid.bid_id)).one()
+            write_activity(connection, self._make_activity, _bid_activity("BID_PLACED", row))
             return BidOutcome(StoredBid(_to_bid(row), row.request_hash.strip()), created=True)
 
     def get_bid(self, bid_id: str) -> Bid | None:
@@ -246,6 +294,7 @@ class PostgresMarketRepository:
                 .values(status="WITHDRAWN")
                 .returning(*bids.c)
             ).one()
+            write_activity(connection, self._make_activity, _bid_activity("BID_WITHDRAWN", updated))
             return _to_bid(updated)
 
     def accept_bid(

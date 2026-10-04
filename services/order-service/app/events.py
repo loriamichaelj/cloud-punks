@@ -1,11 +1,12 @@
-"""Build the ``OrderCreated`` outbox event for an order (DESIGN.md section 6)."""
+"""Build the outbox events order-service publishes (DESIGN.md section 6)."""
 
-from app.domain.models import Order, OutboxEvent
+from app.domain.models import MarketActivity, Order, OutboxEvent
 from app.domain.transitions import TransitionContext
 from retail_common.events.envelope import Envelope
 from retail_common.events.schemas import (
     EventType,
     ItemQuantity,
+    MarketActivityData,
     OrderCreatedData,
     OrderStatusUpdatedData,
 )
@@ -48,6 +49,34 @@ def order_status_updated_event(context: TransitionContext, causation_id: str) ->
     )
     envelope = Envelope.create(
         event_type=EventType.ORDER_STATUS_UPDATED,
+        producer=PRODUCER,
+        data=data,
+        causation_id=causation_id,
+    )
+    return OutboxEvent(
+        event_id=envelope.event_id,
+        detail_type=envelope.event_type,
+        payload=envelope.model_dump(mode="json"),
+    )
+
+
+def market_activity_event(activity: MarketActivity, causation_id: str | None = None) -> OutboxEvent:
+    """The ``MarketActivity`` event for one listing, bid or sale (DESIGN.md section 16.11). Built
+    inside the transaction that made the change, so it carries that request's (or, for a sale, that
+    saga's) correlation id."""
+    data = MarketActivityData(
+        kind=activity.kind,
+        sku=activity.sku,
+        customer_id=activity.customer_id,
+        counterparty=activity.counterparty,
+        amount=activity.amount,
+        currency=activity.currency,
+        listing_id=activity.listing_id,
+        bid_id=activity.bid_id,
+        order_id=activity.order_id,
+    )
+    envelope = Envelope.create(
+        event_type=EventType.MARKET_ACTIVITY,
         producer=PRODUCER,
         data=data,
         causation_id=causation_id,

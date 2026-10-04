@@ -47,18 +47,32 @@ for table in inventory_reservations notifications; do
     --time-to-live-specification Enabled=true,AttributeName=ttl >/dev/null
 done
 
-# Lambda: zip from inside the function directory so handler.py sits at the archive root
-# (the handler string "handler.lambda_handler" resolves relative to the root). No `zip` binary
-# is needed. M2 ships a stub handler; M7 implements it.
-(cd /opt/functions/low-stock-alert && python3 -m zipfile -c /tmp/low-stock.zip handler.py)
+# Lambdas: the same scripts/package_lambda.py the platform workflows run builds both zips
+# (/opt holds functions/, scripts/package_lambda.py and nft-collection/, mounted read-only).
+python3 /opt/scripts/package_lambda.py /tmp/lambda >/dev/null
 awslocal lambda create-function --function-name low-stock-alert --runtime python3.13 \
-  --handler handler.lambda_handler --zip-file fileb:///tmp/low-stock.zip \
+  --handler handler.lambda_handler --zip-file fileb:///tmp/lambda/low-stock-alert.zip \
   --role "arn:aws:iam::$ACCT:role/lambda-role" \
   --environment "Variables={LOW_STOCK_THRESHOLD=5}" >/dev/null
 awslocal events put-rule --event-bus-name "$BUS" --name to-low-stock \
   --event-pattern '{"detail-type":["InventoryReserved"]}' >/dev/null
 awslocal events put-targets --event-bus-name "$BUS" --rule to-low-stock \
   --targets "Id=1,Arn=arn:aws:lambda:$REGION:$ACCT:function:low-stock-alert" >/dev/null
+
+# market-activity-email (DESIGN.md section 16.11): every MarketActivity on a CloudPunk becomes an
+# email through SES. LocalStack keeps sent mail instead of delivering it: GET /_aws/ses lists it.
+ACTIVITY_EMAIL=activity@cloudpunks.local
+awslocal ses verify-email-identity --email-address "$ACTIVITY_EMAIL" >/dev/null
+awslocal lambda create-function --function-name market-activity-email --runtime python3.13 \
+  --handler handler.lambda_handler --zip-file fileb:///tmp/lambda/market-activity-email.zip \
+  --role "arn:aws:iam::$ACCT:role/lambda-role" --timeout 15 \
+  --environment "Variables={EMAIL_FROM=$ACTIVITY_EMAIL,EMAIL_TO=$ACTIVITY_EMAIL,STOREFRONT_URL=http://localhost:8080}" \
+  >/dev/null
+awslocal events put-rule --event-bus-name "$BUS" --name to-market-activity-email \
+  --event-pattern '{"detail-type":["MarketActivity"],"detail":{"data":{"sku":[{"prefix":"CP-"}]}}}' \
+  >/dev/null
+awslocal events put-targets --event-bus-name "$BUS" --rule to-market-activity-email \
+  --targets "Id=1,Arn=arn:aws:lambda:$REGION:$ACCT:function:market-activity-email" >/dev/null
 
 echo "retail bootstrap complete"
 touch /tmp/bootstrap.done

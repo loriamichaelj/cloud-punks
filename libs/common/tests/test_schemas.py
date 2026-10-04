@@ -12,6 +12,8 @@ from retail_common.events.schemas import (
     EventType,
     InventoryFailedData,
     InventoryReservedData,
+    MarketActivityData,
+    MarketActivityKind,
     OrderCreatedData,
     OrderStatusUpdatedData,
     validate_data,
@@ -116,6 +118,39 @@ def test_order_status_updated_payload() -> None:
                 "new_status": "DONE",
             }
         )
+
+
+def test_market_activity_payloads() -> None:
+    sale = MarketActivityData.model_validate(
+        {
+            "kind": "SALE",
+            "sku": "CP-0023",
+            "customer_id": "bob",
+            "counterparty": "alice",
+            "amount": "12.50",
+            "currency": "ETH",
+            "order_id": ORDER_ID,
+        }
+    )
+    assert sale.amount == Decimal("12.50")
+    listed = MarketActivityData.model_validate(
+        {"kind": "LISTED", "sku": "CP-0023", "customer_id": "alice", "listing_id": ORDER_ID}
+    )
+    assert listed.counterparty is None
+    assert listed.amount is None
+
+
+def test_market_activity_kind_is_open_ended_but_the_rest_is_checked() -> None:
+    # a kind this build does not know is still a valid payload (ADR-21)
+    later = MarketActivityData.model_validate(
+        {"kind": "OFFER_EXPIRED", "sku": "CP-0001", "customer_id": "c"}
+    )
+    assert later.kind not in set(MarketActivityKind)
+    for bad in ({"amount": "-1"}, {"currency": "eth"}, {"listing_id": "nope"}, {"kind": ""}):
+        with pytest.raises(ValidationError):
+            MarketActivityData.model_validate(
+                {"kind": "SALE", "sku": "CP-0001", "customer_id": "c"} | bad
+            )
 
 
 def test_unknown_payload_fields_are_ignored() -> None:

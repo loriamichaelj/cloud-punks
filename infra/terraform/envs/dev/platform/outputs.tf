@@ -75,3 +75,7 @@ output "alarm_topic_arn" {
 output "alarm_names" {
   value = module.monitoring.alarm_names
 }
+
+output "market_email_function_name" {
+  value = module.events.market_email_function_name
+}

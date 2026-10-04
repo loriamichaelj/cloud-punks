@@ -2,10 +2,10 @@ import contextvars
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from app.domain.models import Order, OrderItem
-from app.events import order_created_event
+from app.domain.models import MarketActivity, Order, OrderItem
+from app.events import market_activity_event, order_created_event
 from retail_common.events.envelope import Envelope
-from retail_common.events.schemas import OrderCreatedData, validate_data
+from retail_common.events.schemas import MarketActivityData, OrderCreatedData, validate_data
 from retail_common.logging import set_correlation_id
 
 NOW = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
@@ -66,3 +66,29 @@ def test_the_event_carries_the_requests_correlation_id_for_the_whole_saga() -> N
 
 def test_every_event_has_a_distinct_id() -> None:
     assert order_created_event(ORDER).event_id != order_created_event(ORDER).event_id
+
+
+def test_a_market_activity_event_is_a_valid_envelope_with_money_as_a_string() -> None:
+    activity = MarketActivity(
+        "SALE",
+        "CP-0023",
+        "bob",
+        counterparty="alice",
+        amount=Decimal("12.5"),
+        currency="ETH",
+        order_id=ORDER.order_id,
+    )
+    event = market_activity_event(activity, causation_id="01J9Z6Q4W8K3M2N1P0R7S5T4V4")
+
+    envelope = Envelope.model_validate(event.payload)
+    assert event.detail_type == "MarketActivity" == envelope.event_type
+    assert envelope.causation_id == "01J9Z6Q4W8K3M2N1P0R7S5T4V4"
+    assert event.payload["data"]["amount"] == "12.5"
+    data = validate_data(envelope)
+    assert isinstance(data, MarketActivityData)
+    assert (data.kind, data.sku, data.customer_id, data.counterparty) == (
+        "SALE",
+        "CP-0023",
+        "bob",
+        "alice",
+    )

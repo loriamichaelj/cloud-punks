@@ -54,6 +54,7 @@ data "aws_iam_policy_document" "tf" {
       "logs:*",
       "rds:*",
       "secretsmanager:*",
+      "ses:*", # the market activity email's identity (DESIGN.md section 16.11)
       "sns:*",
       "sqs:*",
       "ssm:*",

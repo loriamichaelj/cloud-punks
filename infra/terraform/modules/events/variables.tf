@@ -44,3 +44,15 @@ variable "log_retention_days" {
   type    = number
   default = 30
 }
+
+variable "activity_email" {
+  description = "Where market activity emails go (DESIGN.md section 16.11): the SES identity, sender and recipient. Empty creates no email function."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "market_email_zip_path" {
+  description = "The market-activity-email package, built by scripts/package_lambda.py before plan and again before apply."
+  type        = string
+}

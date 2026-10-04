@@ -79,6 +79,23 @@ class OutboxEvent:
 
 
 @dataclass(frozen=True)
+class MarketActivity:
+    """One thing that happened to one CloudPunk, published as a ``MarketActivity`` event through
+    the outbox in the transaction that made it happen (DESIGN.md section 16.11). ``kind`` is one of
+    LISTED, UNLISTED, BID_PLACED, BID_WITHDRAWN or SALE."""
+
+    kind: str
+    sku: str
+    customer_id: str  # the seller (LISTED, UNLISTED), the bidder (bids), the buyer (SALE)
+    counterparty: str | None = None  # a SALE's seller; None when bought from the platform
+    amount: Decimal | None = None
+    currency: str | None = None
+    listing_id: str | None = None
+    bid_id: str | None = None
+    order_id: str | None = None
+
+
+@dataclass(frozen=True)
 class StoredOrder:
     order: Order
     request_hash: str

@@ -53,12 +53,14 @@ services:
     image: localstack/localstack:${LOCALSTACK_TAG:?set it in .env}
     restart: unless-stopped
     environment:
-      SERVICES: events,sqs,dynamodb,lambda,logs,iam,sts
+      SERVICES: events,sqs,dynamodb,lambda,logs,iam,sts,ses
       LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:?set it in .env}
       LAMBDA_DOCKER_NETWORK: retail_default # Lambda containers join the Compose network
     volumes:
       - ./localstack/init/ready.d:/etc/localstack/init/ready.d:ro
       - ../functions:/opt/functions:ro
+      - ../scripts/package_lambda.py:/opt/scripts/package_lambda.py:ro # builds the Lambda zips
+      - ../nft-collection:/opt/nft-collection:ro # the art the activity email draws from
       - /var/run/docker.sock:/var/run/docker.sock # required for Lambda execution
     ports: ["4566:4566"]
     healthcheck:

@@ -12,31 +12,40 @@ Everything happens in ONE transaction, in this order:
    -> the bid FILLED, the listing SOLD and its other open bids CLOSED; REJECTED -> the bid FAILED
    and the listing back to OPEN. The listing row is locked first, then the bid, the order every
    market writer takes them in.
+5. If it CONFIRMED, one ``MarketActivity`` SALE event per line into the outbox (DESIGN.md 16.11):
+   who bought it, from whom (None for the platform) and at what price.
 
 Dedupe, the business write, the event and the market settlement commit together or not at all.
 """
 
 from collections.abc import Callable
+from typing import Any
 
-from sqlalchemy import Engine, insert, select, update
+from sqlalchemy import Engine, Row, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import Connection
 
 from app.domain.errors import OrderNotFound
-from app.domain.models import OutboxEvent
+from app.domain.models import MarketActivity, OutboxEvent
 from app.domain.transitions import (
     StatusChange,
     TransitionContext,
     TransitionKind,
     TransitionResult,
 )
+from app.events import market_activity_event
 from app.repo.orders import store_errors
-from app.repo.tables import bids, listings, orders, outbox, processed_events
+from app.repo.tables import bids, listings, order_items, orders, outbox, processed_events
+
+type MakeSaleEvent = Callable[[MarketActivity, str], OutboxEvent]  # (activity, causation_id)
 
 
 class PostgresTransitionStore:
-    def __init__(self, engine: Engine) -> None:
+    def __init__(
+        self, engine: Engine, *, make_activity: MakeSaleEvent = market_activity_event
+    ) -> None:
         self._engine = engine
+        self._make_activity = make_activity
 
     def apply(
         self,
@@ -63,7 +72,7 @@ class PostgresTransitionStore:
                     status_reason=change.reason,
                     version=orders.c.version + 1,
                 )
-                .returning(orders.c.customer_id, orders.c.created_at)
+                .returning(orders.c.customer_id, orders.c.created_at, orders.c.currency)
             ).one_or_none()
 
             if changed is None:
@@ -92,8 +101,37 @@ class PostgresTransitionStore:
                 )
             )
             _settle_accepted_bid(connection, order_id, change.new_status)
+            if change.new_status == "CONFIRMED":
+                self._write_sales(connection, event_id, order_id, changed)
             return TransitionResult(
                 TransitionKind.APPLIED, created_at=changed.created_at, new_status=change.new_status
+            )
+
+    def _write_sales(
+        self, connection: Connection, causation_id: str, order_id: str, order: Row[Any]
+    ) -> None:
+        lines = connection.execute(
+            select(order_items.c.sku, order_items.c.unit_price, order_items.c.seller)
+            .where(order_items.c.order_id == order_id)
+            .order_by(order_items.c.sku)
+        ).all()
+        for line in lines:
+            event = self._make_activity(
+                MarketActivity(
+                    "SALE",
+                    line.sku,
+                    order.customer_id,
+                    counterparty=line.seller,
+                    amount=line.unit_price,
+                    currency=order.currency,
+                    order_id=order_id,
+                ),
+                causation_id,
+            )
+            connection.execute(
+                insert(outbox).values(
+                    event_id=event.event_id, detail_type=event.detail_type, payload=event.payload
+                )
             )
 
 

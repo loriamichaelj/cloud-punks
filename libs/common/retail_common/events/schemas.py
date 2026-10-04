@@ -25,6 +25,7 @@ class EventType(StrEnum):
     INVENTORY_RESERVED = "InventoryReserved"
     INVENTORY_FAILED = "InventoryFailed"
     ORDER_STATUS_UPDATED = "OrderStatusUpdated"
+    MARKET_ACTIVITY = "MarketActivity"
 
 
 class ItemQuantity(BaseModel):
@@ -78,6 +79,34 @@ class OrderStatusUpdatedData(BaseModel):
     reason: str | None = Field(default=None, max_length=255)
 
 
+class MarketActivityKind(StrEnum):
+    """What happened on the market. ``MarketActivityData.kind`` stays a plain string (ADR-21): a
+    kind added later must not be poison to a consumer that predates it."""
+
+    LISTED = "LISTED"  # the owner put it up for bid
+    UNLISTED = "UNLISTED"  # the owner took it off the market
+    BID_PLACED = "BID_PLACED"
+    BID_WITHDRAWN = "BID_WITHDRAWN"
+    SALE = "SALE"  # an order for it confirmed: bought from CloudPunks or by an accepted bid
+
+
+class MarketActivityData(BaseModel):
+    """One thing that happened to one CloudPunk, written by order-service through the outbox in
+    the same transaction as the change itself (DESIGN.md section 16.11)."""
+
+    kind: str = Field(min_length=1, max_length=32)
+    sku: Sku
+    # Who did it: the seller for LISTED and UNLISTED, the bidder for bids, the buyer for a SALE.
+    customer_id: str = Field(min_length=1, max_length=64)
+    # A SALE's seller: None when it was bought from CloudPunks (the platform).
+    counterparty: str | None = Field(default=None, min_length=1, max_length=64)
+    amount: Money | None = None  # a bid's amount, a sale's price
+    currency: Currency | None = None
+    listing_id: Ulid | None = None
+    bid_id: Ulid | None = None
+    order_id: Ulid | None = None
+
+
 # (event_type, major schema version) -> payload model. A breaking change adds a (type, 2) entry
 # while the producer dual-publishes; consumers that do not know a version simply skip it.
 SCHEMAS: dict[tuple[str, int], type[BaseModel]] = {
@@ -85,6 +114,7 @@ SCHEMAS: dict[tuple[str, int], type[BaseModel]] = {
     (EventType.INVENTORY_RESERVED, 1): InventoryReservedData,
     (EventType.INVENTORY_FAILED, 1): InventoryFailedData,
     (EventType.ORDER_STATUS_UPDATED, 1): OrderStatusUpdatedData,
+    (EventType.MARKET_ACTIVITY, 1): MarketActivityData,
 }
 
 
