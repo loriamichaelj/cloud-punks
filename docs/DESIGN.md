@@ -1118,8 +1118,8 @@ Same rules as section 12: one at a time, `make lint test` (and itest, e2e when s
 - [x] **N2 — Catalog.** *(Built and approved 3 Oct 2026.)* Seed the five types and 100 products in ETH, one of each; delete the old catalog, art and palettes; the e2e fixtures move to `E2E-` products. *Done when:* `make lint test itest e2e` pass on a clean `make reset && make up && make seed`.
 - [x] **N3 — Ownership (inventory).** *(Built and approved 3 Oct 2026.)* `owner`, the two reservation modes, the new response field, `reset_owner`, `InventoryFailed.detail`. *Done when:* unit and integration tests, including the two-buyer race, pass and the guards are shown able to fail.
 - [x] **N4 — Listings, bids and activity (order-service).** *(Built and approved 3 Oct 2026.)* Migration 0002, `seller` on items, the listing and bid endpoints, settling in the consumer, `/activity`, `OrderCreated.seller`. *Done when:* unit, integration and `make e2e` pass with the new acceptance steps.
-- [x] **N5 — UI.** *(Built 3 Oct 2026; awaiting review.)* The screens in 16.6, the old screens removed, component tests and browser journeys rewritten. *Done when:* `make lint test ui-e2e` pass; axe clean.
-- [ ] **N6 — Local cluster and cloud.** `make k8s-deploy k8s-e2e` pass; the cloud acceptance suite updated (it is run by `app-deploy` only when the owner chooses to deploy).
+- [x] **N5 — UI.** *(Built and approved 3 Oct 2026.)* The screens in 16.6, the old screens removed, component tests and browser journeys rewritten. *Done when:* `make lint test ui-e2e` pass; axe clean.
+- [x] **N6 — Local cluster and cloud.** *(Local cluster verified 3 Oct 2026; the cloud suite runs at the owner's next `app-deploy`.)* `make k8s-deploy k8s-e2e` pass; the cloud acceptance suite updated (it is run by `app-deploy` only when the owner chooses to deploy).
 - [ ] **N7 — Docs.** README, DESIGN.md sections 1 to 15 brought in line, the ADR notes, the OpenAPI baseline.
 
 ### 16.10 Settled with the owner (3 Oct 2026)

@@ -132,7 +132,7 @@ Open <http://retail.k8s.orb.local/>. `make k8s-down` removes the releases and `m
 
 ## Running on AWS (dev)
 
-The dev environment runs in `us-east-1`: two EKS nodes, RDS for PostgreSQL, ElastiCache for Valkey, DynamoDB, EventBridge and SQS, behind an internal ALB. No AWS credential exists on any laptop (ADR-14). Every change is a workflow, started by hand, with an approval on the `bootstrap` or `dev` GitHub Environment. `app-prepare` runs the checks, builds and pushes the images, and verifies that the pods run the images ECR holds; `app-deploy` then runs the 14-test acceptance suite through the load balancer, and it passes.
+The dev environment runs in `us-east-1`: two EKS nodes, RDS for PostgreSQL, ElastiCache for Valkey, DynamoDB, EventBridge and SQS, behind an internal ALB. No AWS credential exists on any laptop (ADR-14). Every change is a workflow, started by hand, with an approval on the `bootstrap` or `dev` GitHub Environment. `app-prepare` runs the checks, builds and pushes the images, and verifies that the pods run the images ECR holds; `app-deploy` then runs the acceptance suite through the load balancer (17 tests with the CloudPunks market steps; the last run, before the redesign, passed 14 of 14).
 
 Bring-up, in order (details and the teardown order are in `.github/workflows/README.md`):
 
