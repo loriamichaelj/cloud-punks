@@ -16,16 +16,19 @@ export function ErrorPanel({ error, title, onRetry, children }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
 
-  useEffect(() => {
-    ref.current?.focus();
-  }, [error]);
-
   const network = error instanceof NetworkError;
   const message = network
     ? 'The server could not be reached. Check your connection and try again.'
     : error instanceof ApiError
       ? error.message
       : 'Something went wrong.';
+
+  // Focus once per distinct failure (a refetch that fails the same way again is a new error object,
+  // not a new failure), and without scrolling: role="alert" already announces it, and a page that
+  // jumps to a panel below the fold slides its top under the sticky header.
+  useEffect(() => {
+    ref.current?.focus({ preventScroll: true });
+  }, [title, message]);
   const correlationId =
     error instanceof ApiError || error instanceof NetworkError ? error.correlationId : null;
 

@@ -91,6 +91,22 @@ async function toApiError(response: Response, fallbackCorrelationId: string): Pr
   });
 }
 
+/** A success that is not JSON (a proxy that routed an API path to the SPA answers 200 with HTML)
+ * is still a failure the screens must explain, with a reference, not a raw parse error. */
+async function readJson<T>(response: Response, fallbackCorrelationId: string): Promise<T> {
+  try {
+    return (await response.json()) as T;
+  } catch (cause) {
+    if (cause instanceof DOMException && cause.name === 'AbortError') throw cause;
+    throw new ApiError({
+      status: response.status,
+      code: 'BAD_RESPONSE',
+      message: 'The server sent an answer the app could not read.',
+      correlationId: response.headers.get(CORRELATION_HEADER) ?? fallbackCorrelationId,
+    });
+  }
+}
+
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const correlationId = options.correlationId ?? newCorrelationId();
   const sleep = options.sleep ?? defaultSleep;
@@ -114,7 +130,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
       if (cause instanceof DOMException && cause.name === 'AbortError') throw cause;
       throw new NetworkError(correlationId);
     }
-    if (response.ok) return (await response.json()) as T;
+    if (response.ok) return readJson<T>(response, correlationId);
 
     const error = await toApiError(response, correlationId);
     if (error.status === 503 && attempt < (options.retry503 ?? 0)) {

@@ -6,8 +6,11 @@
   display: grid;
   grid-template-columns: repeat(18, 1fr);
   align-content: start; /* rows keep their square tiles: no stretched gaps */
-  max-height: 240px;
+  /* A fixed height, not a max: with no CloudPunks loaded (an error, a slow first load) the banner
+     still holds its place, so the identity block's negative margin never tucks it under the header. */
+  height: 240px;
   overflow: hidden;
+  background: var(--surface-2);
   mask-image: linear-gradient(to bottom, #000 55%, transparent 100%);
 }
 
@@ -211,7 +214,7 @@
 
   .banner {
     grid-template-columns: repeat(9, 1fr);
-    max-height: 160px;
+    height: 160px;
   }
 }
 

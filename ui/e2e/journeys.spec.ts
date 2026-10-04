@@ -198,3 +198,24 @@ test('a page at phone width has no horizontal scroll', async ({ page }) => {
     expect(overflow, path).toBeLessThanOrEqual(0);
   }
 });
+
+test('an API path answered with the page (HTML) reads as an error, and nothing hides the title', async ({
+  page,
+}) => {
+  // what a gateway or load balancer without the market routes does: it serves the SPA instead
+  await page.route(/\/api\/v1\/(listings|activity|bids)/, (route) =>
+    route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html>' }),
+  );
+  for (const width of [1280, 360]) {
+    await page.setViewportSize({ width, height: 640 });
+    await page.goto('/');
+    const panel = page.getByTestId('error-panel');
+    await expect(panel).toContainText('could not read');
+    await expect(panel).toContainText('Reference');
+    // the title stays in view below the sticky header: no jump to the panel, no collapsed banner
+    expect(await page.evaluate(() => window.scrollY), String(width)).toBe(0);
+    const header = await page.locator('header').boundingBox();
+    const title = await page.getByRole('heading', { name: 'CloudPunks', level: 1 }).boundingBox();
+    expect(title!.y, String(width)).toBeGreaterThanOrEqual(header!.y + header!.height);
+  }
+});

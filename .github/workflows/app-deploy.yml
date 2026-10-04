@@ -146,6 +146,16 @@ jobs:
           "${helm_cmd[@]}" upgrade --install --rollback-on-failure --wait --timeout 5m \
             gateway "$HELM_CHART" -f "${HELM_VALUES}/values-ingress-dev.yaml"
 
+          # The viewer ALB (app-expose) must carry the same routes as the internal one, or a new API
+          # path falls through to the UI there and answers HTML. If it is installed, refresh its
+          # routes; --reuse-values keeps the allowed address app-expose stored, so this job never
+          # needs the DEV_VIEWER_CIDR secret. It is never installed from here.
+          if "${helm_cmd[@]}" status gateway-public >/dev/null 2>&1; then
+            echo "== gateway-public (the viewer ALB: refresh its routes, keep its address)"
+            "${helm_cmd[@]}" upgrade --reuse-values --rollback-on-failure --wait --timeout 5m \
+              gateway-public "$HELM_CHART" -f "${HELM_VALUES}/values-ingress-public-dev.yaml"
+          fi
+
           # Prometheus and Grafana. Last, so a problem here never blocks the application. The Role
           # Prometheus needs comes from the cluster-addons stack (addons-create.yml), not from this chart.
           # Alertmanager publishes to the topic the CloudWatch alarms use; its ARN is built here so the

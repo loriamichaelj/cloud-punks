@@ -52,6 +52,25 @@ describe('request', () => {
     expect(error.correlationId).toBe('mine');
   });
 
+  it('reports a 200 that is not JSON (an API path routed to the SPA) as an ApiError', async () => {
+    server.use(
+      http.get(
+        '*/api/v1/x',
+        () =>
+          new HttpResponse('<!doctype html><title>CloudPunks</title>', {
+            status: 200,
+            headers: { 'Content-Type': 'text/html' },
+          }),
+      ),
+    );
+    const error = (await request('/x', { correlationId: 'html-1' }).catch(
+      (e: unknown) => e,
+    )) as ApiError;
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({ code: 'BAD_RESPONSE', correlationId: 'html-1' });
+    expect(error.message).not.toContain('doctype');
+  });
+
   it('reports an unreachable server as a NetworkError, not an ApiError', async () => {
     server.use(http.get('*/api/v1/x', () => HttpResponse.error()));
     const error = await request('/x', { correlationId: 'net-1' }).catch((e: unknown) => e);

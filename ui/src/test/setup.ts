@@ -11,6 +11,10 @@ globalThis.fetch = (input, init) =>
     init,
   );
 
+// jsdom has no layout, so its scrollTo only logs "not implemented"; the screens call it on every
+// route change.
+window.scrollTo = () => undefined;
+
 beforeAll(() => {
   server.listen({ onUnhandledRequest: 'error' });
 });

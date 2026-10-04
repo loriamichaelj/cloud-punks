@@ -57,6 +57,8 @@ The internal ALB is reachable only from inside the VPC, and no laptop has AWS ac
 3. Run **App: expose** with `expose`, approve it, and open the address in its run summary. The ALB takes a few minutes to answer the first time.
 4. When your address changes, update the secret and run `expose` again. Run `remove` when you are done; **App: destroy** with `uninstall_releases` also removes it.
 
+Once it is installed, every `app-deploy` also refreshes its routes from `values-ingress-public-dev.yaml` (with `--reuse-values`, so the stored address is kept and that job never reads the secret); `app-deploy` never installs it. Without that, a new API path added to both Ingress files reaches the internal ALB only, and on the viewer ALB it falls through to the UI and answers HTML.
+
 `scripts/viewer_cidr.py` refuses anything wider than a `/24`, any private address, and `0.0.0.0/0`. The ALB is plain HTTP, there is no login, and the API's admin endpoints are unauthenticated, which is why it is limited to one address and meant for dev only. The "demo tools" page of the UI is not in the cloud build (`VITE_DEMO_TOOLS` is off outside local), so stock and prices cannot be set from the browser.
 
 **Not yet exercised:** the three teardown workflows (`app-destroy`, `addons-destroy`, `platform-destroy`) and the `remove` action of `app-expose` have never been run. Run them once in dev before relying on them.

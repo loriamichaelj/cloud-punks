@@ -15,9 +15,12 @@ export function Layout() {
   const [query, setQuery] = useState('');
 
   // Move focus to the page on every route change so keyboard and screen-reader users start at the
-  // top of the new screen instead of on a link that no longer exists.
+  // top of the new screen instead of on a link that no longer exists. A plain focus() would scroll
+  // main's top edge to the top of the window, under the sticky header, hiding the first 70 px of
+  // every page; so focus without scrolling and start the page at its real top.
   useEffect(() => {
-    main.current?.focus();
+    main.current?.focus({ preventScroll: true });
+    window.scrollTo({ top: 0 });
   }, [location.pathname]);
 
   const search = (event: SyntheticEvent) => {

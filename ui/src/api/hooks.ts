@@ -26,6 +26,12 @@ const liveOptions = {
   retry: false,
 } as const;
 
+/** Poll every ``ms`` while the query is healthy. While it is failing, wait for "Try again" (or
+ * window focus) instead of failing, and redrawing the error, every few seconds. */
+function whileHealthy(ms: number) {
+  return (query: { state: { status: string } }) => (query.state.status === 'error' ? false : ms);
+}
+
 const catalogOptions = { staleTime: CATALOG_STALE_MS, retry: false } as const;
 
 export const MARKET_KEYS = ['market', 'stock', 'listings', 'bids', 'activity', 'orders'] as const;
@@ -94,7 +100,7 @@ export function useMarket(skus: readonly string[]) {
       return { stock, listed: new Set(listings.items.map((l) => l.sku)), lastSales };
     },
     enabled: skus.length > 0,
-    refetchInterval: MARKET_REFRESH_MS,
+    refetchInterval: whileHealthy(MARKET_REFRESH_MS),
     ...liveOptions,
   });
 }
@@ -132,7 +138,7 @@ export function useStock(sku: string) {
   return useQuery({
     queryKey: ['stock', sku],
     queryFn: ({ signal }) => api.stock(sku, { signal }),
-    refetchInterval: ITEM_REFRESH_MS,
+    refetchInterval: whileHealthy(ITEM_REFRESH_MS),
     ...liveOptions,
   });
 }
@@ -145,7 +151,7 @@ export function useActiveListing(sku: string) {
       const page = await api.listings({ sku, status: 'ACTIVE' }, { signal });
       return page.items[0] ?? null;
     },
-    refetchInterval: ITEM_REFRESH_MS,
+    refetchInterval: whileHealthy(ITEM_REFRESH_MS),
     ...liveOptions,
   });
 }
@@ -154,7 +160,7 @@ export function useBidsFor(sku: string) {
   return useQuery({
     queryKey: ['bids', 'sku', sku],
     queryFn: ({ signal }) => api.bids({ sku, size: 100 }, { signal }),
-    refetchInterval: ITEM_REFRESH_MS,
+    refetchInterval: whileHealthy(ITEM_REFRESH_MS),
     ...liveOptions,
   });
 }
@@ -180,7 +186,7 @@ export function useActivity(page: number, sku?: string) {
       return { ...result, items };
     },
     placeholderData: keepPreviousData,
-    refetchInterval: sku === undefined ? MARKET_REFRESH_MS : ITEM_REFRESH_MS,
+    refetchInterval: whileHealthy(sku === undefined ? MARKET_REFRESH_MS : ITEM_REFRESH_MS),
     ...liveOptions,
   });
 }
