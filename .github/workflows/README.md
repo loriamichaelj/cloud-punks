@@ -97,4 +97,4 @@ Promotion is a pull request `dev` to `stage` (then `stage` to `prod`), a reviewe
 
 Rolling back: run **App: rollback** with `all`, or with one release and a `revision`. Check afterwards with the `verify` job of **App: prepare** (it also runs the checks and finds the images already built). It changes what runs, not the database.
 
-Releases are tags on `dev` with a GitHub Release. `v0.1.0` is the first.
+Releases are tags on `dev` with a GitHub Release. `v0.1.0` was the first and `v1.0.0` is the current one. `v1.0.0` keeps its version and its tag is moved to a later `dev` commit when the release is updated (the owner's choice, 4 Oct 2026): the commit it points at is the one in the release notes.

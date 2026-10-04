@@ -12,7 +12,7 @@ Procedures (clean start, failure drills, the local cluster, and what to do when 
 
 ## Current state (4 Oct 2026)
 
-- **Built:** the local stack, the local Kubernetes cluster, dev on AWS (release `v0.1.5`, with the CloudPunks market deployed), the PR checks and deploy workflows, alarms, dashboards and runbooks, and the market activity emails (live in dev).
+- **Built:** the local stack, the local Kubernetes cluster, dev on AWS (release `v1.0.0`, with the CloudPunks market deployed), the PR checks and deploy workflows, alarms, dashboards and runbooks, and the market activity emails (live in dev).
 - **Never run:** the failure drills on EKS (so no alarm has fired and the path to an email is unproven), the teardown workflows, `app-rollback` and `promote` (stage and prod are not deployed).
 - **Built and applied in dev (4 Oct 2026):** HTTPS and a domain (Phase 5: the `dns` and `alb-dns` stacks, four workflows, the HTTPS values). The viewer ALB answers on its name over HTTPS and the internal ALB's HTTPS is checked from the runner on every deploy.
 - **Not built:** egress allowlisting (the NAT is open).
@@ -20,6 +20,8 @@ Procedures (clean start, failure drills, the local cluster, and what to do when 
 The full list is in DESIGN.md section 14.
 
 ## Change history (was the DESIGN.md status line)
+
+**v1.0.0 re-cut (4 Oct 2026).** The release `v1.0.0` was moved from `4f11b10` to the `dev` commit that carries HTTPS and the domain, the runner and rename fixes and these docs, and its notes were rewritten; the version stays `v1.0.0`. Tag and release history otherwise: `v0.1.0`, `v0.1.5`, `v1.0.0`.
 
 **v2.9 (4 Oct 2026): documentation simplified.** README, DESIGN.md and the other READMEs were cut back to what is built and how to run it; dates, plan days, status prose, milestone lists, open questions and risks moved to "Moved from DESIGN.md" below, and the local procedures (clean start, drills, local cluster) became a runbook. State at that point: Phases 1 to 4 and the CloudPunks market are built; dev runs on AWS with the CloudPunks release deployed (the cloud acceptance suite passed 17 of 17) and has had its market reset; the market activity emails are live in dev (confirmed by the owner); the failure drills on EKS, the teardown workflows, `app-rollback` and `promote` have never run.
 
@@ -745,7 +747,7 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 - [ ] Should `reserved` stock ever be released or committed? This design never releases (no cancellation). Needed before adding cancellations in a later week.
 - [ ] Database TLS: dev uses `DB_SSLMODE=require`. `verify-full` needs the RDS CA bundle in the images.
 - [ ] A Valkey AUTH token (it has TLS and a security-group limit now), pinned EKS add-on versions and a pinned PostgreSQL minor.
-- [ ] HTTPS and a domain (ACM certificate, Route 53). Until then dev is plain HTTP.
+- [x] HTTPS and a domain (ACM certificate, Route 53): done 4 Oct 2026 ("HTTPS and a domain as built"). Dev serves HTTPS on both ALBs once `DEV_DOMAIN` is set.
 - [ ] The failure drills on EKS (section 11): skipped on 3 Oct 2026. `drills.yml` has `consumer-down` and `bus-down`; poison, duplicate, cache-down and DB-down are not built. No alarm has been seen to fire in dev.
 - [ ] Teardown, rollback and promotion: `app-destroy`, `addons-destroy`, `platform-destroy`, `alarms-destroy`, the viewer's `remove`, `app-rollback` and `promote` have never run. A first promotion also needs a second reviewer, because the owner cannot approve their own pull request into `stage` or `prod`.
 
@@ -767,7 +769,7 @@ Closed questions and their reasons (UI scope and sequencing, Python and LocalSta
 | Self-hosted runner on a public repo executes untrusted fork code | Code execution inside the VPC next to the cluster | Runners serve only push-to-`dev`/dispatch/tag/environment jobs, never `pull_request`; approval required for outside collaborators; ephemeral single-job runners; instance profile grants SSM only |
 | `cloudbatch818-loria-retail-bootstrap` can create IAM roles | Effectively admin if the trust is widened or the workflow is edited | Exact `sub` pin to `environment:bootstrap`, required reviewer, `workflow_dispatch` only, the `bootstrap` environment accepts only the `dev` branch (branch protection on `.github/` is not set up yet) |
 | No local way to run plan/apply/kubectl | Slow feedback; cloud errors surface only in CI | Static checks locally; workflows dump diagnostics on failure; small, frequent infra PRs |
-| Public viewer ALB (`app-expose.yml`) | Anyone at the allowed address reaches an app with no login and unauthenticated admin endpoints, over plain HTTP | Dev only; one address from an environment secret (masked, never in the repo); `scripts/viewer_cidr.py` refuses anything wider than a /24, private addresses and `0.0.0.0/0`; `remove` deletes it |
+| Public viewer ALB (`app-expose.yml`) | Anyone at the allowed address reaches an app with no login and unauthenticated admin endpoints (over HTTPS once `DEV_DOMAIN` is set, plain HTTP before) | Dev only; one address from an environment secret (masked, never in the repo); `scripts/viewer_cidr.py` refuses anything wider than a /24, private addresses and `0.0.0.0/0`; `remove` deletes it |
 | The alarm and alert path is untested | An outage could pass without an email: a wrong rule, a muted subscription or a broken Alertmanager role would not show until a real failure | Rules are unit-tested (`make rules-test`), the subscription is confirmed, a cloud test checks the rules are loaded and Alertmanager is ready, and the runbook index is tested against the alarms. Not covered: a failure that actually fires one. Run `drills.yml` (`bus-down`, then `consumer-down`) to close this |
 | The nodes' pod limit and CPU | Pods stay `Pending` if the pod limit (about 29 per node) or CPU is reached, for example when an HPA scales up or another stack is added | Dev has two nodes (about 58 pods; the measurement that led to the second is in the ADR notes). Run `cluster-capacity.yml` after a change that adds pods |
 | Teardown workflows never run | `app-destroy`, `addons-destroy` and `platform-destroy` are untested end to end; a destroy could hang on an ALB or a security group | Order is fixed (app, addons, platform); `platform-destroy` refuses while the addons state has resources; run them once in dev before relying on them |

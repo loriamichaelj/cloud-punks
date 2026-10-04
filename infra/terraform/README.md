@@ -79,5 +79,5 @@ The ALB alarms (5xx rate, p95 `TargetResponseTime`) are the `alb-alarms` stack. 
 - EKS add-on versions are not pinned (`addon_versions` is empty, so EKS picks its default for the cluster version), and RDS runs `engine_version = "17"`, so AWS picks the minor. Copy what the apply chose into the variables.
 - Interface endpoints (about $7.30 per endpoint per AZ per month) sit in one AZ in dev. Set `interface_endpoint_services = []` to drop them and send that traffic through the NAT.
 - Valkey has TLS, encryption at rest and a security-group limit, but no AUTH token: generating one hands the secret to Terraform and into state.
-- Dev has no ACM certificate or domain, so ingress is plain HTTP.
+- TLS ends at the ALB: the hop to the pods and the calls between services are plain HTTP inside the VPC. The internal ALB also keeps port 80 (the deploy's readiness check and the acceptance suite reach it by its own name). HSTS is not set.
 - None of the three teardown workflows has been run yet.
