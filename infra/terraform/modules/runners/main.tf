@@ -148,9 +148,11 @@ resource "aws_autoscaling_group" "runner" {
   vpc_zone_identifier = var.subnet_ids
   health_check_type   = "EC2"
 
+  # The version number, not "$Latest": a literal never differs, so a change to the launch template (a new
+  # user data, say) would leave this group unchanged and the refresh below would never replace the instance.
   launch_template {
     id      = aws_launch_template.runner.id
-    version = "$Latest"
+    version = aws_launch_template.runner.latest_version
   }
 
   # One instance: replace it even though that means a short gap with no runner.
