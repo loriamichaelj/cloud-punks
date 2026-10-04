@@ -15,6 +15,9 @@ class InventoryRepository(Protocol):
         """Only SKUs that exist appear in the result."""
         ...
 
-    def set_available(self, sku: str, available: int) -> StockItem:
-        """Set ``available`` (creating the record if needed); ``reserved`` is left untouched."""
+    def set_available(self, sku: str, available: int, *, reset_owner: bool = False) -> StockItem:
+        """Set ``available`` (creating the record if needed); ``reserved`` is left untouched.
+
+        ``owner`` is kept unless ``reset_owner``, which hands the item back to the platform.
+        """
         ...

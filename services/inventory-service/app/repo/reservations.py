@@ -1,18 +1,27 @@
 """DynamoDB adapter for ``ReservationStore`` (tables ``inventory_reservations`` and ``inventory``).
 
 Reserving is ONE ``TransactWriteItems``: a ``Put`` of the reservation record guarded by
-``attribute_not_exists(order_id)`` plus one stock ``Update`` per SKU guarded by
-``attribute_exists(sku) AND available >= :q``. All succeed or none do (DESIGN.md section 5).
+``attribute_not_exists(order_id)`` plus one stock ``Update`` per SKU. All succeed or none do
+(DESIGN.md section 5). The update is also the transfer of ownership (section 16.5, ADR-18), in one
+of two modes:
+
+* a purchase from the platform (no seller), guarded by
+  ``attribute_exists(sku) AND available >= :q``: takes the stock and makes the buyer the owner. A
+  sold CloudPunk has ``available = 0``, so the stock condition alone decides a race between buyers;
+* a resale (an accepted bid, with a seller), guarded by
+  ``attribute_exists(sku) AND owner = :seller``: moves ``owner`` to the buyer; ``available`` stays
+  0.
 
 When the transaction is cancelled, ``CancellationReasons`` says why, and the three causes MUST
 NOT be conflated (the classic oversell / double-fail bug):
 
 * the *reservation record* condition failed -> the order was already processed: a duplicate;
-* a *stock* condition failed -> not enough stock, or no such SKU: a FAILED outcome;
+* a *stock* condition failed -> not enough stock, someone else owns it, or no such SKU: FAILED;
 * a conflict or throttling -> nothing was decided: retry later.
 
-DynamoDB reserved words matter in expressions: ``status`` is one and is aliased as ``#status``.
-(``items`` and ``ttl`` are too, but are only used as attribute names, which is allowed.)
+DynamoDB reserved words matter in expressions: ``status`` and ``owner`` are reserved and are
+aliased as ``#status`` and ``#owner``. (``items`` and ``ttl`` are too, but are only used as
+attribute names, which is allowed.)
 """
 
 from collections.abc import Mapping, Sequence
@@ -23,6 +32,7 @@ import structlog
 from botocore.exceptions import ClientError
 
 from app.domain.errors import StoreUnavailable
+from app.domain.models import FailureDetail
 from app.domain.reservations import (
     FailedLine,
     Reservation,
@@ -82,15 +92,25 @@ def _record(
     items: Sequence[ReservedLine],
     event_id: str,
     created_at: datetime,
+    buyer: str,
+    seller: str | None,
 ) -> dict[str, Any]:
-    return {
+    record = {
         "order_id": {"S": order_id},
         "status": {"S": status},
         "items": _lines(items),
         "event_id": {"S": event_id},
         "created_at": {"S": _timestamp(created_at)},
         "ttl": _number(int((created_at + RESERVATION_TTL).timestamp())),
+        "buyer": {"S": buyer},
     }
+    if seller is not None:
+        record["seller"] = {"S": seller}
+    return record
+
+
+def _optional(raw: Mapping[str, Any], name: str) -> Any:
+    return raw[name]["S"] if name in raw else None
 
 
 def _parse(raw: Mapping[str, Any]) -> Reservation:
@@ -116,9 +136,12 @@ def _parse(raw: Mapping[str, Any]) -> Reservation:
         ),
         event_id=raw["event_id"]["S"],
         created_at=datetime.fromisoformat(raw["created_at"]["S"]),
-        reason=raw["reason"]["S"] if "reason" in raw else None,
+        reason=_optional(raw, "reason"),
         failed_items=failed,
         remaining=remaining,
+        buyer=_optional(raw, "buyer"),  # absent on records written before ownership existed
+        seller=_optional(raw, "seller"),
+        detail=_optional(raw, "detail"),
     )
 
 
@@ -133,39 +156,58 @@ class DynamoReservationStore:
         self._inventory = inventory_table
         self._reservations = reservations_table
 
+    def _stock_update(
+        self, item: ReservedLine, created_at: datetime, buyer: str, seller: str | None
+    ) -> dict[str, Any]:
+        values: dict[str, Any] = {
+            ":q": _number(item.quantity),
+            ":zero": _number(0),
+            ":now": {"S": _timestamp(created_at)},
+            ":buyer": {"S": buyer},
+        }
+        taken = "reserved = if_not_exists(reserved, :zero) + :q, updated_at = :now, #owner = :buyer"
+        if seller is None:  # from the platform: the stock decides
+            update = f"SET available = available - :q, {taken}"
+            condition = "attribute_exists(sku) AND available >= :q"
+        else:  # a resale: the seller must still own it
+            update = f"SET {taken}"
+            condition = "attribute_exists(sku) AND #owner = :seller"
+            values[":seller"] = {"S": seller}
+        return {
+            "Update": {
+                "TableName": self._inventory,
+                "Key": {"sku": {"S": item.sku}},
+                "UpdateExpression": update,
+                "ConditionExpression": condition,
+                "ExpressionAttributeNames": {"#owner": "owner"},
+                "ExpressionAttributeValues": values,
+                # Returns the item as it was, so an unknown SKU (no item) can be told apart from a
+                # shortfall or a different owner (an item that exists).
+                "ReturnValuesOnConditionCheckFailure": "ALL_OLD",
+            }
+        }
+
     def reserve(
-        self, order_id: str, items: Sequence[ReservedLine], event_id: str, created_at: datetime
+        self,
+        order_id: str,
+        items: Sequence[ReservedLine],
+        event_id: str,
+        created_at: datetime,
+        *,
+        buyer: str,
+        seller: str | None = None,
     ) -> ReserveResult:
         transaction: list[dict[str, Any]] = [
             {
                 "Put": {
                     "TableName": self._reservations,
-                    "Item": _record(order_id, "RESERVED", items, event_id, created_at),
+                    "Item": _record(
+                        order_id, "RESERVED", items, event_id, created_at, buyer, seller
+                    ),
                     "ConditionExpression": "attribute_not_exists(order_id)",
                 }
             },
-            *(
-                {
-                    "Update": {
-                        "TableName": self._inventory,
-                        "Key": {"sku": {"S": item.sku}},
-                        "UpdateExpression": (
-                            "SET available = available - :q, "
-                            "reserved = if_not_exists(reserved, :zero) + :q, updated_at = :now"
-                        ),
-                        "ConditionExpression": "attribute_exists(sku) AND available >= :q",
-                        "ExpressionAttributeValues": {
-                            ":q": _number(item.quantity),
-                            ":zero": _number(0),
-                            ":now": {"S": _timestamp(created_at)},
-                        },
-                        # Returns the item as it was, so an unknown SKU (no item) can be told
-                        # apart from a shortfall (an item with too little `available`).
-                        "ReturnValuesOnConditionCheckFailure": "ALL_OLD",
-                    }
-                }
-                for item in items
-            ),
+            *(self._stock_update(item, created_at, buyer, seller) for item in items),
         ]
         try:
             with store_errors():
@@ -173,9 +215,14 @@ class DynamoReservationStore:
         except ClientError as exc:
             if exc.response["Error"]["Code"] != "TransactionCanceledException":
                 raise
-            return self._after_cancellation(exc, order_id, items, event_id, created_at)
+            return self._after_cancellation(
+                exc, order_id, items, event_id, created_at, buyer, seller
+            )
         return ReserveResult(
-            Reservation(order_id, "RESERVED", tuple(items), event_id, created_at), created=True
+            Reservation(
+                order_id, "RESERVED", tuple(items), event_id, created_at, buyer=buyer, seller=seller
+            ),
+            created=True,
         )
 
     def _after_cancellation(
@@ -185,6 +232,8 @@ class DynamoReservationStore:
         items: Sequence[ReservedLine],
         event_id: str,
         created_at: datetime,
+        buyer: str,
+        seller: str | None,
     ) -> ReserveResult:
         reasons: list[dict[str, Any]] = exc.response.get("CancellationReasons", [])
         codes = [reason.get("Code", "None") for reason in reasons]
@@ -203,22 +252,29 @@ class DynamoReservationStore:
 
         failed: list[FailedLine] = []
         unknown = False
+        detail: FailureDetail | None = None
         for item, reason in zip(items, reasons[1:], strict=False):
             if reason.get("Code") != "ConditionalCheckFailed":
                 continue
             old = reason.get("Item")
             if old:
                 failed.append(FailedLine(item.sku, item.quantity, int(old["available"]["N"])))
+                if seller is not None:
+                    detail = "OWNER_CHANGED"  # the seller no longer owns it
+                elif "owner" in old:
+                    detail = detail or "SOLD"  # a customer owns it: not for sale by the platform
             else:
                 failed.append(FailedLine(item.sku, item.quantity, 0))
                 unknown = True
         if not failed:
             raise RuntimeError(f"unexpected transaction cancellation: {codes}") from exc
 
-        record = _record(order_id, "FAILED", items, event_id, created_at) | {
+        record = _record(order_id, "FAILED", items, event_id, created_at, buyer, seller) | {
             "reason": {"S": "UNKNOWN_SKU" if unknown else "OUT_OF_STOCK"},
             "failed_items": _failed_lines(failed),
         }
+        if detail is not None and not unknown:
+            record["detail"] = {"S": detail}
         try:
             with store_errors():
                 self._client.put_item(

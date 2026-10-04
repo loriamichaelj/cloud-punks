@@ -1,8 +1,11 @@
-"""Seed the catalog (PostgreSQL product_db) and stock (DynamoDB inventory). Safe to re-run.
+"""Seed the CloudPunks catalog (product_db) and stock (DynamoDB inventory). Safe to re-run.
 
 * Catalog rows use ``INSERT ... ON CONFLICT DO NOTHING``: existing rows are never modified.
-* Stock uses a conditional put (``attribute_not_exists(sku)``): a re-seed never resets stock that
-  orders have already drawn down.
+* Stock uses a conditional put (``attribute_not_exists(sku)``): a re-seed never resets a CloudPunk
+  that has been sold (DESIGN.md section 16.7).
+* The retail catalog the collection replaced is removed where it is still present (its products and
+  categories), so an environment seeded before the redesign shows the collection only. Orders keep
+  their SKUs as plain values, so their history is unaffected.
 
 Connection settings come from the environment only (DB_*, AWS_REGION, INVENTORY_TABLE, and
 boto3's own AWS_ENDPOINT_URL / credential variables). Runs as the ``seed`` Compose service from the
@@ -18,7 +21,7 @@ import boto3
 import psycopg
 import structlog
 from botocore.exceptions import ClientError
-from catalog import CATEGORIES, PRODUCTS, STOCK
+from catalog import CATEGORIES, PRODUCTS, RETIRED_CATEGORIES, RETIRED_SKUS, STOCK
 from psycopg.conninfo import make_conninfo
 
 from retail_common.logging import configure_logging
@@ -42,6 +45,16 @@ def seed_catalog(conninfo: str) -> dict[str, int]:
             msg = "product_db has no catalog tables; run `make up` so product-migrate applies them"
             raise RuntimeError(msg)
 
+        # Products first: a category cannot go while a product still points at it.
+        cur.execute("DELETE FROM products WHERE sku = ANY(%s)", (list(RETIRED_SKUS),))
+        retired_products = cur.rowcount
+        cur.execute(
+            "DELETE FROM categories c WHERE c.slug = ANY(%s) "
+            "AND NOT EXISTS (SELECT 1 FROM products p WHERE p.category_id = c.id)",
+            (list(RETIRED_CATEGORIES),),
+        )
+        retired_categories = cur.rowcount
+
         categories = 0
         for slug, name in CATEGORIES:
             cur.execute(
@@ -54,16 +67,32 @@ def seed_catalog(conninfo: str) -> dict[str, int]:
         for product in PRODUCTS:
             cur.execute(
                 "INSERT INTO products (sku, name, description, category_id, price, currency) "
-                "SELECT %s, %s, %s, c.id, %s, 'USD' FROM categories c WHERE c.slug = %s "
+                "SELECT %s, %s, %s, c.id, %s, %s FROM categories c WHERE c.slug = %s "
                 "ON CONFLICT (sku) DO NOTHING",
-                (product.sku, product.name, product.description, product.price, product.category),
+                (
+                    product.sku,
+                    product.name,
+                    product.description,
+                    product.price,
+                    product.currency,
+                    product.category,
+                ),
             )
             products += cur.rowcount
-    return {"categories_inserted": categories, "products_inserted": products}
+    return {
+        "categories_inserted": categories,
+        "products_inserted": products,
+        "retired_products": retired_products,
+        "retired_categories": retired_categories,
+    }
 
 
 def seed_stock(dynamodb: Any, table: str = "inventory") -> dict[str, int]:
-    """Insert starting stock for any SKU that has no inventory item yet."""
+    """Insert one unit for any CloudPunk that has no inventory item yet.
+
+    Retired SKUs' stock items are left alone: with no product they can be neither ordered nor
+    shown, and the cloud seed role may only put items (DESIGN.md section 13).
+    """
     inserted = existing = 0
     now = datetime.now(UTC).isoformat(timespec="seconds")
     for sku, quantity in STOCK.items():

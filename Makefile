@@ -16,10 +16,10 @@ export IMAGE_TAG
 
 RUN = uv run --frozen --no-sync
 
-.PHONY: rules-test k8s-monitoring help lock sync fmt lint test itest e2e drills drill-consumer-down drill-poison drill-duplicate drill-bus-down drill-cache-down drill-db-down dlq-peek dlq-redrive obs-up obs-down k8s-lint k8s-build k8s-build-multiarch k8s-secrets k8s-ingress k8s-deploy k8s-e2e k8s-resilience k8s-rollback k8s-down up down reset logs seed openapi ui-install ui-dev ui-types ui-lint ui-typecheck ui-test ui-build ui-e2e ui-types-check openapi-check
+.PHONY: rules-test k8s-monitoring help lock sync fmt lint test itest e2e drills drill-consumer-down drill-poison drill-duplicate drill-bus-down drill-cache-down drill-db-down dlq-peek dlq-redrive obs-up obs-down k8s-lint k8s-build k8s-build-multiarch k8s-secrets k8s-ingress k8s-deploy k8s-e2e k8s-resilience k8s-rollback k8s-down up down reset logs seed openapi ui-install ui-dev ui-types ui-lint ui-typecheck ui-test ui-build ui-e2e ui-types-check openapi-check cloudpunks cloudpunks-check ui-art ui-art-check
 
 help:
-	@echo "Targets: lock sync fmt lint test itest e2e up down reset logs s=<service> seed openapi ui-*"
+	@echo "Targets: lock sync fmt lint test itest e2e up down reset logs s=<service> seed openapi cloudpunks ui-*"
 
 .env:
 	cp .env.example .env
@@ -46,7 +46,7 @@ lint: sync
 		$(RUN) mypy --config-file pyproject.toml --cache-dir .mypy_cache/$$s services/$$s/app || exit 1; \
 	done
 	$(RUN) mypy --config-file pyproject.toml --cache-dir .mypy_cache/functions functions/low-stock-alert/handler.py
-	@$(MAKE) --no-print-directory openapi-check ui-types-check ui-lint ui-typecheck ui-build k8s-lint rules-test
+	@$(MAKE) --no-print-directory openapi-check cloudpunks-check ui-art-check ui-types-check ui-lint ui-typecheck ui-build k8s-lint rules-test
 
 test: sync
 	@echo "pytest libs/common (coverage gate: 80%)"
@@ -85,12 +85,12 @@ itest: sync
 # End-to-end acceptance test through the gateway against the running stack (`make up seed`
 # first). E2E_COMPOSE lets the drills stop and start a consumer container.
 e2e: sync
-	E2E_COMPOSE="$(COMPOSE)" PYTHONPATH=tests/e2e $(RUN) pytest tests/e2e -q
+	E2E_COMPOSE="$(COMPOSE)" PYTHONPATH=tests/e2e:scripts $(RUN) pytest tests/e2e -q
 
 # --- Failure drills (DESIGN.md section 11) --------------------------------------------------------
 # Each drill breaks one thing in the running stack, checks detection and recovery, and puts the
 # stack back even when it fails. `make e2e` runs all of them after the acceptance steps.
-DRILL = E2E_COMPOSE="$(COMPOSE)" PYTHONPATH=tests/e2e $(RUN) pytest tests/e2e/test_drills.py -q
+DRILL = E2E_COMPOSE="$(COMPOSE)" PYTHONPATH=tests/e2e:scripts $(RUN) pytest tests/e2e/test_drills.py -q
 
 drills: sync
 	$(DRILL)
@@ -266,6 +266,26 @@ openapi-check: sync
 	@for s in $(SERVICES); do \
 		PYTHONPATH=services/$$s $(RUN) python scripts/export_openapi.py $$s docs/openapi --check || exit 1; \
 	done
+
+# --- CloudPunks art (DESIGN.md section 16.3, ADR-20) --------------------------------------------
+# `cloudpunks` renders nft-collection/*.svg and the seed data from the committed trait library and
+# roster in scripts/cloudpunks; `cloudpunks-check` fails when they are stale. The UI image is built
+# from ui/ only, so `ui-art` copies the art into ui/src/assets/cloudpunks and `ui-art-check` fails
+# when that copy differs from nft-collection.
+cloudpunks: sync
+	@PYTHONPATH=scripts $(RUN) python -m cloudpunks.generate render
+
+cloudpunks-check: sync
+	@PYTHONPATH=scripts $(RUN) python -m cloudpunks.generate check
+
+ui-art:
+	rm -rf ui/src/assets/cloudpunks
+	mkdir -p ui/src/assets/cloudpunks
+	cp nft-collection/*.svg ui/src/assets/cloudpunks/
+
+ui-art-check:
+	@diff -rq nft-collection ui/src/assets/cloudpunks >/dev/null || \
+		{ echo "ui/src/assets/cloudpunks differs from nft-collection: run make ui-art"; exit 1; }
 
 ui-install:
 	cd ui && npm ci

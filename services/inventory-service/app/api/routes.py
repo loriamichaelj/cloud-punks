@@ -34,5 +34,8 @@ def get_stock(sku: Sku, service: Service) -> StockOut:
 
 @router.put("/{sku}", response_model=StockOut)
 def set_stock(sku: Sku, body: StockSet, service: Service) -> StockOut:
-    """Admin/seed: sets ``available`` (creating the record if needed), keeps ``reserved``."""
-    return StockOut.from_domain(service.set_stock(sku, body.available))
+    """Admin/seed: sets ``available`` (creating the record if needed), keeps ``reserved``, and
+    keeps the owner unless ``reset_owner``."""
+    return StockOut.from_domain(
+        service.set_stock(sku, body.available, reset_owner=body.reset_owner)
+    )

@@ -58,11 +58,11 @@ export function Layout() {
       </main>
       <footer className={layout.footer}>
         <span className={layout.dots} aria-hidden="true">
-          <i data-category="apparel" />
-          <i data-category="footwear" />
-          <i data-category="accessories" />
-          <i data-category="home" />
-          <i data-category="electronics" />
+          <i data-category="male" />
+          <i data-category="female" />
+          <i data-category="zombie" />
+          <i data-category="ape" />
+          <i data-category="alien" />
         </span>
         <span>
           Demo only: no login and no payments. Your customer id is a label, not a credential.

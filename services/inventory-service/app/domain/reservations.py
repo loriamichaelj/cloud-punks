@@ -5,6 +5,10 @@ outcome. It is written exactly once, atomically with the stock change (or, for a
 own), and every later delivery of the same ``OrderCreated`` only *reads* it and re-emits the same
 outcome event. That is what makes redelivery safe without an outbox: if publishing fails, the
 message is not deleted and the retry re-emits from the stored record (ADR-05).
+
+It is also the transfer of a CloudPunk (DESIGN.md section 16.5, ADR-18): the same transaction moves
+``owner`` to the buyer. A purchase from the platform (no seller) needs stock; a resale (an accepted
+bid) needs the seller to still be the owner.
 """
 
 from collections.abc import Callable, Mapping, Sequence
@@ -13,7 +17,7 @@ from datetime import datetime
 from typing import Literal, Protocol
 
 from app.domain.errors import InvalidOrder
-from app.domain.models import FailureReason
+from app.domain.models import FailureDetail, FailureReason
 from app.domain.ports import InventoryRepository
 
 ReservationStatus = Literal["RESERVED", "FAILED"]
@@ -42,6 +46,9 @@ class Reservation:
     reason: FailureReason | None = None
     failed_items: tuple[FailedLine, ...] = ()
     remaining: Mapping[str, int] | None = field(default=None, compare=False)  # RESERVED only
+    buyer: str | None = None  # the customer who becomes the owner
+    seller: str | None = None  # the owner it is bought from; None for the platform
+    detail: FailureDetail | None = None  # FAILED only, for an item that exists
 
 
 @dataclass(frozen=True)
@@ -58,11 +65,21 @@ class ProcessedOrder:
 
 class ReservationStore(Protocol):
     def reserve(
-        self, order_id: str, items: Sequence[ReservedLine], event_id: str, created_at: datetime
+        self,
+        order_id: str,
+        items: Sequence[ReservedLine],
+        event_id: str,
+        created_at: datetime,
+        *,
+        buyer: str,
+        seller: str | None = None,
     ) -> ReserveResult:
-        """Reserve every line atomically, or record a FAILED outcome, or return the existing one.
+        """Reserve every line atomically and make ``buyer`` its owner, or record a FAILED outcome,
+        or return the existing one.
 
-        All lines succeed or none do. Raises ``StoreUnavailable`` for transient failures.
+        All lines succeed or none do. Without a ``seller`` each line needs ``available`` stock;
+        with one, each line needs ``owner == seller``. Raises ``StoreUnavailable`` for transient
+        failures.
         """
         ...
 
@@ -87,13 +104,22 @@ class ReservationService:
         self._new_event_id = new_event_id
         self._now = now
 
-    def process(self, order_id: str, lines: Sequence[ReservedLine]) -> ProcessedOrder:
+    def process(
+        self,
+        order_id: str,
+        lines: Sequence[ReservedLine],
+        *,
+        buyer: str,
+        seller: str | None = None,
+    ) -> ProcessedOrder:
         skus = [line.sku for line in lines]
         if len(set(skus)) != len(skus):
             # DynamoDB refuses two operations on one item in a transaction, so this can never work.
             raise InvalidOrder(f"order {order_id} lists the same SKU more than once")
 
-        result = self._store.reserve(order_id, lines, self._new_event_id(), self._now())
+        result = self._store.reserve(
+            order_id, lines, self._new_event_id(), self._now(), buyer=buyer, seller=seller
+        )
         reservation = result.reservation
 
         # `remaining` (stock left, for the low-stock alert) cannot be returned by a transaction,

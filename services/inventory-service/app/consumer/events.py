@@ -39,6 +39,7 @@ def outcome_envelope(reservation: Reservation, *, causation_id: str) -> Envelope
                 FailedItem(sku=f.sku, requested=f.requested, available=f.available)
                 for f in reservation.failed_items
             ],
+            detail=reservation.detail,
         )
         event_type = EventType.INVENTORY_FAILED
     return Envelope.create(

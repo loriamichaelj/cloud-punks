@@ -10,8 +10,10 @@ from app.domain.models import StockItem
 NOW = datetime(2026, 10, 1, 12, 0, 0, tzinfo=UTC)
 
 
-def make_item(sku: str = "SKU-1", available: int = 10, reserved: int = 0) -> StockItem:
-    return StockItem(sku=sku, available=available, reserved=reserved, updated_at=NOW)
+def make_item(
+    sku: str = "SKU-1", available: int = 10, reserved: int = 0, owner: str | None = None
+) -> StockItem:
+    return StockItem(sku=sku, available=available, reserved=reserved, updated_at=NOW, owner=owner)
 
 
 def make_settings() -> Settings:
@@ -38,11 +40,12 @@ class FakeRepository:
         self._check()
         return {sku: self.items[sku] for sku in skus if sku in self.items}
 
-    def set_available(self, sku: str, available: int) -> StockItem:
-        self.calls.append(f"set:{sku}:{available}")
+    def set_available(self, sku: str, available: int, *, reset_owner: bool = False) -> StockItem:
+        self.calls.append(f"set:{sku}:{available}" + (":reset_owner" if reset_owner else ""))
         self._check()
         existing = self.items.get(sku)
-        item = StockItem(sku, available, existing.reserved if existing else 0, NOW)
+        owner = None if reset_owner or existing is None else existing.owner
+        item = StockItem(sku, available, existing.reserved if existing else 0, NOW, owner)
         self.items[sku] = item
         return item
 
@@ -62,11 +65,16 @@ from app.domain.reservations import (  # noqa: E402
 class FakeStock:
     """One stock table shared by the reservation store and the inventory reader."""
 
-    def __init__(self, levels: dict[str, int]) -> None:
+    def __init__(self, levels: dict[str, int], owners: dict[str, str] | None = None) -> None:
         self.levels = dict(levels)
+        self.owners = dict(owners or {})
 
     def get_many(self, skus: Sequence[str]) -> Mapping[str, StockItem]:
-        return {sku: make_item(sku, self.levels[sku]) for sku in skus if sku in self.levels}
+        return {
+            sku: make_item(sku, self.levels[sku], owner=self.owners.get(sku))
+            for sku in skus
+            if sku in self.levels
+        }
 
 
 class FakeReservationStore:
@@ -78,30 +86,48 @@ class FakeReservationStore:
         self.reserve_calls = 0
         self.crash_before_remaining = False
 
+    def _fails(self, item: ReservedLine, seller: str | None) -> bool:
+        if item.sku not in self.stock.levels:
+            return True
+        if seller is None:
+            return self.stock.levels[item.sku] < item.quantity
+        return self.stock.owners.get(item.sku) != seller
+
     def reserve(
-        self, order_id: str, items: Sequence[ReservedLine], event_id: str, created_at: datetime
+        self,
+        order_id: str,
+        items: Sequence[ReservedLine],
+        event_id: str,
+        created_at: datetime,
+        *,
+        buyer: str,
+        seller: str | None = None,
     ) -> ReserveResult:
         self.reserve_calls += 1
         existing = self.records.get(order_id)
         if existing is not None:
             return ReserveResult(existing, created=False)
-        failed = [
-            FailedLine(i.sku, i.quantity, self.stock.levels.get(i.sku, 0))
-            for i in items
-            if self.stock.levels.get(i.sku, -1) < i.quantity
-        ]
-        if failed:
-            unknown = any(
-                i.sku not in self.stock.levels for i in items if i.sku in {f.sku for f in failed}
+        failing = [i for i in items if self._fails(i, seller)]
+        if failing:
+            failed = tuple(
+                FailedLine(i.sku, i.quantity, self.stock.levels.get(i.sku, 0)) for i in failing
             )
+            unknown = any(i.sku not in self.stock.levels for i in failing)
+            owned = any(i.sku in self.stock.owners for i in failing)
+            detail = None if unknown else "OWNER_CHANGED" if seller else "SOLD" if owned else None
             record = Reservation(
                 order_id, "FAILED", tuple(items), event_id, created_at,
-                reason="UNKNOWN_SKU" if unknown else "OUT_OF_STOCK", failed_items=tuple(failed),
+                reason="UNKNOWN_SKU" if unknown else "OUT_OF_STOCK", failed_items=failed,
+                buyer=buyer, seller=seller, detail=detail,
             )  # fmt: skip
         else:
             for item in items:
-                self.stock.levels[item.sku] -= item.quantity
-            record = Reservation(order_id, "RESERVED", tuple(items), event_id, created_at)
+                if seller is None:
+                    self.stock.levels[item.sku] -= item.quantity
+                self.stock.owners[item.sku] = buyer
+            record = Reservation(
+                order_id, "RESERVED", tuple(items), event_id, created_at, buyer=buyer, seller=seller
+            )
         self.records[order_id] = record
         return ReserveResult(record, created=True)
 

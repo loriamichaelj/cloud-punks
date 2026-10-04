@@ -19,6 +19,8 @@ CREATED = datetime(2026, 10, 1, 12, 0, 0, 123000, tzinfo=UTC)
 STAMP = "2026-10-01T12:00:00.123Z"
 TTL = int((CREATED + timedelta(days=35)).timestamp())
 ITEMS = [ReservedLine("A", 2), ReservedLine("B", 1)]
+BUYER = "cust-buyer"
+SELLER = "cust-seller"
 
 
 @pytest.fixture(autouse=True)
@@ -43,21 +45,58 @@ def reservation_item(status: str = "RESERVED", **extra: Any) -> dict[str, Any]:
         "event_id": {"S": EVENT},
         "created_at": {"S": STAMP},
         "ttl": {"N": str(TTL)},
+        "buyer": {"S": BUYER},
         **extra,
     }  # fmt: skip
 
 
 def stock_update(sku: str, quantity: int) -> dict[str, Any]:
+    """A purchase from the platform: the stock decides, and the buyer becomes the owner."""
     return {
         "Update": {
             "TableName": "inventory",
             "Key": {"sku": {"S": sku}},
-            "UpdateExpression": "SET available = available - :q, reserved = if_not_exists(reserved, :zero) + :q, updated_at = :now",
+            "UpdateExpression": "SET available = available - :q, reserved = if_not_exists(reserved, :zero) + :q, updated_at = :now, #owner = :buyer",
             "ConditionExpression": "attribute_exists(sku) AND available >= :q",
-            "ExpressionAttributeValues": {":q": {"N": str(quantity)}, ":zero": {"N": "0"}, ":now": {"S": STAMP}},
+            "ExpressionAttributeNames": {"#owner": "owner"},
+            "ExpressionAttributeValues": {":q": {"N": str(quantity)}, ":zero": {"N": "0"}, ":now": {"S": STAMP}, ":buyer": {"S": BUYER}},
             "ReturnValuesOnConditionCheckFailure": "ALL_OLD",
         }
     }  # fmt: skip
+
+
+def resale_update(sku: str) -> dict[str, Any]:
+    """A resale: the seller must still own it; ownership moves, the stock is not touched."""
+    return {
+        "Update": {
+            "TableName": "inventory",
+            "Key": {"sku": {"S": sku}},
+            "UpdateExpression": "SET reserved = if_not_exists(reserved, :zero) + :q, updated_at = :now, #owner = :buyer",
+            "ConditionExpression": "attribute_exists(sku) AND #owner = :seller",
+            "ExpressionAttributeNames": {"#owner": "owner"},
+            "ExpressionAttributeValues": {":q": {"N": "1"}, ":zero": {"N": "0"}, ":now": {"S": STAMP}, ":buyer": {"S": BUYER}, ":seller": {"S": SELLER}},
+            "ReturnValuesOnConditionCheckFailure": "ALL_OLD",
+        }
+    }  # fmt: skip
+
+
+RESALE = [ReservedLine("CP-0001", 1)]
+EXPECTED_RESALE = {
+    "TransactItems": [
+        {
+            "Put": {
+                "TableName": "inventory_reservations",
+                "Item": {
+                    **reservation_item(),
+                    "items": {"L": [{"M": {"sku": {"S": "CP-0001"}, "quantity": {"N": "1"}}}]},
+                    "seller": {"S": SELLER},
+                },
+                "ConditionExpression": "attribute_not_exists(order_id)",
+            }
+        },
+        resale_update("CP-0001"),
+    ]
+}
 
 
 EXPECTED_TRANSACTION = {
@@ -90,11 +129,11 @@ NONE = {"Code": "None"}
 CCF = {"Code": "ConditionalCheckFailed", "Message": "The conditional request failed"}
 
 
-def with_item(available: int) -> dict[str, Any]:
-    return {
-        **CCF,
-        "Item": {"sku": {"S": "x"}, "available": {"N": str(available)}, "reserved": {"N": "0"}},
-    }
+def with_item(available: int, owner: str | None = None) -> dict[str, Any]:
+    item = {"sku": {"S": "x"}, "available": {"N": str(available)}, "reserved": {"N": "0"}}
+    if owner is not None:
+        item["owner"] = {"S": owner}
+    return {**CCF, "Item": item}
 
 
 def store(client: Any) -> DynamoReservationStore:
@@ -110,19 +149,37 @@ def test_reserving_is_one_transaction_with_a_guarded_put_and_one_guarded_update_
     client, stubber = stub
     stubber.add_response("transact_write_items", {}, expected_params=EXPECTED_TRANSACTION)
 
-    result = store(client).reserve(ORDER, ITEMS, EVENT, CREATED)
+    result = store(client).reserve(ORDER, ITEMS, EVENT, CREATED, buyer=BUYER)
 
     assert result.created is True
     assert result.reservation.status == "RESERVED"
     assert result.reservation.event_id == EVENT
+    assert (result.reservation.buyer, result.reservation.seller) == (BUYER, None)
+
+
+def test_a_resale_is_guarded_by_the_seller_still_owning_it_and_leaves_stock_alone(
+    stub: Any,
+) -> None:
+    client, stubber = stub
+    stubber.add_response("transact_write_items", {}, expected_params=EXPECTED_RESALE)
+
+    result = store(client).reserve(ORDER, RESALE, EVENT, CREATED, buyer=BUYER, seller=SELLER)
+
+    assert result.reservation.status == "RESERVED"
+    assert (result.reservation.buyer, result.reservation.seller) == (BUYER, SELLER)
 
 
 def test_every_stock_update_asks_for_the_old_item_back_on_failure(stub: Any) -> None:
-    """Without ALL_OLD an unknown SKU cannot be told apart from a shortfall."""
+    """Without ALL_OLD an unknown SKU cannot be told apart from a shortfall or a new owner."""
     updates = [i["Update"] for i in EXPECTED_TRANSACTION["TransactItems"][1:]]
-    assert all(u["ReturnValuesOnConditionCheckFailure"] == "ALL_OLD" for u in updates)
-    assert all("attribute_exists(sku)" in u["ConditionExpression"] for u in updates)
+    resale = EXPECTED_RESALE["TransactItems"][1]["Update"]
+    for u in [*updates, resale]:
+        assert u["ReturnValuesOnConditionCheckFailure"] == "ALL_OLD"
+        assert "attribute_exists(sku)" in u["ConditionExpression"]
+        assert u["UpdateExpression"].endswith("#owner = :buyer")  # the transfer
     assert all("available >= :q" in u["ConditionExpression"] for u in updates)
+    assert "#owner = :seller" in resale["ConditionExpression"]
+    assert "available" not in resale["UpdateExpression"]
 
 
 def test_the_reservation_outlives_sqs_retention_and_any_archive_replay() -> None:
@@ -144,7 +201,7 @@ def test_a_conflict_on_the_reservation_record_means_duplicate_and_returns_the_st
         expected_params={"TableName": "inventory_reservations", "Key": {"order_id": {"S": ORDER}}, "ConsistentRead": True},
     )  # fmt: skip
 
-    result = store(client).reserve(ORDER, ITEMS, "01NEWEVENTIDNEWEVENTID01", CREATED)
+    result = store(client).reserve(ORDER, ITEMS, "01NEWEVENTIDNEWEVENTID01", CREATED, buyer=BUYER)
 
     assert result.created is False
     assert result.reservation.event_id == EVENT  # the ORIGINAL outcome event, not the new id
@@ -157,7 +214,7 @@ def test_a_duplicate_wins_even_if_a_stock_line_also_failed(stub: Any) -> None:
     cancelled(stubber, [CCF, with_item(0), NONE])
     stubber.add_response("get_item", {"Item": reservation_item()})
 
-    result = store(client).reserve(ORDER, ITEMS, EVENT, CREATED)
+    result = store(client).reserve(ORDER, ITEMS, EVENT, CREATED, buyer=BUYER)
 
     assert result.created is False
     assert result.reservation.status == "RESERVED"
@@ -180,7 +237,7 @@ def test_a_shortfall_records_a_failed_outcome_with_the_available_quantities(stub
         },
     )  # fmt: skip
 
-    result = store(client).reserve(ORDER, ITEMS, EVENT, CREATED)
+    result = store(client).reserve(ORDER, ITEMS, EVENT, CREATED, buyer=BUYER)
 
     assert result.created is True
     assert result.reservation.status == "FAILED"
@@ -190,12 +247,59 @@ def test_a_shortfall_records_a_failed_outcome_with_the_available_quantities(stub
     ]
 
 
+def test_a_cloudpunk_someone_owns_fails_as_sold(stub: Any) -> None:
+    client, stubber = stub
+    cancelled(stubber, [NONE, with_item(0, owner="cust-earlier"), NONE])
+    stubber.add_response(
+        "put_item",
+        {},
+        expected_params={
+            "TableName": "inventory_reservations",
+            "Item": {
+                **reservation_item("FAILED"),
+                "reason": {"S": "OUT_OF_STOCK"},
+                "failed_items": {"L": [{"M": {"sku": {"S": "A"}, "requested": {"N": "2"}, "available": {"N": "0"}}}]},
+                "detail": {"S": "SOLD"},
+            },
+            "ConditionExpression": "attribute_not_exists(order_id)",
+        },
+    )  # fmt: skip
+
+    result = store(client).reserve(ORDER, ITEMS, EVENT, CREATED, buyer=BUYER)
+
+    assert (result.reservation.reason, result.reservation.detail) == ("OUT_OF_STOCK", "SOLD")
+
+
+def test_a_resale_whose_seller_no_longer_owns_it_fails_as_owner_changed(stub: Any) -> None:
+    client, stubber = stub
+    cancelled(stubber, [NONE, with_item(0, owner="cust-someone-else")])
+    stubber.add_response("put_item", {}, expected_params=ANY_PUT)
+
+    result = store(client).reserve(ORDER, RESALE, EVENT, CREATED, buyer=BUYER, seller=SELLER)
+
+    assert (result.reservation.reason, result.reservation.detail) == (
+        "OUT_OF_STOCK",
+        "OWNER_CHANGED",
+    )
+    assert result.reservation.seller == SELLER
+
+
+def test_a_plain_shortfall_in_counted_stock_has_no_detail(stub: Any) -> None:
+    client, stubber = stub
+    cancelled(stubber, [NONE, with_item(1), NONE])
+    stubber.add_response("put_item", {}, expected_params=ANY_PUT)
+
+    result = store(client).reserve(ORDER, ITEMS, EVENT, CREATED, buyer=BUYER)
+
+    assert result.reservation.detail is None
+
+
 def test_a_stock_line_with_no_item_is_an_unknown_sku(stub: Any) -> None:
     client, stubber = stub
     cancelled(stubber, [NONE, NONE, CCF])  # B failed and returned no Item: it does not exist
     stubber.add_response("put_item", {}, expected_params=ANY_PUT)
 
-    result = store(client).reserve(ORDER, ITEMS, EVENT, CREATED)
+    result = store(client).reserve(ORDER, ITEMS, EVENT, CREATED, buyer=BUYER)
 
     assert result.reservation.reason == "UNKNOWN_SKU"
     assert [(f.sku, f.available) for f in result.reservation.failed_items] == [("B", 0)]
@@ -206,7 +310,7 @@ def test_unknown_sku_takes_precedence_and_every_failing_line_is_listed(stub: Any
     cancelled(stubber, [NONE, with_item(1), CCF])
     stubber.add_response("put_item", {}, expected_params=ANY_PUT)
 
-    result = store(client).reserve(ORDER, ITEMS, EVENT, CREATED)
+    result = store(client).reserve(ORDER, ITEMS, EVENT, CREATED, buyer=BUYER)
 
     assert result.reservation.reason == "UNKNOWN_SKU"
     assert [(f.sku, f.available) for f in result.reservation.failed_items] == [("A", 1), ("B", 0)]
@@ -229,7 +333,7 @@ def test_losing_the_race_to_record_the_failure_returns_the_other_deliverys_recor
         "get_item", {"Item": reservation_item("FAILED", reason={"S": "OUT_OF_STOCK"})}
     )
 
-    result = store(client).reserve(ORDER, ITEMS, EVENT, CREATED)
+    result = store(client).reserve(ORDER, ITEMS, EVENT, CREATED, buyer=BUYER)
 
     assert result.created is False
     assert result.reservation.status == "FAILED"
@@ -249,14 +353,14 @@ def test_conflicts_and_throttling_decide_nothing_so_they_are_retried(stub: Any, 
     cancelled(stubber, [NONE, {"Code": code}, NONE])  # no put_item / get_item may follow
 
     with pytest.raises(StoreUnavailable):
-        store(client).reserve(ORDER, ITEMS, EVENT, CREATED)
+        store(client).reserve(ORDER, ITEMS, EVENT, CREATED, buyer=BUYER)
 
 
 def test_a_cancellation_nobody_understands_is_an_error_not_a_guess(stub: Any) -> None:
     client, stubber = stub
     cancelled(stubber, [NONE, {"Code": "ValidationError"}, NONE])
     with pytest.raises(RuntimeError, match="unexpected transaction cancellation"):
-        store(client).reserve(ORDER, ITEMS, EVENT, CREATED)
+        store(client).reserve(ORDER, ITEMS, EVENT, CREATED, buyer=BUYER)
 
 
 # --- remaining stock, written once ------------------------------------------------------------
@@ -299,7 +403,7 @@ def test_a_missing_record_reads_as_none(stub: Any) -> None:
 
 # From the AWS reserved-words list, the ones our attribute names collide with. LocalStack accepts
 # them in places real DynamoDB rejects, so this is checked statically on every expression we build.
-RESERVED_AMONG_OUR_ATTRIBUTES = {"status", "items", "ttl"}
+RESERVED_AMONG_OUR_ATTRIBUTES = {"status", "items", "ttl", "owner"}
 KEYWORDS = {"set", "and", "or", "not", "attribute_exists", "attribute_not_exists", "if_not_exists"}
 
 
@@ -322,10 +426,11 @@ def test_no_expression_uses_a_reserved_word_unaliased(stub: Any) -> None:
     }
     texts = [
         *expressions(EXPECTED_TRANSACTION),
+        *expressions(EXPECTED_RESALE),
         *expressions(update_item_request),
         ANY_PUT["ConditionExpression"],
     ]
-    assert len(texts) >= 6
+    assert len(texts) >= 8
 
     for text in texts:
         names = {t.lower() for t in re.findall(r"(?<![:#\w])[A-Za-z_][A-Za-z_]*", text)} - KEYWORDS

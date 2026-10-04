@@ -42,6 +42,17 @@ def test_get_stock(client: TestClient) -> None:
     assert body["updated_at"].startswith("2026-10-01T12:00:00")
 
 
+def test_the_owner_is_null_while_the_platform_holds_it_and_named_once_sold(
+    client: TestClient, repository: FakeRepository
+) -> None:
+    assert client.get("/api/v1/inventory/SKU-A").json()["owner"] is None
+    repository.items["CP-0001"] = make_item("CP-0001", 0, reserved=1, owner="cust-7")
+
+    assert client.get("/api/v1/inventory/CP-0001").json()["owner"] == "cust-7"
+    (line,) = check(client, ("CP-0001", 1)).json()["items"]
+    assert (line["owner"], line["sufficient"], line["reason"]) == ("cust-7", False, "OUT_OF_STOCK")
+
+
 def test_unknown_sku_is_404_in_the_shared_error_shape(client: TestClient) -> None:
     response = client.get("/api/v1/inventory/NOPE", headers={CORRELATION_HEADER: "corr-1"})
 
@@ -77,8 +88,22 @@ def test_availability_when_everything_is_in_stock(client: TestClient) -> None:
     assert response.json() == {
         "available": True,
         "items": [
-            {"sku": "SKU-A", "requested": 2, "available": 10, "sufficient": True, "reason": None},
-            {"sku": "SKU-B", "requested": 1, "available": 1, "sufficient": True, "reason": None},
+            {
+                "sku": "SKU-A",
+                "requested": 2,
+                "available": 10,
+                "sufficient": True,
+                "reason": None,
+                "owner": None,
+            },
+            {
+                "sku": "SKU-B",
+                "requested": 1,
+                "available": 1,
+                "sufficient": True,
+                "reason": None,
+                "owner": None,
+            },
         ],
     }
 
@@ -147,6 +172,20 @@ def test_put_sets_available_and_keeps_reserved(client: TestClient) -> None:
     assert client.get("/api/v1/inventory/SKU-A").json()["available"] == 40
 
 
+def test_put_keeps_the_owner_unless_told_to_hand_it_back_to_the_platform(
+    client: TestClient, repository: FakeRepository
+) -> None:
+    repository.items["CP-0001"] = make_item("CP-0001", 0, reserved=1, owner="cust-7")
+
+    assert (
+        client.put("/api/v1/inventory/CP-0001", json={"available": 0}).json()["owner"] == "cust-7"
+    )
+    reset = client.put("/api/v1/inventory/CP-0001", json={"available": 1, "reset_owner": True})
+
+    assert reset.status_code == 200
+    assert (reset.json()["available"], reset.json()["owner"]) == (1, None)
+
+
 def test_put_creates_a_record_for_a_new_sku(client: TestClient) -> None:
     response = client.put("/api/v1/inventory/SKU-NEW", json={"available": 5})
     assert response.status_code == 200
@@ -170,6 +209,9 @@ def test_put_accepts_zero_to_take_a_product_out_of_stock(client: TestClient) -> 
         {"available": None},
         {"available": 5, "reserved": 0},  # reserved is owned by reservations, never set by hand
         {"available": 5, "sku": "OTHER"},
+        {"available": 5, "owner": "cust-1"},  # ownership moves only by a sale
+        {"available": 5, "reset_owner": "yes"},
+        {"available": 5, "reset_owner": 1},
     ],
 )
 def test_invalid_put_bodies_are_422(client: TestClient, body: dict[str, object]) -> None:

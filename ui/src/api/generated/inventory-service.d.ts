@@ -35,7 +35,8 @@ export interface paths {
         get: operations["get_stock_api_v1_inventory__sku__get"];
         /**
          * Set Stock
-         * @description Admin/seed: sets ``available`` (creating the record if needed), keeps ``reserved``.
+         * @description Admin/seed: sets ``available`` (creating the record if needed), keeps ``reserved``, and
+         *     keeps the owner unless ``reset_owner``.
          */
         put: operations["set_stock_api_v1_inventory__sku__put"];
         post?: never;
@@ -111,6 +112,11 @@ export interface components {
         LineOut: {
             /** Available */
             available: number;
+            /**
+             * Owner
+             * @description The owner; null for the platform or an unknown SKU
+             */
+            owner: string | null;
             /** Reason */
             reason: ("OUT_OF_STOCK" | "UNKNOWN_SKU") | null;
             /** Requested */
@@ -124,6 +130,11 @@ export interface components {
         StockOut: {
             /** Available */
             available: number;
+            /**
+             * Owner
+             * @description The customer who owns it; null while the platform holds it (DESIGN.md 16.1)
+             */
+            owner: string | null;
             /** Reserved */
             reserved: number;
             /** Sku */
@@ -141,6 +152,12 @@ export interface components {
         StockSet: {
             /** Available */
             available: number;
+            /**
+             * Reset Owner
+             * @description true hands the item back to the platform (removes its owner)
+             * @default false
+             */
+            reset_owner: boolean;
         };
         /** ValidationError */
         ValidationError: {

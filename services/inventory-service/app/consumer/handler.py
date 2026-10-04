@@ -22,7 +22,9 @@ class OrderCreatedHandler:
     def __call__(self, envelope: Envelope, data: OrderCreatedData) -> HandlerOutcome:
         lines = [ReservedLine(item.sku, item.quantity) for item in data.items]
         try:
-            processed = self._service.process(data.order_id, lines)
+            processed = self._service.process(
+                data.order_id, lines, buyer=data.customer_id, seller=data.seller
+            )
         except InvalidOrder as exc:
             raise PoisonMessage(str(exc)) from exc
 

@@ -1,0 +1,1126 @@
+[
+ {
+  "id": 1,
+  "type": "male",
+  "skin": "medium",
+  "traits": [
+   "Mohawk Thin",
+   "Classic Shades",
+   "Cigarette",
+   "Earring"
+  ],
+  "price": "31.43"
+ },
+ {
+  "id": 2,
+  "type": "male",
+  "traits": [
+   "Mustache",
+   "Headband",
+   "Earring"
+  ],
+  "skin": "medium",
+  "price": "18.53"
+ },
+ {
+  "id": 3,
+  "type": "male",
+  "traits": [
+   "Headband",
+   "Eye Mask",
+   "Earring"
+  ],
+  "skin": "medium",
+  "price": "31.48"
+ },
+ {
+  "id": 4,
+  "type": "male",
+  "traits": [
+   "Cap",
+   "Eye Patch",
+   "Vape",
+   "Earring"
+  ],
+  "skin": "light",
+  "price": "26.38"
+ },
+ {
+  "id": 5,
+  "type": "male",
+  "traits": [
+   "Front Beard",
+   "Eye Patch",
+   "Earring"
+  ],
+  "skin": "albino",
+  "price": "27.40"
+ },
+ {
+  "id": 6,
+  "type": "female",
+  "traits": [
+   "Black Lipstick",
+   "Straight Hair",
+   "Classic Shades",
+   "Pipe"
+  ],
+  "skin": "light",
+  "price": "25.31"
+ },
+ {
+  "id": 7,
+  "type": "female",
+  "traits": [
+   "Cap",
+   "Regular Shades",
+   "Earring"
+  ],
+  "skin": "albino",
+  "price": "21.29"
+ },
+ {
+  "id": 8,
+  "type": "male",
+  "traits": [
+   "Stringy Hair",
+   "Nerd Glasses",
+   "Cigarette",
+   "Earring"
+  ],
+  "skin": "dark",
+  "price": "28.04"
+ },
+ {
+  "id": 9,
+  "type": "zombie",
+  "traits": [
+   "Cap",
+   "Eye Mask",
+   "Vape"
+  ],
+  "price": "73.54"
+ },
+ {
+  "id": 10,
+  "type": "female",
+  "traits": [
+   "Purple Lipstick",
+   "Straight Hair Dark",
+   "Earring"
+  ],
+  "skin": "dark",
+  "price": "39.81"
+ },
+ {
+  "id": 11,
+  "type": "male",
+  "traits": [
+   "Police Cap",
+   "Small Shades",
+   "Earring"
+  ],
+  "skin": "albino",
+  "price": "22.73"
+ },
+ {
+  "id": 12,
+  "type": "male",
+  "traits": [
+   "Mole",
+   "Police Cap",
+   "Cigarette"
+  ],
+  "skin": "albino",
+  "price": "40.23"
+ },
+ {
+  "id": 13,
+  "type": "male",
+  "traits": [
+   "Headband",
+   "VR",
+   "Earring"
+  ],
+  "skin": "dark",
+  "price": "35.65"
+ },
+ {
+  "id": 14,
+  "type": "female",
+  "traits": [
+   "Black Lipstick",
+   "Tight Curls",
+   "VR"
+  ],
+  "skin": "medium",
+  "price": "36.63"
+ },
+ {
+  "id": 15,
+  "type": "female",
+  "traits": [
+   "Black Lipstick",
+   "Blonde Short",
+   "Earring"
+  ],
+  "skin": "light",
+  "price": "27.33"
+ },
+ {
+  "id": 16,
+  "type": "male",
+  "traits": [
+   "Goat",
+   "Fedora",
+   "Clown Nose",
+   "Pipe",
+   "Earring"
+  ],
+  "skin": "medium",
+  "price": "29.02"
+ },
+ {
+  "id": 17,
+  "type": "male",
+  "traits": [
+   "Front Beard",
+   "Bandana",
+   "Cigarette",
+   "Gold Chain"
+  ],
+  "skin": "light",
+  "price": "35.06"
+ },
+ {
+  "id": 18,
+  "type": "zombie",
+  "traits": [
+   "Normal Beard",
+   "Mohawk",
+   "Earring"
+  ],
+  "price": "76.95"
+ },
+ {
+  "id": 19,
+  "type": "male",
+  "traits": [
+   "Handlebars",
+   "Clown Hair Green",
+   "Pipe"
+  ],
+  "skin": "dark",
+  "price": "26.36"
+ },
+ {
+  "id": 20,
+  "type": "female",
+  "traits": [
+   "Purple Lipstick",
+   "Straight Hair Blonde",
+   "Vape"
+  ],
+  "skin": "albino",
+  "price": "34.09"
+ },
+ {
+  "id": 21,
+  "type": "male",
+  "traits": [
+   "Mohawk Thin",
+   "Eye Mask",
+   "Vape"
+  ],
+  "skin": "light",
+  "price": "32.93"
+ },
+ {
+  "id": 22,
+  "type": "female",
+  "traits": [
+   "Black Lipstick",
+   "Pigtails",
+   "Clown Nose",
+   "Vape",
+   "Earring"
+  ],
+  "skin": "albino",
+  "price": "46.28"
+ },
+ {
+  "id": 23,
+  "type": "alien",
+  "traits": [
+   "Messy Hair",
+   "Gold Chain",
+   "Earring"
+  ],
+  "price": "186.76"
+ },
+ {
+  "id": 24,
+  "type": "female",
+  "traits": [
+   "Black Lipstick",
+   "Straight Hair",
+   "Nerd Glasses",
+   "Earring"
+  ],
+  "skin": "light",
+  "price": "32.17"
+ },
+ {
+  "id": 25,
+  "type": "male",
+  "traits": [
+   "Luxurious Beard",
+   "Mole",
+   "Cap",
+   "Big Shades"
+  ],
+  "skin": "medium",
+  "price": "39.49"
+ },
+ {
+  "id": 26,
+  "type": "male",
+  "traits": [
+   "Stringy Hair",
+   "Big Shades",
+   "Silver Chain"
+  ],
+  "skin": "medium",
+  "price": "38.17"
+ },
+ {
+  "id": 27,
+  "type": "male",
+  "traits": [
+   "Front Beard",
+   "Mole",
+   "Headband",
+   "Earring"
+  ],
+  "skin": "medium",
+  "price": "28.37"
+ },
+ {
+  "id": 28,
+  "type": "male",
+  "traits": [
+   "Goat",
+   "Frumpy Hair",
+   "Gold Chain"
+  ],
+  "skin": "albino",
+  "price": "26.80"
+ },
+ {
+  "id": 29,
+  "type": "male",
+  "traits": [
+   "Handlebars",
+   "Frumpy Hair",
+   "Vape"
+  ],
+  "skin": "albino",
+  "price": "36.04"
+ },
+ {
+  "id": 30,
+  "type": "zombie",
+  "traits": [
+   "Muttonchops",
+   "Cap",
+   "Earring"
+  ],
+  "price": "90.16"
+ },
+ {
+  "id": 31,
+  "type": "female",
+  "traits": [
+   "Hot Lipstick",
+   "Wild Blonde",
+   "Nerd Glasses"
+  ],
+  "skin": "medium",
+  "price": "22.86"
+ },
+ {
+  "id": 32,
+  "type": "male",
+  "traits": [
+   "Mustache",
+   "Frumpy Hair",
+   "Clown Nose",
+   "Gold Chain"
+  ],
+  "skin": "medium",
+  "price": "30.68"
+ },
+ {
+  "id": 33,
+  "type": "male",
+  "traits": [
+   "Goat",
+   "Headband",
+   "Horned Rim Glasses",
+   "Earring"
+  ],
+  "skin": "albino",
+  "price": "44.41"
+ },
+ {
+  "id": 34,
+  "type": "male",
+  "traits": [
+   "Mohawk Thin",
+   "Clown Nose",
+   "Regular Shades",
+   "Earring"
+  ],
+  "skin": "dark",
+  "price": "38.03"
+ },
+ {
+  "id": 35,
+  "type": "female",
+  "traits": [
+   "Headband",
+   "Cigarette",
+   "Earring"
+  ],
+  "skin": "albino",
+  "price": "41.56"
+ },
+ {
+  "id": 36,
+  "type": "female",
+  "traits": [
+   "Hot Lipstick",
+   "Straight Hair Blonde",
+   "Earring"
+  ],
+  "skin": "dark",
+  "price": "32.57"
+ },
+ {
+  "id": 37,
+  "type": "male",
+  "traits": [
+   "Handlebars",
+   "Mole",
+   "Short Hair",
+   "Pipe",
+   "Gold Chain"
+  ],
+  "skin": "dark",
+  "price": "44.39"
+ },
+ {
+  "id": 38,
+  "type": "male",
+  "traits": [
+   "Chinstrap",
+   "Cap Forward",
+   "Eye Mask"
+  ],
+  "skin": "medium",
+  "price": "27.58"
+ },
+ {
+  "id": 39,
+  "type": "ape",
+  "traits": [
+   "Mole",
+   "Mohawk",
+   "Eye Mask"
+  ],
+  "price": "139.05"
+ },
+ {
+  "id": 40,
+  "type": "male",
+  "traits": [
+   "Frumpy Hair",
+   "Nerd Glasses",
+   "Cigarette"
+  ],
+  "skin": "dark",
+  "price": "42.41"
+ },
+ {
+  "id": 41,
+  "type": "male",
+  "traits": [
+   "Normal Beard",
+   "Mohawk Thin",
+   "Small Shades"
+  ],
+  "skin": "dark",
+  "price": "38.39"
+ },
+ {
+  "id": 42,
+  "type": "female",
+  "traits": [
+   "Black Lipstick",
+   "Straight Hair",
+   "Big Shades",
+   "Earring"
+  ],
+  "skin": "medium",
+  "price": "28.70"
+ },
+ {
+  "id": 43,
+  "type": "male",
+  "traits": [
+   "Fedora",
+   "Small Shades",
+   "Earring"
+  ],
+  "skin": "dark",
+  "price": "22.64"
+ },
+ {
+  "id": 44,
+  "type": "male",
+  "traits": [
+   "Muttonchops",
+   "Police Cap",
+   "Silver Chain"
+  ],
+  "skin": "albino",
+  "price": "22.52"
+ },
+ {
+  "id": 45,
+  "type": "male",
+  "traits": [
+   "Luxurious Beard",
+   "Police Cap",
+   "Big Shades"
+  ],
+  "skin": "light",
+  "price": "38.51"
+ },
+ {
+  "id": 46,
+  "type": "male",
+  "traits": [
+   "Big Beard",
+   "Messy Hair",
+   "Horned Rim Glasses"
+  ],
+  "skin": "albino",
+  "price": "21.24"
+ },
+ {
+  "id": 47,
+  "type": "male",
+  "traits": [
+   "Big Beard",
+   "Cap Forward",
+   "Eye Mask"
+  ],
+  "skin": "medium",
+  "price": "39.72"
+ },
+ {
+  "id": 48,
+  "type": "female",
+  "traits": [
+   "Black Lipstick",
+   "Bandana",
+   "Small Shades",
+   "Earring"
+  ],
+  "skin": "albino",
+  "price": "31.07"
+ },
+ {
+  "id": 49,
+  "type": "female",
+  "traits": [
+   "Wild Blonde",
+   "Blue Eye Shadow",
+   "Earring"
+  ],
+  "skin": "medium",
+  "price": "33.26"
+ },
+ {
+  "id": 50,
+  "type": "male",
+  "traits": [
+   "Normal Beard",
+   "Stringy Hair",
+   "Eye Patch",
+   "Vape",
+   "Silver Chain"
+  ],
+  "skin": "albino",
+  "price": "23.67"
+ },
+ {
+  "id": 51,
+  "type": "female",
+  "traits": [
+   "Purple Lipstick",
+   "Pigtails",
+   "Eye Patch"
+  ],
+  "skin": "medium",
+  "price": "40.75"
+ },
+ {
+  "id": 52,
+  "type": "male",
+  "traits": [
+   "Big Beard",
+   "Cap Forward",
+   "Big Shades",
+   "Cigarette"
+  ],
+  "skin": "dark",
+  "price": "25.94"
+ },
+ {
+  "id": 53,
+  "type": "male",
+  "traits": [
+   "Goat",
+   "Short Hair",
+   "Vape"
+  ],
+  "skin": "medium",
+  "price": "30.22"
+ },
+ {
+  "id": 54,
+  "type": "zombie",
+  "traits": [
+   "Goat",
+   "Crazy Hair",
+   "Clown Nose",
+   "Pipe"
+  ],
+  "price": "65.61"
+ },
+ {
+  "id": 55,
+  "type": "male",
+  "traits": [
+   "Frumpy Hair",
+   "Clown Nose",
+   "Big Shades"
+  ],
+  "skin": "medium",
+  "price": "33.47"
+ },
+ {
+  "id": 56,
+  "type": "female",
+  "traits": [
+   "Straight Hair Blonde",
+   "Silver Chain",
+   "Earring"
+  ],
+  "skin": "albino",
+  "price": "21.02"
+ },
+ {
+  "id": 57,
+  "type": "female",
+  "traits": [
+   "Straight Hair Dark",
+   "Eye Mask",
+   "Earring"
+  ],
+  "skin": "medium",
+  "price": "24.75"
+ },
+ {
+  "id": 58,
+  "type": "female",
+  "traits": [
+   "Hot Lipstick",
+   "Straight Hair Blonde",
+   "Earring"
+  ],
+  "skin": "albino",
+  "price": "26.98"
+ },
+ {
+  "id": 59,
+  "type": "female",
+  "traits": [
+   "Straight Hair",
+   "Pipe",
+   "Earring"
+  ],
+  "skin": "light",
+  "price": "30.64"
+ },
+ {
+  "id": 60,
+  "type": "male",
+  "traits": [
+   "Goat",
+   "Police Cap",
+   "Cigarette"
+  ],
+  "skin": "dark",
+  "price": "25.21"
+ },
+ {
+  "id": 61,
+  "type": "male",
+  "traits": [
+   "Luxurious Beard",
+   "Peak Spike",
+   "Classic Shades",
+   "Cigarette"
+  ],
+  "skin": "light",
+  "price": "24.46"
+ },
+ {
+  "id": 62,
+  "type": "male",
+  "traits": [
+   "Normal Beard",
+   "Clown Hair Green",
+   "Small Shades"
+  ],
+  "skin": "albino",
+  "price": "20.28"
+ },
+ {
+  "id": 63,
+  "type": "ape",
+  "traits": [
+   "Mohawk Thin",
+   "Regular Shades",
+   "Cigarette"
+  ],
+  "price": "145.51"
+ },
+ {
+  "id": 64,
+  "type": "male",
+  "traits": [
+   "Frumpy Hair",
+   "Pipe",
+   "Earring"
+  ],
+  "skin": "light",
+  "price": "32.30"
+ },
+ {
+  "id": 65,
+  "type": "zombie",
+  "traits": [
+   "Headband",
+   "Clown Nose",
+   "Horned Rim Glasses"
+  ],
+  "price": "82.99"
+ },
+ {
+  "id": 66,
+  "type": "male",
+  "traits": [
+   "Mustache",
+   "Stringy Hair",
+   "Vape"
+  ],
+  "skin": "dark",
+  "price": "29.66"
+ },
+ {
+  "id": 67,
+  "type": "female",
+  "traits": [
+   "Black Lipstick",
+   "Straight Hair",
+   "Blue Eye Shadow",
+   "Earring"
+  ],
+  "skin": "dark",
+  "price": "27.89"
+ },
+ {
+  "id": 68,
+  "type": "male",
+  "traits": [
+   "Frumpy Hair",
+   "Pipe",
+   "Earring"
+  ],
+  "skin": "medium",
+  "price": "20.19"
+ },
+ {
+  "id": 69,
+  "type": "male",
+  "traits": [
+   "Normal Beard",
+   "Crazy Hair",
+   "Earring"
+  ],
+  "skin": "light",
+  "price": "30.24"
+ },
+ {
+  "id": 70,
+  "type": "male",
+  "traits": [
+   "Handlebars",
+   "Clown Hair Green",
+   "Earring"
+  ],
+  "skin": "medium",
+  "price": "21.10"
+ },
+ {
+  "id": 71,
+  "type": "female",
+  "traits": [
+   "Purple Lipstick",
+   "Bandana",
+   "Big Shades",
+   "Pipe"
+  ],
+  "skin": "albino",
+  "price": "29.27"
+ },
+ {
+  "id": 72,
+  "type": "zombie",
+  "traits": [
+   "Front Beard",
+   "Crazy Hair",
+   "Big Shades"
+  ],
+  "price": "74.31"
+ },
+ {
+  "id": 73,
+  "type": "ape",
+  "traits": [
+   "Mole",
+   "Mohawk Thin",
+   "Horned Rim Glasses"
+  ],
+  "price": "127.66"
+ },
+ {
+  "id": 74,
+  "type": "female",
+  "traits": [
+   "Hot Lipstick",
+   "Straight Hair Dark",
+   "Small Shades"
+  ],
+  "skin": "medium",
+  "price": "33.84"
+ },
+ {
+  "id": 75,
+  "type": "male",
+  "traits": [
+   "Police Cap",
+   "Clown Nose",
+   "Pipe",
+   "Earring"
+  ],
+  "skin": "medium",
+  "price": "31.56"
+ },
+ {
+  "id": 76,
+  "type": "male",
+  "traits": [
+   "Muttonchops",
+   "Mohawk Thin",
+   "Nerd Glasses"
+  ],
+  "skin": "dark",
+  "price": "32.07"
+ },
+ {
+  "id": 77,
+  "type": "female",
+  "traits": [
+   "Black Lipstick",
+   "Straight Hair",
+   "Eye Patch"
+  ],
+  "skin": "albino",
+  "price": "34.02"
+ },
+ {
+  "id": 78,
+  "type": "female",
+  "traits": [
+   "Black Lipstick",
+   "Pigtails",
+   "Regular Shades"
+  ],
+  "skin": "dark",
+  "price": "36.52"
+ },
+ {
+  "id": 79,
+  "type": "male",
+  "traits": [
+   "Front Beard",
+   "Peak Spike",
+   "Horned Rim Glasses",
+   "Gold Chain"
+  ],
+  "skin": "medium",
+  "price": "25.41"
+ },
+ {
+  "id": 80,
+  "type": "female",
+  "traits": [
+   "Purple Lipstick",
+   "Straight Hair",
+   "Big Shades",
+   "Earring"
+  ],
+  "skin": "albino",
+  "price": "31.32"
+ },
+ {
+  "id": 81,
+  "type": "female",
+  "traits": [
+   "Blonde Short",
+   "Eye Mask",
+   "Earring"
+  ],
+  "skin": "albino",
+  "price": "24.72"
+ },
+ {
+  "id": 82,
+  "type": "male",
+  "traits": [
+   "Muttonchops",
+   "Short Hair",
+   "Silver Chain"
+  ],
+  "skin": "albino",
+  "price": "18.71"
+ },
+ {
+  "id": 83,
+  "type": "male",
+  "traits": [
+   "Fedora",
+   "Eye Patch",
+   "Earring"
+  ],
+  "skin": "medium",
+  "price": "32.51"
+ },
+ {
+  "id": 84,
+  "type": "male",
+  "traits": [
+   "Mustache",
+   "Mole",
+   "Mohawk",
+   "Earring"
+  ],
+  "skin": "light",
+  "price": "34.39"
+ },
+ {
+  "id": 85,
+  "type": "male",
+  "traits": [
+   "Normal Beard",
+   "Bandana",
+   "Horned Rim Glasses"
+  ],
+  "skin": "dark",
+  "price": "34.39"
+ },
+ {
+  "id": 86,
+  "type": "male",
+  "traits": [
+   "Mohawk Thin",
+   "Nerd Glasses",
+   "Vape"
+  ],
+  "skin": "albino",
+  "price": "18.53"
+ },
+ {
+  "id": 87,
+  "type": "male",
+  "traits": [
+   "Chinstrap",
+   "Cap",
+   "Gold Chain",
+   "Earring"
+  ],
+  "skin": "albino",
+  "price": "38.94"
+ },
+ {
+  "id": 88,
+  "type": "male",
+  "traits": [
+   "Peak Spike",
+   "Small Shades",
+   "Earring"
+  ],
+  "skin": "dark",
+  "price": "27.67"
+ },
+ {
+  "id": 89,
+  "type": "female",
+  "traits": [
+   "Hot Lipstick",
+   "Blonde Short",
+   "Horned Rim Glasses",
+   "Vape",
+   "Gold Chain"
+  ],
+  "skin": "light",
+  "price": "38.90"
+ },
+ {
+  "id": 90,
+  "type": "male",
+  "traits": [
+   "Headband",
+   "Small Shades",
+   "Earring"
+  ],
+  "skin": "dark",
+  "price": "31.92"
+ },
+ {
+  "id": 91,
+  "type": "female",
+  "traits": [
+   "Hot Lipstick",
+   "Orange Side",
+   "Earring"
+  ],
+  "skin": "dark",
+  "price": "21.50"
+ },
+ {
+  "id": 92,
+  "type": "male",
+  "traits": [
+   "Stringy Hair",
+   "Nerd Glasses",
+   "Cigarette"
+  ],
+  "skin": "albino",
+  "price": "24.94"
+ },
+ {
+  "id": 93,
+  "type": "male",
+  "traits": [
+   "Normal Beard",
+   "Mohawk",
+   "Earring"
+  ],
+  "skin": "albino",
+  "price": "29.43"
+ },
+ {
+  "id": 94,
+  "type": "female",
+  "traits": [
+   "Hot Lipstick",
+   "Straight Hair Blonde",
+   "Vape"
+  ],
+  "skin": "medium",
+  "price": "22.21"
+ },
+ {
+  "id": 95,
+  "type": "male",
+  "traits": [
+   "Normal Beard",
+   "Mohawk",
+   "Nerd Glasses"
+  ],
+  "skin": "medium",
+  "price": "28.59"
+ },
+ {
+  "id": 96,
+  "type": "male",
+  "traits": [
+   "Frumpy Hair",
+   "Nerd Glasses",
+   "Gold Chain"
+  ],
+  "skin": "medium",
+  "price": "42.44"
+ },
+ {
+  "id": 97,
+  "type": "female",
+  "traits": [
+   "Purple Lipstick",
+   "Straight Hair Dark",
+   "Horned Rim Glasses"
+  ],
+  "skin": "albino",
+  "price": "26.47"
+ },
+ {
+  "id": 98,
+  "type": "male",
+  "traits": [
+   "Shadow Beard",
+   "Mohawk Thin",
+   "Regular Shades",
+   "Cigarette"
+  ],
+  "skin": "medium",
+  "price": "21.65"
+ },
+ {
+  "id": 99,
+  "type": "male",
+  "traits": [
+   "Bandana",
+   "Cigarette",
+   "Earring"
+  ],
+  "skin": "medium",
+  "price": "34.07"
+ },
+ {
+  "id": 100,
+  "type": "male",
+  "traits": [
+   "Chinstrap",
+   "Stringy Hair",
+   "Eye Patch"
+  ],
+  "skin": "medium",
+  "price": "19.13"
+ }
+]

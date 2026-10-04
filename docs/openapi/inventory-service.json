@@ -82,6 +82,18 @@
             "title": "Available",
             "type": "integer"
           },
+          "owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The owner; null for the platform or an unknown SKU",
+            "title": "Owner"
+          },
           "reason": {
             "anyOf": [
               {
@@ -115,7 +127,8 @@
           "requested",
           "available",
           "sufficient",
-          "reason"
+          "reason",
+          "owner"
         ],
         "title": "LineOut",
         "type": "object"
@@ -125,6 +138,18 @@
           "available": {
             "title": "Available",
             "type": "integer"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The customer who owns it; null while the platform holds it (DESIGN.md 16.1)",
+            "title": "Owner"
           },
           "reserved": {
             "title": "Reserved",
@@ -144,7 +169,8 @@
           "sku",
           "available",
           "reserved",
-          "updated_at"
+          "updated_at",
+          "owner"
         ],
         "title": "StockOut",
         "type": "object"
@@ -158,6 +184,12 @@
             "minimum": 0.0,
             "title": "Available",
             "type": "integer"
+          },
+          "reset_owner": {
+            "default": false,
+            "description": "true hands the item back to the platform (removes its owner)",
+            "title": "Reset Owner",
+            "type": "boolean"
           }
         },
         "required": [
@@ -293,7 +325,7 @@
         "summary": "Get Stock"
       },
       "put": {
-        "description": "Admin/seed: sets ``available`` (creating the record if needed), keeps ``reserved``.",
+        "description": "Admin/seed: sets ``available`` (creating the record if needed), keeps ``reserved``, and\nkeeps the owner unless ``reset_owner``.",
         "operationId": "set_stock_api_v1_inventory__sku__put",
         "parameters": [
           {

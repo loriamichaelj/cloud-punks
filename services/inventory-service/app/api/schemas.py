@@ -28,6 +28,9 @@ class StockOut(BaseModel):
     available: int
     reserved: int
     updated_at: datetime
+    owner: str | None = Field(
+        description="The customer who owns it; null while the platform holds it (DESIGN.md 16.1)"
+    )
 
     @classmethod
     def from_domain(cls, item: StockItem) -> "StockOut":
@@ -40,6 +43,12 @@ class StockSet(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     available: Annotated[StrictInt, Field(ge=0, le=MAX_STOCK)]
+    reset_owner: Annotated[
+        bool,
+        Field(
+            description="true hands the item back to the platform (removes its owner)", strict=True
+        ),
+    ] = False
 
 
 class LineIn(BaseModel):
@@ -71,6 +80,7 @@ class LineOut(BaseModel):
     available: int
     sufficient: bool
     reason: Literal["OUT_OF_STOCK", "UNKNOWN_SKU"] | None
+    owner: str | None = Field(description="The owner; null for the platform or an unknown SKU")
 
     @classmethod
     def from_domain(cls, line: LineAvailability) -> "LineOut":

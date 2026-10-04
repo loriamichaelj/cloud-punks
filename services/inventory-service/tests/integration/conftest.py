@@ -132,17 +132,19 @@ def client(dynamodb: Any) -> Iterator[TestClient]:
         yield client
 
 
-def put_raw(dynamodb: Any, sku: str, available: int, reserved: int = 0) -> None:
+def put_raw(
+    dynamodb: Any, sku: str, available: int, reserved: int = 0, owner: str | None = None
+) -> None:
     """Write a record directly, the way the seed script and (later) reservations do."""
-    dynamodb.put_item(
-        TableName="inventory",
-        Item={
-            "sku": {"S": sku},
-            "available": {"N": str(available)},
-            "reserved": {"N": str(reserved)},
-            "updated_at": {"S": "2026-10-01T12:00:00+00:00"},
-        },
-    )
+    item = {
+        "sku": {"S": sku},
+        "available": {"N": str(available)},
+        "reserved": {"N": str(reserved)},
+        "updated_at": {"S": "2026-10-01T12:00:00+00:00"},
+    }
+    if owner is not None:
+        item["owner"] = {"S": owner}
+    dynamodb.put_item(TableName="inventory", Item=item)
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:

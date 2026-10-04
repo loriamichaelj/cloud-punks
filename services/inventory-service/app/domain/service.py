@@ -28,10 +28,14 @@ def evaluate_availability(
             results.append(LineAvailability(line.sku, line.quantity, 0, False, "UNKNOWN_SKU"))
         elif item.available < line.quantity:
             results.append(
-                LineAvailability(line.sku, line.quantity, item.available, False, "OUT_OF_STOCK")
+                LineAvailability(
+                    line.sku, line.quantity, item.available, False, "OUT_OF_STOCK", item.owner
+                )
             )
         else:
-            results.append(LineAvailability(line.sku, line.quantity, item.available, True, None))
+            results.append(
+                LineAvailability(line.sku, line.quantity, item.available, True, None, item.owner)
+            )
     return AvailabilityReport(available=all(r.sufficient for r in results), lines=tuple(results))
 
 
@@ -49,5 +53,5 @@ class InventoryService:
         stock = self._repository.get_many([line.sku for line in lines])
         return evaluate_availability(lines, stock)
 
-    def set_stock(self, sku: str, available: int) -> StockItem:
-        return self._repository.set_available(sku, available)
+    def set_stock(self, sku: str, available: int, *, reset_owner: bool = False) -> StockItem:
+        return self._repository.set_available(sku, available, reset_owner=reset_owner)

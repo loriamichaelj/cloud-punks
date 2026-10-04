@@ -49,7 +49,8 @@ def cache_hits(keyspace: str) -> dict[str, float]:
 def test_step_1_the_catalog_is_seeded_and_a_second_read_is_a_cache_hit(http: httpx2.Client) -> None:
     listing = http.get("/api/v1/products", params={"size": 5})
     assert listing.status_code == 200
-    assert listing.json()["total"] >= 20
+    assert listing.json()["total"] >= 100  # the 100 CloudPunks, plus the suite's own while it runs
+    assert http.get("/api/v1/products/CP-0001").json()["currency"] == "ETH"
 
     http.get(f"/api/v1/products/{SKU_A}")  # may be the miss that fills the cache
     before = cache_hits("product")

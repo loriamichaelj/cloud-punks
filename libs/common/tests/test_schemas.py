@@ -76,6 +76,26 @@ def test_inventory_failed_payload_and_reasons() -> None:
         InventoryFailedData.model_validate({**wire, "reason": "SOMETHING_ELSE"})
 
 
+def test_inventory_failed_detail_is_optional_and_open_ended() -> None:
+    """A detail value added later must not turn into a poison message here (ADR-21)."""
+    wire = {
+        "order_id": ORDER_ID,
+        "reason": "OUT_OF_STOCK",
+        "failed_items": [{"sku": "CP-0001", "requested": 1, "available": 0}],
+    }
+    assert InventoryFailedData.model_validate(wire).detail is None
+    assert InventoryFailedData.model_validate({**wire, "detail": "SOLD"}).detail == "SOLD"
+    assert InventoryFailedData.model_validate({**wire, "detail": "NEW_LATER"}).detail == "NEW_LATER"
+
+
+def test_order_created_seller_is_optional_so_older_events_mean_the_platform() -> None:
+    assert OrderCreatedData.model_validate(order_created_data()).seller is None
+    resale = OrderCreatedData.model_validate({**order_created_data(), "seller": "cust-7"})
+    assert resale.seller == "cust-7"
+    with pytest.raises(ValidationError):
+        OrderCreatedData.model_validate({**order_created_data(), "seller": ""})
+
+
 def test_order_status_updated_payload() -> None:
     data = OrderStatusUpdatedData.model_validate(
         {

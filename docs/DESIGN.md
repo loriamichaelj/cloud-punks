@@ -56,6 +56,10 @@ Each decision below is binding for Claude Code; changing one means updating this
 | ADR-15 | Jobs that need the EKS API (helm, kubectl, e2e, drills) run on ephemeral self-hosted runners inside the VPC; all other jobs use GitHub-hosted runners | EKS endpoint stays private and the ALB can be internal; Terraform AWS-API calls need no VPC access | Public EKS endpoint with IAM auth (simpler, larger attack surface) |
 | ADR-16 | The UI is a React + TypeScript single-page app built with Vite into static files, served by an unprivileged nginx container (`ui`), and reached through the same gateway/ALB as the API on the same origin (`/` goes to `ui`, `/api/v1/*` to the services) | No CORS and no per-environment API URL in the bundle (it calls relative `/api/v1`), so one image runs on Compose, local Kubernetes and EKS; static files need no Node runtime to operate | Next.js (a Node SSR runtime to run and patch for no benefit here); Create React App (deprecated); S3 + CloudFront (cloud-only, breaks "same image everywhere"; a possible later option); a separate UI origin with CORS |
 | ADR-17 | The UI is a pure client of the public API: no new endpoints, no direct database or AWS access, a client-side basket (not a server cart), and a browser-generated demo customer id that is explicitly not authentication | Keeps the backend contracts as the only source of truth and the non-goals (auth, payments, carts) intact; anything the UI needs that the API cannot do is an API-contract question, not UI logic | Server-side carts and sessions (scope and state to operate); a login form that only pretends |
+| ADR-18 | **Ownership lives in inventory.** Each `inventory` item gains `owner` (absent while the platform holds it). The reservation transaction (section 5) becomes the transfer: a purchase from the platform requires no owner and `available >= 1`; a resale requires `owner` = the seller. Either sets `owner` to the buyer in the same conditional write | The transfer must be atomic with "who owns it now", and the reservation is already the single conditional write that decides a race: two buyers of a red CloudPunk race on one item and exactly one wins | Ownership in order-service (two sources of truth for a sale); a new market service (a fifth service and store to run) |
+| ADR-19 | **Listings ("up for bid"), bids and activity live in order-service** (`listings` and `bids` in `order_db`). Accepting a bid creates an ordinary order for the bidder at the bid amount, so it travels the existing outbox, saga, reservation and notification path | Putting up, bidding, accepting and taking off are transitions of one listing, so they are serialized by one row lock in one database: a bid can never be accepted twice, nor accepted after the listing was taken off. Reusing the order path means no new event type, queue, rule or consumer | Listings or bids in inventory (no transaction across a listing and its bids; listing bids by NFT needs a DynamoDB index, which is a Terraform change) |
+| ADR-20 | **The art is generated, deterministic and committed.** `scripts/cloudpunks/generate.py` draws all 100 SVGs into `nft-collection/` from trait layers on the approved base head, with `0001.svg` kept exactly as approved. The UI bundles a copy (`ui/src/assets/cloudpunks/`) because the UI image is built from `ui/` only; `make ui-art` refreshes it and `make lint` fails if the copy drifts | One source of truth for the art, reviewable files in Git, no runtime image service, and the UI's CSP is unchanged | Images from the API (new endpoint and storage); art only inside `ui/` (the owner asked for `nft-collection/` at the root) |
+| ADR-21 | **Additive event fields only.** `OrderCreated` gains `seller`; `InventoryFailed` gains an optional `detail`. The `reason` values stay `OUT_OF_STOCK` and `UNKNOWN_SKU` | Section 6: additive fields keep `schema_version` 1.x, and consumers ignore unknown fields. A new `reason` value would turn into poison messages in a consumer that has not been upgraded yet during a rolling deploy | New event types (new rules, queues and consumers for no gain) |
 
 **Enterprise note:** ADR-04 and ADR-07 are the two that separate a demo from a system you would put your name on. Most event-driven outages in practice are lost or duplicated events, not slow ones.
 
@@ -968,3 +972,151 @@ ui/
 ```
 
 OpenAPI snapshots live in `docs/openapi/<service>.json`, produced by `make openapi` (each app's spec is generated from the code, so it cannot be hand-edited out of sync).
+
+## 16. CloudPunks: the NFT marketplace redesign
+
+**Status: approved by the owner (3 Oct 2026), being built milestone by milestone (16.9).** ADR-18 to ADR-21 are in section 2; section 15 is updated to match 16.6 in N5.
+
+The platform becomes a marketplace for one collection, **CloudPunks**: 100 one-of-a-kind 24×24 pixel-art characters in the style of the owner's references, bought from the platform and then resold between customers through bids, in **ETH**. It is a proof of concept on the UI and the existing API shape. There is no blockchain, wallet, token or real payment: a sale is an order, the money mechanics stay exactly as in sections 4 and 5 (two-decimal strings, `Decimal`, `NUMERIC`), and the demo customer id plays the part of a wallet address.
+
+**What stays:** the four services and their stores, the gateway, the event bus and the four event types, the outbox and its relay, idempotency keys, the saga and its state machine, the Helm chart, every workflow, and all AWS infrastructure (no Terraform change: DynamoDB is schemaless and the new PostgreSQL tables come from an Alembic migration). **What goes:** the 20-product catalog and its five categories, the 20 product SVGs and `productArt.ts`, the category palettes, the basket and checkout screens, and the current catalog and product screens. Non-goals are unchanged: no auth (the customer id is a label), no payments (a bid reserves no funds), no royalties, no server-side carts.
+
+### 16.1 How the market works
+
+| Colour | State | Who can do what |
+| --- | --- | --- |
+| **Red** `#855a53` | Unsold: the platform still holds it | Anyone can **Buy now** at its mint price (the product price). The first buyer wins; it turns blue |
+| **Blue** `#6f8392` | Bought: a customer owns it and it is not on the market | Only the owner can act: **Put up for bid** turns it purple |
+| **Purple** `#8571ad` | Up for bid: the owner has put it on the market | Anyone but the owner can **Place a bid**, and withdraw their own. The owner can **Accept** any open bid: the bidder buys it at that amount and it turns blue for the new owner. The owner can **Take it off** the market: it turns blue and the open bids close |
+
+There is no fixed resale price and no buy-now on purple: a resale happens only by the owner accepting a bid. The seed puts all 100 up as red, so a fresh collection is all red. While an accepted bid's order is being confirmed (a second or two) the tile stays purple.
+
+### 16.2 Decisions
+
+ADR-18 to ADR-21 in section 2: ownership in inventory, with the reservation as the transfer; listings, bids and activity in order-service; generated, committed art; additive event fields only.
+
+### 16.3 Collection and art
+
+- **Ids and names:** SKU `CP-0001` to `CP-0100`; name `CloudPunk #0001`; file `nft-collection/0001.svg`. Category = type, the five categories becoming `male`, `female`, `zombie`, `ape`, `alien` (rarity roughly 60 / 30 / 6 / 3 / 1).
+- **Attributes** are the product `description` (for example `Male · Mohawk Thin, Classic Shades, Earring, Cigarette`), so the UI reads traits from the public API and no product field changes.
+- **Art rules:** 24×24 cells, black outlines, flat colours, `shape-rendering="crispEdges"`, no background in the file (the page colours the tile by state). Five base heads (male, female, zombie, ape, alien; four skin tones for the human heads) measured from the owner's references, and 58 trait layers in nine slots (26 hair and hats, 11 eyewear and eye shadow, 10 beards, 3 lipsticks, 3 mouth items, 2 chains, earring, clown nose, mole), painted in a fixed order. A trait pixel can be the wearer's own skin, brow or eye colour (skin between curls, the shade of a beard), resolved per CloudPunk. Every CloudPunk has at least three traits, and the committed roster was chosen so that each one differs by at least 12 pixels from every reference tile it was measured from: no file reproduces a specific CryptoPunk.
+- **Files:** `scripts/cloudpunks/traits.json` (the layers), `roster.json` (each CloudPunk's type, skin, traits and price; seed 7), `generate.py` (renders `nft-collection/*.svg` and `local/seed/cloudpunks.json`; standard library only). `make cloudpunks` renders, `make lint` fails when the files are stale (`cloudpunks-check`) or the UI's copy differs (`ui-art-check`), and `scripts/tests/test_cloudpunks.py` checks that `0001.svg` is byte-identical to the approved file.
+- **Mint prices** in ETH by rarity: about 15 to 40 for male and female, 60 to 90 zombie, 120 to 200 ape and alien. Two decimals, currency `ETH` (the product API already accepts any `^[A-Z]{3}$`). The mint price is the product price, so a purchase from the platform is priced exactly as an order is today.
+
+### 16.4 API contract changes
+
+All additive: no existing field, path or status changes meaning. Recorded in the OpenAPI snapshots with `make openapi` in the milestone that builds each.
+
+**Inventory**
+
+| Method + path | Change |
+| --- | --- |
+| `GET /api/v1/inventory/{sku}`, `POST /api/v1/inventory/availability` | Responses gain `owner` (a customer id, or `null` while the platform holds it). Still `ConsistentRead`, still `Cache-Control: no-store` |
+| `PUT /api/v1/inventory/{sku}` (admin, seed) | Body gains optional `reset_owner` (true removes `owner`), so the seed and the e2e suite can (re)create an item the platform holds |
+
+**Orders**
+
+| Method + path | Change |
+| --- | --- |
+| `POST /api/v1/orders` | Unchanged: buy now from the platform, at the product price. A CloudPunk someone owns has `available = 0`, so it is refused by the existing pre-check (409 `OUT_OF_STOCK`) and written nowhere |
+| Order items | Gain `seller` (null for a purchase from the platform, else the customer it was bought from), stored in `order_items.seller` |
+| `POST /api/v1/listings` (new) | Body `{customer_id, sku}`: the owner puts it up for bid. Checks ownership with a consistent inventory read. 201 with the listing; 200 with the existing one if it is already up. 409 `NOT_OWNER` (includes the platform's red ones, which are bought, not bid on) |
+| `DELETE /api/v1/listings/{sku}?customer_id=` (new) | The owner takes it off: the listing becomes `CANCELLED` and its open bids `CLOSED`, in one transaction. 409 `NOT_OWNER`, 409 `NOT_LISTED`, 409 `SALE_PENDING` while an accepted bid is being confirmed |
+| `GET /api/v1/listings?sku=&status=&page=&size=` (new) | Default `status=ACTIVE` (open or sale pending): the purple set for the gallery. `size` 1 to 100 |
+| `POST /api/v1/bids` (new) | Header `Idempotency-Key` (as for orders), body `{customer_id, sku, amount}`. Needs an open listing for that CloudPunk: 201 with an `OPEN` bid. 409 `NOT_LISTED`, 422 `OWN_ITEM` (the owner cannot bid), amount rules as for prices (a string, two decimals, above 0). A customer may hold several open bids on one listing; the UI shows the highest |
+| `GET /api/v1/bids?sku=&customer_id=&status=&page=&size=` (new) | At least one of `sku` or `customer_id`. Newest first, `{items, page, size, total}` |
+| `DELETE /api/v1/bids/{bid_id}?customer_id=` (new) | The bidder withdraws an `OPEN` bid: `WITHDRAWN`. 409 `BID_NOT_OPEN`; 409 `NOT_BIDDER` (there is no auth, so no 403) |
+| `POST /api/v1/bids/{bid_id}/accept` (new) | Body `{customer_id}`, the owner. In one transaction, with the listing row locked: listing `OPEN` → `SALE_PENDING`, bid `OPEN` → `ACCEPTED`, an order for the bidder at the bid amount with `seller` = owner (idempotency key `bid-<bid_id>`), and the `OrderCreated` outbox row. 202 with the order. 409 `BID_NOT_OPEN`, `NOT_LISTED`, `NOT_OWNER` |
+| `GET /api/v1/activity?sku=&page=&size=` (new) | Newest first, all from `order_db`: `SALE` (a `CONFIRMED` order: price, `from` seller or the platform, `to` buyer), `LISTED`, `UNLISTED`, `BID`, `BID_WITHDRAWN` |
+
+**After the accepted bid's order settles** (in the order consumer, in the same transaction as the order's status change): `CONFIRMED` → the bid `FILLED`, the listing `SOLD`, its other open bids `CLOSED`; `REJECTED` (the owner changed first, which only an admin reset can cause) → the bid `FAILED` and the listing back to `OPEN`.
+
+### 16.5 Data and events
+
+```sql
+-- order_db, migration 0002 (expand only)
+ALTER TABLE order_items ADD COLUMN seller VARCHAR(64);
+
+CREATE TABLE listings (
+  listing_id  CHAR(26)     PRIMARY KEY,                       -- ULID
+  sku         VARCHAR(64)  NOT NULL,
+  seller_id   VARCHAR(64)  NOT NULL,
+  status      VARCHAR(16)  NOT NULL
+              CHECK (status IN ('OPEN', 'SALE_PENDING', 'SOLD', 'CANCELLED')),
+  created_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+-- at most one active listing per CloudPunk
+CREATE UNIQUE INDEX uq_listings_active_sku ON listings (sku) WHERE status IN ('OPEN', 'SALE_PENDING');
+
+CREATE TABLE bids (
+  bid_id           CHAR(26)      PRIMARY KEY,                  -- ULID
+  listing_id       CHAR(26)      NOT NULL REFERENCES listings (listing_id),
+  sku              VARCHAR(64)   NOT NULL,
+  bidder_id        VARCHAR(64)   NOT NULL,
+  amount           NUMERIC(10,2) NOT NULL CHECK (amount > 0),
+  currency         CHAR(3)       NOT NULL,
+  status           VARCHAR(16)   NOT NULL
+                   CHECK (status IN ('OPEN', 'WITHDRAWN', 'ACCEPTED', 'FILLED', 'FAILED', 'CLOSED')),
+  order_id         CHAR(26)      REFERENCES orders (order_id),
+  idempotency_key  VARCHAR(64)   NOT NULL,
+  created_at       TIMESTAMPTZ   NOT NULL DEFAULT now(),
+  updated_at       TIMESTAMPTZ   NOT NULL DEFAULT now(),
+  CONSTRAINT uq_bids_bidder_idem UNIQUE (bidder_id, idempotency_key)
+);
+CREATE INDEX ix_bids_listing_open ON bids (listing_id) WHERE status = 'OPEN';
+CREATE INDEX ix_bids_sku_created  ON bids (sku, created_at DESC);
+CREATE INDEX ix_bids_bidder       ON bids (bidder_id, created_at DESC);
+```
+
+`inventory` items gain `owner` (S, absent while the platform holds it). The reservation stays one `TransactWriteItems` with one `Update` per line, now in one of two modes chosen by `OrderCreated.data.seller`:
+
+| Order | Condition on the inventory item | Update |
+| --- | --- | --- |
+| Purchase from the platform (`seller` null) | `attribute_exists(sku) AND available >= :q` | `available - :q`, `reserved + :q`, `owner = :buyer` |
+| Resale (accepted bid, `seller` set) | `attribute_exists(sku) AND owner = :seller` | `reserved + :q`, `owner = :buyer` (`available` stays 0) |
+
+A sold CloudPunk has `available = 0`, so the stock condition alone decides a race between two buyers of a red one; the purchase needs no owner condition (the first draft had `attribute_not_exists(owner)`, which was redundant and would have broken counted stock, where `owner` is simply the latest buyer). `owner` is a DynamoDB reserved word and is aliased `#owner`. A failed condition is `InventoryFailed` with `reason: OUT_OF_STOCK` and `detail` = `SOLD` (a purchase from the platform of something a customer owns) or `OWNER_CHANGED` (a resale whose seller no longer owns it), from `ReturnValuesOnConditionCheckFailure: ALL_OLD`; an unknown SKU stays `UNKNOWN_SKU`, and a plain shortfall in counted stock has no detail. The reservation record also stores `buyer`, `seller` and `detail`, so a redelivery re-emits exactly the same outcome. The unknown-versus-insufficient and duplicate-versus-failure rules of section 5 are unchanged. Deploy inventory before order-service, so no `OrderCreated` with a `seller` meets a consumer that ignores it.
+
+The low-stock Lambda is unchanged; every purchase from the platform leaves `remaining = 0`, so it logs one `low_stock` record per first sale ("sold out").
+
+### 16.6 UI
+
+Same stack and rules as section 15 (TypeScript strict, BigInt money, `Idempotency-Key` on every purchase and bid, `X-Correlation-ID`, stock never cached, no external requests). New screens, styled after the owner's references: a white page, black text, a pink accent for headings and ids, the pixel art scaled with `image-rendering: pixelated` on a tile coloured by state (16.1).
+
+| Screen | Route | Calls | Notes |
+| --- | --- | --- | --- |
+| Collection | `/` | `GET /categories`; `GET /products?size=100`; `POST /inventory/availability` in five batches of 20; `GET /listings` | All 100 tiles in a grid, coloured by state, with the legend; filters by type and colour; header figures: floor price (lowest unsold), unsold, up for bid, owners. Refreshes every 10 s while visible |
+| CloudPunk | `/cloudpunks/:id` | `GET /products/{sku}`; `GET /inventory/{sku}`; `GET /listings?sku=`; `GET /bids?sku=`; `GET /activity?sku=` | Large image on the state colour, `CloudPunk #0001`, type and attributes, owner. Red: price and **Buy now** (a confirm step, then the order screen). Purple: open bids, **Place a bid**, your own bids with **Withdraw**; if you own it, **Accept** on each bid and **Take off market**. Blue and yours: **Put up for bid**. This CloudPunk's activity |
+| Activity | `/activity` | `GET /activity`; the gallery's state calls for each tile's colour | Recent sales, listings and bids as tiles with captions ("Bought for 35 ETH", "New bid of 33 ETH", "Up for bid"), like the reference |
+| My CloudPunks | `/account` | the collection calls, filtered by `owner`; `GET /bids?customer_id=`; `GET /orders?customer_id=` | What you own, your bids, your orders |
+| Order | `/orders/:id` | as today | Restyled; polls to `CONFIRMED` or `REJECTED` |
+| Demo tools | `/demo` | none of its own | Local builds only (`VITE_DEMO_TOOLS`): **Switch customer**, to act as a second buyer and show a resale end to end |
+
+### 16.7 Seed
+
+`make seed` loads the five types and the 100 products from `local/seed/` (data generated with the art), and for each CloudPunk that has no inventory item yet creates one held by the platform (`available = 1`, no `owner`). It never resets an existing item, so re-running it (or `app-seed` in the cloud) cannot undo sales. LocalStack loses DynamoDB on restart anyway; after that, `make seed` recreates a fresh, all-red collection while PostgreSQL keeps the old orders and listings (`make reset` clears both).
+
+### 16.8 Tests
+
+- **Unit:** both reservation modes and each failure `detail`; the listing and bid lifecycles, including settling after `CONFIRMED` and `REJECTED`; `OWN_ITEM`, `NOT_OWNER`, `NOT_LISTED`; the colour rules and BigInt ETH formatting in the UI; the generator is deterministic and keeps `0001.svg` byte-identical.
+- **Guards shown able to fail** (CLAUDE.md): dropping the `attribute_not_exists(owner)` condition lets two buyers both get a red CloudPunk; dropping the owner condition lets a resale go through after the owner changed; dropping the listing row lock (or the `OPEN` guard) accepts two bids on one listing (integration tests where they race).
+- **End-to-end:** the acceptance suite is rewritten around the market (buy from the platform and the owner changes; put up for bid, a second customer bids, the owner accepts and ownership moves; two buyers race for one red CloudPunk and one wins; withdraw a bid; take a listing off and its bids close), keeping steps 1, 6, 9 and 10 (cache hit, notifications, readiness and empty DLQs, one correlation id). It creates its own `E2E-…` products and inventory and deactivates them afterwards, so the 100 CloudPunks are never touched and the gallery shows only `CP-` SKUs. The failure drills keep their meaning on these fixtures. Browser journeys are rewritten for the new screens. The same suites run on Compose, the local cluster and dev in the cloud.
+
+### 16.9 Milestones
+
+Same rules as section 12: one at a time, `make lint test` (and itest, e2e when stated), a summary and a stop after each.
+
+- [x] **N1 — Art.** *(Built and approved 3 Oct 2026.)* The generator, 100 SVGs in `nft-collection/` (0001 as approved), the trait and price data for the seed, `make ui-art` and its lint check. *Done when:* a contact sheet of all 100 is reviewed by the owner.
+- [x] **N2 — Catalog.** *(Built and approved 3 Oct 2026.)* Seed the five types and 100 products in ETH, one of each; delete the old catalog, art and palettes; the e2e fixtures move to `E2E-` products. *Done when:* `make lint test itest e2e` pass on a clean `make reset && make up && make seed`.
+- [x] **N3 — Ownership (inventory).** *(Built 3 Oct 2026; awaiting review.)* `owner`, the two reservation modes, the new response field, `reset_owner`, `InventoryFailed.detail`. *Done when:* unit and integration tests, including the two-buyer race, pass and the guards are shown able to fail.
+- [ ] **N4 — Listings, bids and activity (order-service).** Migration 0002, `seller` on items, the listing and bid endpoints, settling in the consumer, `/activity`, `OrderCreated.seller`. *Done when:* unit, integration and `make e2e` pass with the new acceptance steps.
+- [ ] **N5 — UI.** The screens in 16.6, the old screens removed, component tests and browser journeys rewritten. *Done when:* `make lint test ui-e2e` pass; axe clean.
+- [ ] **N6 — Local cluster and cloud.** `make k8s-deploy k8s-e2e` pass; the cloud acceptance suite updated (it is run by `app-deploy` only when the owner chooses to deploy).
+- [ ] **N7 — Docs.** README, DESIGN.md sections 1 to 15 brought in line, the ADR notes, the OpenAPI baseline.
+
+### 16.10 Settled with the owner (3 Oct 2026)
+
+1. Purple has no fixed price: a resale happens only when the owner accepts a bid (no buy-now on purple, no minimum bid).
+2. The e2e suite works on its own `E2E-` products, never on the 100.
+3. The seed never resets an existing CloudPunk; `make reset` is the clean start.

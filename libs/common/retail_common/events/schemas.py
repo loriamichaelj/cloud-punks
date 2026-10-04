@@ -38,6 +38,9 @@ class OrderCreatedData(BaseModel):
     items: list[ItemQuantity] = Field(min_length=1, max_length=20)
     total_amount: Money
     currency: Currency
+    # The customer it is bought from: None for a purchase from the platform, else a resale (an
+    # accepted bid, DESIGN.md section 16.5). Additive, so absent in older events means None.
+    seller: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class ReservedItem(BaseModel):
@@ -61,6 +64,10 @@ class InventoryFailedData(BaseModel):
     order_id: Ulid
     reason: Literal["OUT_OF_STOCK", "UNKNOWN_SKU"]
     failed_items: list[FailedItem] = Field(min_length=1)
+    # Why an OUT_OF_STOCK item could not be had, when it is a CloudPunk: "SOLD" (someone already
+    # owns it) or "OWNER_CHANGED" (a resale whose seller no longer owns it). A plain string, not a
+    # Literal, so a value added later is not poison to a consumer that predates it (ADR-21).
+    detail: str | None = Field(default=None, max_length=32)
 
 
 class OrderStatusUpdatedData(BaseModel):

@@ -54,17 +54,18 @@ def deliver(
 
 
 def order_created(
-    *items: tuple[str, int], order_id: str = ORDER
+    *items: tuple[str, int], order_id: str = ORDER, seller: str | None = None
 ) -> tuple[Envelope, OrderCreatedData]:
-    data = OrderCreatedData.model_validate(
-        {
-            "order_id": order_id,
-            "customer_id": "cust-1",
-            "items": [{"sku": sku, "quantity": qty} for sku, qty in items],
-            "total_amount": "10.00",
-            "currency": "USD",
-        }
-    )
+    payload: dict[str, object] = {
+        "order_id": order_id,
+        "customer_id": "cust-1",
+        "items": [{"sku": sku, "quantity": qty} for sku, qty in items],
+        "total_amount": "10.00",
+        "currency": "USD",
+    }
+    if seller is not None:
+        payload["seller"] = seller
+    data = OrderCreatedData.model_validate(payload)
     envelope = Envelope.create(
         event_type="OrderCreated", producer="order-service", data=data, correlation_id="corr-9"
     )
@@ -158,3 +159,27 @@ def test_the_correlation_id_of_the_incoming_event_reaches_the_outcome() -> None:
     contextvars.copy_context().run(run)
 
     assert publisher.published[0].correlation_id == "corr-9"
+
+
+def test_the_buyer_and_seller_come_from_the_event_and_a_failure_carries_its_detail() -> None:
+    handler, publisher, stock, store = build({"CP-0001": 0})
+    stock.owners["CP-0001"] = "cust-someone-else"
+    envelope, data = order_created(("CP-0001", 1), seller="cust-seller")
+
+    deliver(handler, envelope, data)
+
+    (event,) = publisher.published
+    assert event.event_type == "InventoryFailed"
+    assert (event.data["reason"], event.data["detail"]) == ("OUT_OF_STOCK", "OWNER_CHANGED")
+    record = store.records[ORDER]
+    assert (record.buyer, record.seller) == ("cust-1", "cust-seller")
+
+
+def test_an_order_without_a_seller_is_a_purchase_from_the_platform() -> None:
+    handler, publisher, stock, _ = build({"CP-0001": 1})
+    envelope, data = order_created(("CP-0001", 1))
+
+    deliver(handler, envelope, data)
+
+    assert publisher.published[0].event_type == "InventoryReserved"
+    assert stock.owners["CP-0001"] == "cust-1"

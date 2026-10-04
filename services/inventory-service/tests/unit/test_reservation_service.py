@@ -7,6 +7,7 @@ from app.domain.errors import InvalidOrder
 from app.domain.reservations import ReservationService, ReservedLine
 from retail_common.events.envelope import new_event_id
 
+BUYER = "cust-buyer"
 ORDER = "01J9Z6Q4W8K3M2N1P0R7S5T4V3"
 NOW = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
 
@@ -31,7 +32,7 @@ def lines(**quantities: int) -> list[ReservedLine]:
 def test_sufficient_stock_is_reserved_and_the_remaining_stock_is_recorded() -> None:
     service, _, stock = build({"A": 10, "B": 4})
 
-    processed = service.process(ORDER, lines(A=2, B=1))
+    processed = service.process(ORDER, lines(A=2, B=1), buyer=BUYER)
 
     assert processed.duplicate is False
     assert processed.reservation.status == "RESERVED"
@@ -42,7 +43,7 @@ def test_sufficient_stock_is_reserved_and_the_remaining_stock_is_recorded() -> N
 def test_insufficient_stock_on_one_line_reserves_nothing_at_all() -> None:
     service, _, stock = build({"A": 10, "B": 1})
 
-    processed = service.process(ORDER, lines(A=2, B=5))
+    processed = service.process(ORDER, lines(A=2, B=5), buyer=BUYER)
 
     assert processed.reservation.status == "FAILED"
     assert processed.reservation.reason == "OUT_OF_STOCK"
@@ -55,7 +56,7 @@ def test_insufficient_stock_on_one_line_reserves_nothing_at_all() -> None:
 def test_an_unknown_sku_is_reported_as_such_with_zero_available() -> None:
     service, _, _ = build({"A": 10})
 
-    processed = service.process(ORDER, lines(A=1, GHOST=2))
+    processed = service.process(ORDER, lines(A=1, GHOST=2), buyer=BUYER)
 
     assert processed.reservation.reason == "UNKNOWN_SKU"
     assert [(f.sku, f.available) for f in processed.reservation.failed_items] == [("GHOST", 0)]
@@ -63,7 +64,7 @@ def test_an_unknown_sku_is_reported_as_such_with_zero_available() -> None:
 
 def test_asking_for_exactly_what_is_left_succeeds_and_leaves_zero() -> None:
     service, _, stock = build({"A": 3})
-    processed = service.process(ORDER, lines(A=3))
+    processed = service.process(ORDER, lines(A=3), buyer=BUYER)
     assert processed.reservation.status == "RESERVED"
     assert stock.levels["A"] == 0
     assert processed.reservation.remaining == {"A": 0}
@@ -72,7 +73,7 @@ def test_asking_for_exactly_what_is_left_succeeds_and_leaves_zero() -> None:
 def test_the_same_sku_on_two_lines_is_an_invalid_order() -> None:
     service, store, _ = build({"A": 10})
     with pytest.raises(InvalidOrder, match="more than once"):
-        service.process(ORDER, [ReservedLine("A", 1), ReservedLine("A", 2)])
+        service.process(ORDER, [ReservedLine("A", 1), ReservedLine("A", 2)], buyer=BUYER)
     assert store.reserve_calls == 0  # it never reached the store
 
 
@@ -81,9 +82,9 @@ def test_the_same_sku_on_two_lines_is_an_invalid_order() -> None:
 
 def test_a_duplicate_order_created_reserves_nothing_a_second_time() -> None:
     service, store, stock = build({"A": 10})
-    first = service.process(ORDER, lines(A=2))
+    first = service.process(ORDER, lines(A=2), buyer=BUYER)
 
-    again = service.process(ORDER, lines(A=2))
+    again = service.process(ORDER, lines(A=2), buyer=BUYER)
 
     assert again.duplicate is True
     assert stock.levels["A"] == 8  # decremented once
@@ -97,10 +98,10 @@ def test_a_duplicate_of_a_failed_order_returns_the_stored_failure_even_if_stock_
 ):
     """The decision was made once. Restocking afterwards must not turn a rejected order around."""
     service, _, stock = build({"A": 1})
-    first = service.process(ORDER, lines(A=5))
+    first = service.process(ORDER, lines(A=5), buyer=BUYER)
     stock.levels["A"] = 100
 
-    again = service.process(ORDER, lines(A=5))
+    again = service.process(ORDER, lines(A=5), buyer=BUYER)
 
     assert again.duplicate is True
     assert again.reservation.status == "FAILED"
@@ -110,8 +111,8 @@ def test_a_duplicate_of_a_failed_order_returns_the_stored_failure_even_if_stock_
 
 def test_different_orders_for_the_same_sku_each_get_their_own_reservation() -> None:
     service, _, stock = build({"A": 10})
-    one = service.process("01J9Z6Q4W8K3M2N1P0R7S5T4V1", lines(A=2))
-    two = service.process("01J9Z6Q4W8K3M2N1P0R7S5T4V2", lines(A=3))
+    one = service.process("01J9Z6Q4W8K3M2N1P0R7S5T4V1", lines(A=2), buyer=BUYER)
+    two = service.process("01J9Z6Q4W8K3M2N1P0R7S5T4V2", lines(A=3), buyer=BUYER)
 
     assert one.reservation.event_id != two.reservation.event_id
     assert stock.levels["A"] == 5
@@ -126,12 +127,12 @@ def test_a_crash_after_reserving_but_before_remaining_is_stored_is_completed_on_
     service, store, stock = build({"A": 10})
     store.crash_before_remaining = True
     with pytest.raises(RuntimeError, match="process died"):
-        service.process(ORDER, lines(A=2))
+        service.process(ORDER, lines(A=2), buyer=BUYER)
     assert stock.levels["A"] == 8  # the reservation did commit
     assert store.records[ORDER].remaining is None
 
     store.crash_before_remaining = False
-    redelivered = service.process(ORDER, lines(A=2))
+    redelivered = service.process(ORDER, lines(A=2), buyer=BUYER)
 
     assert redelivered.duplicate is True  # recognised as already reserved
     assert stock.levels["A"] == 8  # and not reserved again
@@ -140,11 +141,59 @@ def test_a_crash_after_reserving_but_before_remaining_is_stored_is_completed_on_
 
 def test_remaining_is_written_once_and_never_overwritten() -> None:
     service, store, stock = build({"A": 10})
-    first = service.process(ORDER, lines(A=2))
+    first = service.process(ORDER, lines(A=2), buyer=BUYER)
     stock.levels["A"] = 1  # other orders have since consumed stock
 
-    again = service.process(ORDER, lines(A=2))
+    again = service.process(ORDER, lines(A=2), buyer=BUYER)
 
     assert first.reservation.remaining == {"A": 8}
     assert again.reservation.remaining == {"A": 8}  # the re-emitted event matches the first
     assert store.records[ORDER].remaining == {"A": 8}
+
+
+# --- ownership: the reservation is the transfer (DESIGN.md section 16.5) -------------------------
+
+
+def test_buying_from_the_platform_makes_the_buyer_the_owner() -> None:
+    service, _, stock = build({"CP-0001": 1})
+
+    processed = service.process(ORDER, lines(**{"CP-0001": 1}), buyer=BUYER)
+
+    assert processed.reservation.status == "RESERVED"
+    assert (stock.levels["CP-0001"], stock.owners["CP-0001"]) == (0, BUYER)
+    assert (processed.reservation.buyer, processed.reservation.seller) == (BUYER, None)
+
+
+def test_a_sold_cloudpunk_cannot_be_bought_from_the_platform_again() -> None:
+    service, _, stock = build({"CP-0001": 1})
+    service.process(ORDER, lines(**{"CP-0001": 1}), buyer=BUYER)
+
+    second = service.process(
+        "01J9Z6Q4W8K3M2N1P0R7S5T4V9", lines(**{"CP-0001": 1}), buyer="cust-late"
+    )
+
+    assert (second.reservation.status, second.reservation.detail) == ("FAILED", "SOLD")
+    assert stock.owners["CP-0001"] == BUYER
+
+
+def test_a_resale_moves_ownership_to_the_buyer_and_leaves_stock_alone() -> None:
+    service, _, stock = build({"CP-0001": 0})
+    stock.owners["CP-0001"] = "cust-seller"
+
+    processed = service.process(ORDER, lines(**{"CP-0001": 1}), buyer=BUYER, seller="cust-seller")
+
+    assert processed.reservation.status == "RESERVED"
+    assert (stock.levels["CP-0001"], stock.owners["CP-0001"]) == (0, BUYER)
+
+
+def test_a_resale_by_someone_who_no_longer_owns_it_fails_as_owner_changed() -> None:
+    service, _, stock = build({"CP-0001": 0})
+    stock.owners["CP-0001"] = "cust-new-owner"
+
+    processed = service.process(ORDER, lines(**{"CP-0001": 1}), buyer=BUYER, seller="cust-seller")
+
+    assert (processed.reservation.status, processed.reservation.detail) == (
+        "FAILED",
+        "OWNER_CHANGED",
+    )
+    assert stock.owners["CP-0001"] == "cust-new-owner"

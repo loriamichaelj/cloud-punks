@@ -1,17 +1,50 @@
-"""The seed dataset: 5 categories, 20 products, and a starting stock level for each.
+"""The seed dataset: the CloudPunks collection (DESIGN.md section 16.3, 16.7).
 
-Plain data, no I/O, so it is unit-tested without any store running.
+Five types as categories, 100 one-of-a-kind products priced in ETH, and one unit of stock each.
+The product records come from ``cloudpunks.json``, which ``make cloudpunks`` generates with the
+art, so a CloudPunk's description always matches its picture. Plain data and a file read, no store,
+so it is unit-tested without anything running.
 """
 
+import json
 from dataclasses import dataclass
 from decimal import Decimal
+from pathlib import Path
+
+COLLECTION_FILE = Path(__file__).resolve().parent / "cloudpunks.json"
 
 CATEGORIES: tuple[tuple[str, str], ...] = (
-    ("apparel", "Apparel"),
-    ("footwear", "Footwear"),
-    ("accessories", "Accessories"),
-    ("home", "Home"),
-    ("electronics", "Electronics"),
+    ("male", "Male"),
+    ("female", "Female"),
+    ("zombie", "Zombie"),
+    ("ape", "Ape"),
+    ("alien", "Alien"),
+)
+
+# The retail catalog this collection replaced. The seed removes it from a store that still has it,
+# so an environment seeded before the redesign ends up with the collection only.
+RETIRED_CATEGORIES: tuple[str, ...] = ("apparel", "footwear", "accessories", "home", "electronics")
+RETIRED_SKUS: tuple[str, ...] = (
+    "SKU-TSHIRT-BLK-M",
+    "SKU-TSHIRT-WHT-L",
+    "SKU-HOODIE-GRY-M",
+    "SKU-JEANS-BLU-32",
+    "SKU-SNEAKER-WHT-42",
+    "SKU-BOOT-BRN-43",
+    "SKU-SANDAL-BLK-40",
+    "SKU-SLIPPER-GRY-41",
+    "SKU-CAP-NAVY",
+    "SKU-BELT-BLK-95",
+    "SKU-WALLET-BRN",
+    "SKU-SCARF-RED",
+    "SKU-MUG-WHT",
+    "SKU-CANDLE-VAN",
+    "SKU-THROW-GRY",
+    "SKU-VASE-GLS",
+    "SKU-EARBUDS-BLK",
+    "SKU-CHARGER-USBC",
+    "SKU-SPEAKER-MINI",
+    "SKU-CABLE-USBC-2M",
 )
 
 
@@ -22,71 +55,25 @@ class SeedProduct:
     description: str
     category: str  # a slug from CATEGORIES
     price: Decimal  # never a float
+    currency: str
 
 
-def _p(sku: str, name: str, description: str, category: str, price: str) -> SeedProduct:
-    return SeedProduct(sku, name, description, category, Decimal(price))
+def _load() -> tuple[SeedProduct, ...]:
+    records = json.loads(COLLECTION_FILE.read_text(), parse_float=Decimal)
+    return tuple(
+        SeedProduct(
+            sku=r["sku"],
+            name=r["name"],
+            description=r["description"],
+            category=r["category"],
+            price=Decimal(r["price"]),  # a string in the file, so no float ever touches it
+            currency=r["currency"],
+        )
+        for r in records
+    )
 
 
-PRODUCTS: tuple[SeedProduct, ...] = (
-    _p("SKU-TSHIRT-BLK-M", "Black T-Shirt (M)", "Soft cotton crew-neck tee.", "apparel", "19.99"),
-    _p("SKU-TSHIRT-WHT-L", "White T-Shirt (L)", "Soft cotton crew-neck tee.", "apparel", "19.99"),
-    _p(
-        "SKU-HOODIE-GRY-M",
-        "Grey Hoodie (M)",
-        "Midweight fleece pullover hoodie.",
-        "apparel",
-        "49.99",
-    ),
-    _p("SKU-JEANS-BLU-32", "Blue Jeans (32)", "Straight-fit denim jeans.", "apparel", "59.99"),
-    _p(
-        "SKU-SNEAKER-WHT-42",
-        "White Sneakers (42)",
-        "Low-top leather sneakers.",
-        "footwear",
-        "89.00",
-    ),
-    _p("SKU-BOOT-BRN-43", "Brown Boots (43)", "Waxed leather lace-up boots.", "footwear", "129.50"),
-    _p(
-        "SKU-SANDAL-BLK-40",
-        "Black Sandals (40)",
-        "Adjustable-strap summer sandals.",
-        "footwear",
-        "34.99",
-    ),
-    _p(
-        "SKU-SLIPPER-GRY-41", "Grey Slippers (41)", "Warm felt house slippers.", "footwear", "24.99"
-    ),
-    _p("SKU-CAP-NAVY", "Navy Cap", "Adjustable six-panel cotton cap.", "accessories", "15.99"),
-    _p("SKU-BELT-BLK-95", "Black Belt (95 cm)", "Full-grain leather belt.", "accessories", "27.50"),
-    _p("SKU-WALLET-BRN", "Brown Wallet", "Bifold leather wallet.", "accessories", "39.00"),
-    _p("SKU-SCARF-RED", "Red Scarf", "Lightweight wool-blend scarf.", "accessories", "22.00"),
-    _p("SKU-MUG-WHT", "White Mug", "350 ml stoneware mug.", "home", "8.99"),
-    _p("SKU-CANDLE-VAN", "Vanilla Candle", "Hand-poured soy candle.", "home", "14.50"),
-    _p("SKU-THROW-GRY", "Grey Throw", "Knitted cotton throw blanket.", "home", "44.00"),
-    _p("SKU-VASE-GLS", "Glass Vase", "Hand-blown clear glass vase.", "home", "31.25"),
-    _p(
-        "SKU-EARBUDS-BLK",
-        "Wireless Earbuds",
-        "Bluetooth earbuds with charging case.",
-        "electronics",
-        "59.99",
-    ),
-    _p("SKU-CHARGER-USBC", "USB-C Charger", "30 W wall charger.", "electronics", "25.99"),
-    _p("SKU-SPEAKER-MINI", "Mini Speaker", "Portable Bluetooth speaker.", "electronics", "49.50"),
-    _p(
-        "SKU-CABLE-USBC-2M",
-        "USB-C Cable (2 m)",
-        "Braided USB-C charging cable.",
-        "electronics",
-        "12.99",
-    ),
-)
+PRODUCTS: tuple[SeedProduct, ...] = _load()
 
-
-def stock_for(index: int) -> int:
-    """Deterministic starting stock between 10 and 50 inclusive, varied across the catalog."""
-    return 10 + (index * 13) % 41
-
-
-STOCK: dict[str, int] = {product.sku: stock_for(i) for i, product in enumerate(PRODUCTS)}
+# One of each: a CloudPunk is a single item.
+STOCK: dict[str, int] = {product.sku: 1 for product in PRODUCTS}

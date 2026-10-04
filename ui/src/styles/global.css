@@ -44,39 +44,39 @@
   line-height: 1.55;
 }
 
-[data-category='apparel'] {
-  --cat-tint-a: #e1e0ff;
-  --cat-tint-b: #f1e9ff;
-  --cat-ink: #3730a3;
-  --cat-solid: #4338ca;
-}
-
-[data-category='footwear'] {
-  --cat-tint-a: #ffe0d1;
-  --cat-tint-b: #ffeee1;
-  --cat-ink: #9a3412;
-  --cat-solid: #c2410c;
-}
-
-[data-category='accessories'] {
-  --cat-tint-a: #ffeeb5;
-  --cat-tint-b: #fff8da;
-  --cat-ink: #7a4a05;
-  --cat-solid: #a16207;
-}
-
-[data-category='home'] {
-  --cat-tint-a: #cff3e8;
-  --cat-tint-b: #e5fbf4;
-  --cat-ink: #0f5f58;
-  --cat-solid: #0f766e;
-}
-
-[data-category='electronics'] {
+[data-category='male'] {
   --cat-tint-a: #d4e6ff;
   --cat-tint-b: #e8f1ff;
   --cat-ink: #1e40af;
   --cat-solid: #1d4ed8;
+}
+
+[data-category='female'] {
+  --cat-tint-a: #ffe0ef;
+  --cat-tint-b: #ffeef6;
+  --cat-ink: #9d174d;
+  --cat-solid: #be185d;
+}
+
+[data-category='zombie'] {
+  --cat-tint-a: #d9f2d0;
+  --cat-tint-b: #ecf9e6;
+  --cat-ink: #3f6212;
+  --cat-solid: #4d7c0f;
+}
+
+[data-category='ape'] {
+  --cat-tint-a: #f3e3cf;
+  --cat-tint-b: #faf1e6;
+  --cat-ink: #78350f;
+  --cat-solid: #92400e;
+}
+
+[data-category='alien'] {
+  --cat-tint-a: #cff3f3;
+  --cat-tint-b: #e5fbfb;
+  --cat-ink: #0f5f63;
+  --cat-solid: #0e7490;
 }
 
 * {

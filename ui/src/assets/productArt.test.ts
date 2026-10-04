@@ -1,48 +1,33 @@
 import { describe, expect, it } from 'vitest';
 import { artFor, categoryFor, isKnownCategory } from './productArt';
 
-const SEEDED = [
-  'SKU-TSHIRT-BLK-M',
-  'SKU-TSHIRT-WHT-L',
-  'SKU-HOODIE-GRY-M',
-  'SKU-JEANS-BLU-32',
-  'SKU-SNEAKER-WHT-42',
-  'SKU-BOOT-BRN-43',
-  'SKU-SANDAL-BLK-40',
-  'SKU-SLIPPER-GRY-41',
-  'SKU-CAP-NAVY',
-  'SKU-BELT-BLK-95',
-  'SKU-WALLET-BRN',
-  'SKU-SCARF-RED',
-  'SKU-MUG-WHT',
-  'SKU-CANDLE-VAN',
-  'SKU-THROW-GRY',
-  'SKU-VASE-GLS',
-  'SKU-EARBUDS-BLK',
-  'SKU-CHARGER-USBC',
-  'SKU-SPEAKER-MINI',
-  'SKU-CABLE-USBC-2M',
-];
+const COLLECTION = Array.from({ length: 100 }, (_, i) => `CP-${String(i + 1).padStart(4, '0')}`);
 
-describe('product art', () => {
-  it('has a local picture and a category for every seeded product', () => {
-    for (const sku of SEEDED) {
+describe('CloudPunk art', () => {
+  it('has a local picture for every CloudPunk', () => {
+    for (const sku of COLLECTION) {
       expect(artFor(sku), sku).toBeTruthy();
-      expect(isKnownCategory(categoryFor(sku)), sku).toBe(true);
     }
+    expect(new Set(COLLECTION.map(artFor)).size).toBe(100);
   });
 
   it('matches SKUs case-insensitively and never points off-site', () => {
-    expect(artFor('sku-mug-wht')).toBe(artFor('SKU-MUG-WHT'));
-    expect(artFor('SKU-MUG-WHT')).not.toMatch(/^https?:/);
+    expect(artFor('cp-0001')).toBe(artFor('CP-0001'));
+    expect(artFor('CP-0001')).not.toMatch(/^https?:/);
   });
 
-  it('has nothing for an unknown product, so the category icon is shown instead', () => {
-    expect(artFor('SKU-NEW-THING')).toBeUndefined();
-    expect(categoryFor('SKU-NEW-THING')).toBeUndefined();
+  it('has nothing for any other product, so the type icon is shown instead', () => {
+    expect(artFor('CP-0101')).toBeUndefined();
+    expect(artFor('E2E-A')).toBeUndefined();
+    expect(artFor('CP-1')).toBeUndefined();
   });
 
-  it('prefers the category the API gave', () => {
-    expect(categoryFor('SKU-MUG-WHT', 'electronics')).toBe('electronics');
+  it('tints with the type the API gave and knows the five types', () => {
+    expect(categoryFor('CP-0001', 'zombie')).toBe('zombie');
+    expect(categoryFor('CP-0001')).toBeUndefined();
+    for (const slug of ['male', 'female', 'zombie', 'ape', 'alien']) {
+      expect(isKnownCategory(slug)).toBe(true);
+    }
+    expect(isKnownCategory('apparel')).toBe(false);
   });
 });

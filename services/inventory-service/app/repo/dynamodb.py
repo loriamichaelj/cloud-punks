@@ -79,6 +79,7 @@ def _to_item(raw: Mapping[str, Any]) -> StockItem:
         available=int(raw["available"]["N"]),
         reserved=int(raw["reserved"]["N"]),
         updated_at=datetime.fromisoformat(raw["updated_at"]["S"]),
+        owner=raw["owner"]["S"] if "owner" in raw else None,
     )
 
 
@@ -122,23 +123,30 @@ class DynamoInventoryRepository:
                 raise StoreUnavailable
         return found
 
-    def set_available(self, sku: str, available: int) -> StockItem:
+    def set_available(self, sku: str, available: int, *, reset_owner: bool = False) -> StockItem:
         now = datetime.now(UTC).isoformat(timespec="milliseconds")
+        # An upsert. `reserved` is preserved if the record exists and starts at 0 if not, so
+        # setting stock never erases the count of units already promised to orders. `owner` is
+        # kept unless the caller hands the item back to the platform (`owner` is a reserved word).
+        update = (
+            "SET available = :available, updated_at = :now, "
+            "reserved = if_not_exists(reserved, :zero)"
+        )
+        request: dict[str, Any] = {}
+        if reset_owner:
+            update += " REMOVE #owner"
+            request["ExpressionAttributeNames"] = {"#owner": "owner"}
         with store_errors():
             response = self._client.update_item(
                 TableName=self._table,
                 Key={"sku": {"S": sku}},
-                # An upsert. `reserved` is preserved if the record exists and starts at 0 if not,
-                # so setting stock never erases the count of units already promised to orders.
-                UpdateExpression=(
-                    "SET available = :available, updated_at = :now, "
-                    "reserved = if_not_exists(reserved, :zero)"
-                ),
+                UpdateExpression=update,
                 ExpressionAttributeValues={
                     ":available": {"N": str(available)},
                     ":now": {"S": now},
                     ":zero": {"N": "0"},
                 },
                 ReturnValues="ALL_NEW",
+                **request,
             )
         return _to_item(response["Attributes"])

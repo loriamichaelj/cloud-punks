@@ -38,11 +38,11 @@ def available(client, sku: str) -> int:
     return int(item["Item"]["available"]["N"])
 
 
-def test_first_run_inserts_every_sku(seed_module, inventory_table) -> None:
+def test_first_run_inserts_every_cloudpunk(seed_module, inventory_table) -> None:
     result = seed_module.seed_stock(inventory_table)
 
-    assert result == {"stock_inserted": 20, "stock_already_present": 0}
-    assert inventory_table.scan(TableName="inventory", Select="COUNT")["Count"] == 20
+    assert result == {"stock_inserted": 100, "stock_already_present": 0}
+    assert inventory_table.scan(TableName="inventory", Select="COUNT")["Count"] == 100
 
 
 def test_second_run_changes_nothing(seed_module, inventory_table) -> None:
@@ -50,37 +50,37 @@ def test_second_run_changes_nothing(seed_module, inventory_table) -> None:
 
     result = seed_module.seed_stock(inventory_table)
 
-    assert result == {"stock_inserted": 0, "stock_already_present": 20}
-    assert inventory_table.scan(TableName="inventory", Select="COUNT")["Count"] == 20
+    assert result == {"stock_inserted": 0, "stock_already_present": 100}
+    assert inventory_table.scan(TableName="inventory", Select="COUNT")["Count"] == 100
 
 
-def test_reseeding_never_resets_stock_that_orders_have_consumed(
+def test_reseeding_never_resets_a_cloudpunk_that_has_been_sold(
     seed_module,
     inventory_table,
 ) -> None:
     seed_module.seed_stock(inventory_table)
     inventory_table.update_item(
         TableName="inventory",
-        Key={"sku": {"S": "SKU-TSHIRT-BLK-M"}},
+        Key={"sku": {"S": "CP-0001"}},
         UpdateExpression="SET available = :n",
-        ExpressionAttributeValues={":n": {"N": "3"}},
+        ExpressionAttributeValues={":n": {"N": "0"}},
     )
 
     seed_module.seed_stock(inventory_table)
 
-    assert available(inventory_table, "SKU-TSHIRT-BLK-M") == 3
+    assert available(inventory_table, "CP-0001") == 0
 
 
 def test_items_have_the_documented_attributes(seed_module, inventory_table) -> None:
     seed_module.seed_stock(inventory_table)
 
     item = inventory_table.get_item(
-        TableName="inventory", Key={"sku": {"S": "SKU-TSHIRT-BLK-M"}}, ConsistentRead=True
+        TableName="inventory", Key={"sku": {"S": "CP-0001"}}, ConsistentRead=True
     )["Item"]
 
     assert set(item) == {"sku", "available", "reserved", "updated_at"}
     assert item["reserved"] == {"N": "0"}
-    assert 10 <= int(item["available"]["N"]) <= 50
+    assert item["available"] == {"N": "1"}  # one of each
 
 
 def test_stock_goes_to_the_configured_table_and_not_to_the_default(seed_module) -> None:
@@ -97,6 +97,6 @@ def test_stock_goes_to_the_configured_table_and_not_to_the_default(seed_module) 
 
         result = seed_module.seed_stock(client, "loria-inventory")
 
-        assert result == {"stock_inserted": 20, "stock_already_present": 0}
-        assert client.scan(TableName="loria-inventory", Select="COUNT")["Count"] == 20
+        assert result == {"stock_inserted": 100, "stock_already_present": 0}
+        assert client.scan(TableName="loria-inventory", Select="COUNT")["Count"] == 100
         assert client.list_tables()["TableNames"] == ["loria-inventory"]

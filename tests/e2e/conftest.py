@@ -33,9 +33,28 @@ E2E_CLOUD = bool(os.environ.get("E2E_CLOUD"))  # real AWS behind it: nothing run
 POLL_INTERVAL_S = 0.25
 POLL_TIMEOUT_S = 15.0
 
-# Seeded products (local/seed/catalog.py). Their stock is set explicitly by each test.
-SKU_A = "SKU-BELT-BLK-95"
-SKU_B = "SKU-BOOT-BRN-43"
+# The suite's own products, never the 100 CloudPunks (DESIGN.md section 16.8). They are created
+# if missing, active for the run and deactivated afterwards, so the gallery (CP- SKUs only) is
+# never touched and nothing piles up across runs. Their stock is set explicitly by each test.
+SKU_A = "E2E-A"
+SKU_B = "E2E-B"
+E2E_PRODUCT = {"category": "male", "price": "10.00", "currency": "ETH"}
+
+
+def _e2e_product(sku: str) -> dict[str, Any]:
+    return {"name": f"End-to-end {sku}", "description": "Test fixture", **E2E_PRODUCT}
+
+
+def _activate_e2e_products(client: httpx2.Client, active: bool) -> None:
+    for sku in (SKU_A, SKU_B):
+        if active:
+            created = client.post("/api/v1/products", json={"sku": sku, **_e2e_product(sku)})
+            body = created.json() if created.status_code == 409 else {}
+            assert created.status_code == 201 or body.get("error", {}).get("code") == "SKU_EXISTS"
+        updated = client.put(
+            f"/api/v1/products/{sku}", json={**_e2e_product(sku), "active": active}
+        )
+        assert updated.status_code == 200, updated.text
 
 
 @pytest.fixture(scope="session")
@@ -47,7 +66,11 @@ def http() -> Iterator[httpx2.Client]:
             pytest.exit(
                 f"the platform is not answering on {GATEWAY}: `make up && make seed` ({exc})"
             )
-        yield client
+        _activate_e2e_products(client, active=True)
+        try:
+            yield client
+        finally:
+            _activate_e2e_products(client, active=False)
 
 
 @pytest.fixture
