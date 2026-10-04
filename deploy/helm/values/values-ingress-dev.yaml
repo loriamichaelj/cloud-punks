@@ -22,5 +22,8 @@ ingress:
     - { path: /api/v1/categories, service: product-service, port: 8001 }
     - { path: /api/v1/inventory, service: inventory-service, port: 8002 }
     - { path: /api/v1/orders, service: order-service, port: 8003 }
+    - { path: /api/v1/listings, service: order-service, port: 8003 }
+    - { path: /api/v1/bids, service: order-service, port: 8003 }
+    - { path: /api/v1/activity, service: order-service, port: 8003 }
     - { path: /api/v1/notifications, service: notification-service, port: 8004 }
   default: { service: ui, port: 8005 }

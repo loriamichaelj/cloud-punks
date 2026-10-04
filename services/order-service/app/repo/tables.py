@@ -1,4 +1,5 @@
-"""SQLAlchemy Core table definitions. They mirror migration 0001; the migration is authoritative."""
+"""SQLAlchemy Core table definitions. They mirror migrations 0001 and 0002; the migrations are
+authoritative."""
 
 from sqlalchemy import (
     CHAR,
@@ -53,6 +54,7 @@ order_items = Table(
     Column("sku", String(64), primary_key=True),
     Column("quantity", Integer, nullable=False),
     Column("unit_price", Numeric(10, 2), nullable=False),
+    Column("seller", String(64)),  # null: bought from the platform (migration 0002)
     CheckConstraint("quantity BETWEEN 1 AND 100", name="ck_order_items_quantity"),
 )
 
@@ -75,4 +77,63 @@ processed_events = Table(
     metadata,
     Column("event_id", CHAR(26), primary_key=True),
     Column("processed_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+)
+
+# -- the CloudPunks market (migration 0002, DESIGN.md section 16.5) ------------------------------
+
+ACTIVE_LISTING = ("OPEN", "SALE_PENDING")
+
+listings = Table(
+    "listings",
+    metadata,
+    Column("listing_id", CHAR(26), primary_key=True),
+    Column("sku", String(64), nullable=False),
+    Column("seller_id", String(64), nullable=False),
+    Column("status", String(16), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column(
+        "updated_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    ),
+    CheckConstraint(
+        "status IN ('OPEN', 'SALE_PENDING', 'SOLD', 'CANCELLED')", name="ck_listings_status"
+    ),
+    Index(
+        "uq_listings_active_sku",
+        "sku",
+        unique=True,
+        postgresql_where=text("status IN ('OPEN', 'SALE_PENDING')"),
+    ),
+)
+
+bids = Table(
+    "bids",
+    metadata,
+    Column("bid_id", CHAR(26), primary_key=True),
+    Column("listing_id", CHAR(26), ForeignKey("listings.listing_id"), nullable=False),
+    Column("sku", String(64), nullable=False),
+    Column("bidder_id", String(64), nullable=False),
+    Column("amount", Numeric(10, 2), nullable=False),
+    Column("currency", CHAR(3), nullable=False),
+    Column("status", String(16), nullable=False),
+    Column("order_id", CHAR(26), ForeignKey("orders.order_id")),
+    Column("idempotency_key", String(64), nullable=False),
+    Column("request_hash", CHAR(64), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column(
+        "updated_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    ),
+    CheckConstraint("amount > 0", name="ck_bids_amount_positive"),
+    CheckConstraint(
+        "status IN ('OPEN', 'WITHDRAWN', 'ACCEPTED', 'FILLED', 'FAILED', 'CLOSED')",
+        name="ck_bids_status",
+    ),
+    UniqueConstraint("bidder_id", "idempotency_key", name="uq_bids_bidder_idem"),
 )

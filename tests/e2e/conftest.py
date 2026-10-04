@@ -38,6 +38,7 @@ POLL_TIMEOUT_S = 15.0
 # never touched and nothing piles up across runs. Their stock is set explicitly by each test.
 SKU_A = "E2E-A"
 SKU_B = "E2E-B"
+SKU_N = "E2E-N"  # one of a kind, like a CloudPunk: reset to the platform by each market test
 E2E_PRODUCT = {"category": "male", "price": "10.00", "currency": "ETH"}
 
 
@@ -46,7 +47,7 @@ def _e2e_product(sku: str) -> dict[str, Any]:
 
 
 def _activate_e2e_products(client: httpx2.Client, active: bool) -> None:
-    for sku in (SKU_A, SKU_B):
+    for sku in (SKU_A, SKU_B, SKU_N):
         if active:
             created = client.post("/api/v1/products", json={"sku": sku, **_e2e_product(sku)})
             body = created.json() if created.status_code == 409 else {}
@@ -278,3 +279,48 @@ def assert_platform_whole(http: httpx2.Client) -> None:
     assert {q: queue_counts(q) for q in DEAD_LETTER_QUEUES} == {
         q: {"visible": 0, "in_flight": 0} for q in DEAD_LETTER_QUEUES
     }
+
+
+# --- the market (DESIGN.md section 16) ---------------------------------------------------------
+
+
+def reset_one_of_a_kind(http: httpx2.Client, sku: str) -> None:
+    """Hand ``sku`` back to the platform with one unit, and end any listing a failed run left.
+
+    A listing mid-sale is given time to settle first: only its own order can end it."""
+
+    def settled() -> dict[str, list[dict[str, Any]]] | None:
+        # Wrapped in a dict: "no listing at all" is an empty list, which wait_for would read as
+        # "not yet".
+        items: list[dict[str, Any]] = http.get("/api/v1/listings", params={"sku": sku}).json()[
+            "items"
+        ]
+        return None if any(x["status"] == "SALE_PENDING" for x in items) else {"items": items}
+
+    for listing in wait_for(f"{sku}'s pending sale to settle", settled)["items"]:
+        response = http.delete(f"/api/v1/listings/{sku}", params={"customer_id": listing["seller"]})
+        assert response.status_code == 200, response.text
+    reset = http.put(f"/api/v1/inventory/{sku}", json={"available": 1, "reset_owner": True})
+    assert reset.status_code == 200, reset.text
+
+
+def owner(http: httpx2.Client, sku: str) -> str | None:
+    value: str | None = stock(http, sku)["owner"]
+    return value
+
+
+def put_up(http: httpx2.Client, customer: str, sku: str) -> httpx2.Response:
+    return http.post("/api/v1/listings", json={"customer_id": customer, "sku": sku})
+
+
+def place_bid(http: httpx2.Client, customer: str, sku: str, amount: str) -> httpx2.Response:
+    return http.post(
+        "/api/v1/bids",
+        json={"customer_id": customer, "sku": sku, "amount": amount},
+        headers={"Idempotency-Key": f"e2e-{uuid.uuid4()}"},
+    )
+
+
+def bid_status(http: httpx2.Client, sku: str, bid_id: str) -> str:
+    items = http.get("/api/v1/bids", params={"sku": sku, "size": 100}).json()["items"]
+    return str(next(b["status"] for b in items if b["bid_id"] == bid_id))

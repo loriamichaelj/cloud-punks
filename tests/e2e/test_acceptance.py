@@ -12,13 +12,19 @@ from conftest import (
     E2E_CLOUD,
     SKU_A,
     SKU_B,
+    SKU_N,
     api_metrics,
     assert_platform_whole,
     aws,
+    bid_status,
     compose,
     metric_by_pod,
     notification_types,
+    owner,
+    place_bid,
     place_order,
+    put_up,
+    reset_one_of_a_kind,
     set_stock,
     stock,
     wait_for,
@@ -184,6 +190,104 @@ def test_a_low_stock_reservation_triggers_the_lambda(http: httpx2.Client, custom
     )
     assert (record["event"], record["sku"], record["remaining"]) == ("low_stock", SKU_A, 2)
     assert record["LowStockDetected"] == 1
+
+
+# --- the market: buy, put up for bid, bid, accept, resell (DESIGN.md section 16.8) -----------------
+
+
+def test_market_a_cloudpunk_is_bought_put_up_for_bid_and_resold_to_the_accepted_bidder(
+    http: httpx2.Client, customer: str
+) -> None:
+    alice, bob, carol = f"{customer}-alice", f"{customer}-bob", f"{customer}-carol"
+    reset_one_of_a_kind(http, SKU_N)
+
+    # Red: bought from the platform at its price; the buyer becomes the owner (blue).
+    bought = place_order(http, alice, SKU_N, 1)
+    assert bought.status_code == 202, bought.text
+    first = wait_for_status(http, bought.json()["order_id"], "CONFIRMED")
+    assert first["items"][0]["seller"] is None
+    assert owner(http, SKU_N) == alice
+    again = place_order(http, bob, SKU_N, 1)  # no longer for sale by the platform
+    assert (again.status_code, again.json()["error"]["code"]) == (409, "OUT_OF_STOCK")
+
+    # Purple: only the owner can put it up for bid.
+    assert put_up(http, bob, SKU_N).json()["error"]["code"] == "NOT_OWNER"
+    listing = put_up(http, alice, SKU_N)
+    assert (listing.status_code, listing.json()["status"]) == (201, "OPEN")
+
+    low = place_bid(http, bob, SKU_N, "12.00").json()
+    high = place_bid(http, carol, SKU_N, "15.00").json()
+    assert place_bid(http, alice, SKU_N, "99.00").json()["error"]["code"] == "OWN_ITEM"
+    withdrawn = http.delete(f"/api/v1/bids/{low['bid_id']}", params={"customer_id": bob})
+    assert withdrawn.json()["status"] == "WITHDRAWN"
+
+    # The owner accepts: the bidder's order, at the bid amount, bought from the owner.
+    accepted = http.post(f"/api/v1/bids/{high['bid_id']}/accept", json={"customer_id": alice})
+    assert accepted.status_code == 202, accepted.text
+    resale = wait_for_status(http, accepted.json()["order_id"], "CONFIRMED")
+    assert (resale["customer_id"], resale["total_amount"]) == (carol, "15.00")
+    assert resale["items"][0]["seller"] == alice
+
+    # Blue again, for the new owner; the listing and the bids are settled.
+    assert owner(http, SKU_N) == carol
+    assert http.get("/api/v1/listings", params={"sku": SKU_N}).json()["total"] == 0
+    assert bid_status(http, SKU_N, high["bid_id"]) == "FILLED"
+    assert bid_status(http, SKU_N, low["bid_id"]) == "WITHDRAWN"
+    sales = [
+        (e["from"], e["to"], e["amount"])
+        for e in http.get("/api/v1/activity", params={"sku": SKU_N}).json()["items"]
+        if e["kind"] == "SALE" and e["to"] in (alice, carol)
+    ]
+    assert sales == [(alice, carol, "15.00"), (None, alice, "10.00")]  # newest first
+    wait_for(  # the buyer's notifications arrive through the bus, after the status changes
+        "the resale's OrderStatusUpdated notification",
+        lambda: "OrderStatusUpdated" in notification_types(http, resale["order_id"]) or None,
+    )
+
+
+def test_market_taking_a_cloudpunk_off_the_market_closes_its_bids(
+    http: httpx2.Client, customer: str
+) -> None:
+    alice, bob = f"{customer}-alice", f"{customer}-bob"
+    reset_one_of_a_kind(http, SKU_N)
+    wait_for_status(http, place_order(http, alice, SKU_N, 1).json()["order_id"], "CONFIRMED")
+    put_up(http, alice, SKU_N)
+    bid = place_bid(http, bob, SKU_N, "11.00").json()
+
+    off = http.delete(f"/api/v1/listings/{SKU_N}", params={"customer_id": alice})
+
+    assert off.json()["status"] == "CANCELLED"
+    assert bid_status(http, SKU_N, bid["bid_id"]) == "CLOSED"
+    late = place_bid(http, bob, SKU_N, "12.00")
+    assert (late.status_code, late.json()["error"]["code"]) == (409, "NOT_LISTED")
+    assert owner(http, SKU_N) == alice
+
+
+def test_market_two_buyers_race_for_one_unsold_cloudpunk_and_exactly_one_owns_it(
+    http: httpx2.Client, customer: str
+) -> None:
+    reset_one_of_a_kind(http, SKU_N)
+    buyers = [f"{customer}-{i}" for i in range(4)]
+
+    responses = [place_order(http, b, SKU_N, 1) for b in buyers]  # the pre-check may pass several
+
+    accepted = [r.json() for r in responses if r.status_code == 202]
+    finals = [
+        wait_for(
+            f"order {o['order_id']} to settle",
+            lambda o=o: (
+                body
+                if (body := http.get(f"/api/v1/orders/{o['order_id']}").json())["status"]
+                != "PENDING"
+                else None
+            ),
+        )
+        for o in accepted
+    ]
+    confirmed = [f for f in finals if f["status"] == "CONFIRMED"]
+    assert len(confirmed) == 1
+    assert owner(http, SKU_N) == confirmed[0]["customer_id"]
+    assert all(r.status_code in (202, 409) for r in responses)
 
 
 def test_step_9_every_process_is_ready_and_no_dead_letters_exist(http: httpx2.Client) -> None:

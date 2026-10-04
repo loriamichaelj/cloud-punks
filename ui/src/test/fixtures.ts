@@ -23,7 +23,7 @@ export function order(over: Partial<Order> = {}): Order {
     status_reason: null,
     total_amount: '39.98',
     currency: 'USD',
-    items: [{ sku: 'SKU-A', quantity: 2, unit_price: '19.99' }],
+    items: [{ sku: 'SKU-A', quantity: 2, unit_price: '19.99', seller: null }],
     created_at: '2026-10-01T12:00:00Z',
     updated_at: '2026-10-01T12:00:00Z',
     ...over,

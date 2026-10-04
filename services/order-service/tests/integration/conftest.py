@@ -131,6 +131,14 @@ def engine(migrated: None) -> Iterator[Engine]:
 
 def wipe(engine: Engine) -> None:
     with engine.begin() as connection:
+        # The market first: a bid points at its listing and at the order it created.
+        connection.execute(
+            text("DELETE FROM bids WHERE sku LIKE 'ITEST-%' OR bidder_id LIKE :m"), {"m": MARKER}
+        )
+        connection.execute(
+            text("DELETE FROM listings WHERE sku LIKE 'ITEST-%' OR seller_id LIKE :m"),
+            {"m": MARKER},
+        )
         connection.execute(
             text("DELETE FROM outbox WHERE payload->'data'->>'customer_id' LIKE :m"), {"m": MARKER}
         )

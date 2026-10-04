@@ -31,7 +31,7 @@ def test_the_revision_is_recorded_and_rerunning_is_a_no_op(
     owner_settings: DatabaseSettings, engine: Engine
 ) -> None:
     run_migrations(owner_settings)
-    assert rows(engine, "SELECT version_num FROM alembic_version") == [("0001",)]
+    assert rows(engine, "SELECT version_num FROM alembic_version") == [("0002",)]
 
 
 def test_orders_columns_match_the_design(engine: Engine) -> None:
@@ -126,18 +126,19 @@ def test_the_schema_is_owned_by_the_owner_role(engine: Engine) -> None:
     owners = rows(
         engine,
         "SELECT tablename, tableowner FROM pg_tables WHERE schemaname='public' "
-        "AND tablename IN ('orders', 'order_items', 'outbox', 'processed_events', 'alembic_version')",
+        "AND tablename IN ('orders', 'order_items', 'outbox', 'processed_events', 'listings', "
+        "'bids', 'alembic_version')",
     )
     assert {owner for _, owner in owners} == {"order_owner"}
-    assert len(owners) == 5
+    assert len(owners) == 7
 
 
-def test_the_app_role_has_exactly_dml_on_the_four_tables(engine: Engine) -> None:
+def test_the_app_role_has_exactly_dml_on_the_six_tables(engine: Engine) -> None:
     grants = rows(
         engine,
         "SELECT table_name, privilege_type FROM information_schema.role_table_grants WHERE grantee = 'order_app'",
     )
-    for table in ("orders", "order_items", "outbox", "processed_events"):
+    for table in ("orders", "order_items", "outbox", "processed_events", "listings", "bids"):
         assert {p for t, p in grants if t == table} == {"SELECT", "INSERT", "UPDATE", "DELETE"}
 
 

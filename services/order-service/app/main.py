@@ -14,12 +14,26 @@ from sqlalchemy import Engine
 from ulid import ULID
 
 from app.api.errors import install_domain_error_handlers
+from app.api.market_routes import router as market_router
 from app.api.routes import router
-from app.clients.http import MAX_PARALLEL_LOOKUPS, HttpPriceCatalog, HttpStockChecker
+from app.clients.http import (
+    MAX_PARALLEL_LOOKUPS,
+    HttpOwnerLookup,
+    HttpPriceCatalog,
+    HttpStockChecker,
+)
 from app.config import Settings
-from app.domain.ports import OrderRepository, PriceCatalog, StockChecker
+from app.domain.market import MarketService
+from app.domain.ports import (
+    MarketRepository,
+    OrderRepository,
+    OwnerLookup,
+    PriceCatalog,
+    StockChecker,
+)
 from app.domain.service import OrderService
 from app.events import order_created_event
+from app.repo.market import PostgresMarketRepository
 from app.repo.orders import PostgresOrderRepository
 from retail_common.database import build_engine, ping
 from retail_common.health import ReadinessCheck
@@ -33,6 +47,8 @@ def create_app(
     repository: OrderRepository | None = None,
     catalog: PriceCatalog | None = None,
     stock: StockChecker | None = None,
+    market: MarketRepository | None = None,
+    owners: OwnerLookup | None = None,
     readiness_probes: tuple[ReadinessCheck, ...] | None = None,
 ) -> FastAPI:
     """Build the app. Tests inject fakes; production passes nothing and real adapters are built
@@ -54,15 +70,22 @@ def create_app(
         return client
 
     if repository is None:
-        engine = build_engine(settings)
-        repository = PostgresOrderRepository(engine)
-        probes.append(ReadinessCheck("postgres", lambda: ping(engine)))
+        engine = db = build_engine(settings)
+        repository = PostgresOrderRepository(db)
+        probes.append(ReadinessCheck("postgres", lambda: ping(db)))
     if catalog is None:
         catalog = HttpPriceCatalog(
             http_client(settings.product_service_url, "product-service"), executor
         )
-    if stock is None:
-        stock = HttpStockChecker(http_client(settings.inventory_service_url, "inventory-service"))
+    if market is None:
+        engine = engine or build_engine(settings)
+        market = PostgresMarketRepository(engine)
+    if stock is None or owners is None:
+        inventory = http_client(settings.inventory_service_url, "inventory-service")
+        if stock is None:
+            stock = HttpStockChecker(inventory)
+        if owners is None:
+            owners = HttpOwnerLookup(inventory)
     if readiness_probes is not None:
         probes = list(readiness_probes)
 
@@ -84,6 +107,15 @@ def create_app(
         make_event=order_created_event,
         now=lambda: datetime.now(UTC),
     )
+    app.state.market_service = MarketService(
+        market,
+        owners,
+        catalog,
+        new_id=lambda: str(ULID()),
+        make_event=order_created_event,
+        now=lambda: datetime.now(UTC),
+    )
     install_domain_error_handlers(app)
     app.include_router(router)
+    app.include_router(market_router)
     return app

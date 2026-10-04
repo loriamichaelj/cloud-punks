@@ -1,5 +1,5 @@
-"""Adapters for the two synchronous dependencies (DESIGN.md section 3): prices from the product
-service, and the advisory stock pre-check from the inventory service."""
+"""Adapters for the synchronous dependencies (DESIGN.md section 3): prices from the product service,
+and the advisory stock pre-check and a CloudPunk's owner from the inventory service."""
 
 import contextvars
 from collections.abc import Callable, Mapping, Sequence
@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Any
 from urllib.parse import quote
 
-from app.domain.errors import UnexpectedUpstreamResponse, UpstreamUnavailable
+from app.domain.errors import UnexpectedUpstreamResponse, UnknownItem, UpstreamUnavailable
 from app.domain.models import OrderLine, ProductInfo, StockLine, StockReport
 from retail_common.errors import UpstreamUnavailableError
 from retail_common.http_client import ServiceHttpClient
@@ -82,3 +82,22 @@ class HttpStockChecker:
                 for item in body["items"]
             ),
         )
+
+
+class HttpOwnerLookup:
+    """Who owns a CloudPunk now. Inventory reads with ``ConsistentRead`` and never caches."""
+
+    def __init__(self, client: ServiceHttpClient) -> None:
+        self._client = client
+
+    def owner_of(self, sku: str) -> str | None:
+        try:
+            response = self._client.get(f"/api/v1/inventory/{quote(sku, safe='')}")
+        except UpstreamUnavailableError as exc:
+            raise UpstreamUnavailable("inventory-service") from exc
+        if response.status_code == 404:
+            raise UnknownItem(sku)
+        if response.status_code != 200:
+            raise UnexpectedUpstreamResponse(f"inventory-service answered {response.status_code}")
+        owner: str | None = response.json()["owner"]
+        return owner

@@ -23,6 +23,7 @@ class OrderItem:
     sku: str
     quantity: int
     unit_price: Decimal
+    seller: str | None = None  # None: bought from the platform; else a resale (an accepted bid)
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,13 @@ class Order:
     items: tuple[OrderItem, ...]
     created_at: datetime
     updated_at: datetime
+
+    @property
+    def seller(self) -> str | None:
+        """The customer this order buys from: set only when every item is a resale by one
+        seller (an accepted bid). None means a purchase from the platform."""
+        sellers = {item.seller for item in self.items}
+        return sellers.pop() if len(sellers) == 1 else None
 
 
 @dataclass(frozen=True)
@@ -93,6 +101,74 @@ class CreateResult:
 @dataclass(frozen=True)
 class OrderPage:
     items: tuple[Order, ...]
+    page: int
+    size: int
+    total: int
+
+
+# -- the CloudPunks market (DESIGN.md section 16) -------------------------------------------------
+
+ListingStatus = Literal["OPEN", "SALE_PENDING", "SOLD", "CANCELLED"]
+BidStatus = Literal["OPEN", "WITHDRAWN", "ACCEPTED", "FILLED", "FAILED", "CLOSED"]
+ActivityKind = Literal["SALE", "LISTED", "UNLISTED", "BID", "BID_WITHDRAWN"]
+
+
+@dataclass(frozen=True)
+class Listing:
+    """A CloudPunk its owner has put up for bid (purple, DESIGN.md 16.1)."""
+
+    listing_id: str
+    sku: str
+    seller_id: str
+    status: ListingStatus
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class Bid:
+    bid_id: str
+    listing_id: str
+    sku: str
+    bidder_id: str
+    amount: Decimal
+    currency: str
+    status: BidStatus
+    order_id: str | None  # set once the owner accepts it
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class StoredBid:
+    bid: Bid
+    request_hash: str
+
+
+@dataclass(frozen=True)
+class BidOutcome:
+    stored: StoredBid
+    created: bool  # False: the bidder's Idempotency-Key already held a bid
+
+
+@dataclass(frozen=True)
+class ActivityEntry:
+    """One line of the activity feed, newest first (DESIGN.md 16.4)."""
+
+    kind: ActivityKind
+    sku: str
+    at: datetime
+    amount: Decimal | None = None
+    currency: str | None = None
+    from_id: str | None = None  # the seller (None for the platform) or, for a bid, nobody
+    to_id: str | None = None  # the buyer, or the bidder
+    order_id: str | None = None
+    bid_id: str | None = None
+
+
+@dataclass(frozen=True)
+class Page[T]:
+    items: tuple[T, ...]
     page: int
     size: int
     total: int

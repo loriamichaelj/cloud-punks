@@ -22,6 +22,9 @@ def order_created_event(order: Order) -> OutboxEvent:
         items=[ItemQuantity(sku=item.sku, quantity=item.quantity) for item in order.items],
         total_amount=order.total_amount,
         currency=order.currency,
+        # Set for an accepted bid: inventory then moves ownership only if the seller still owns
+        # it (DESIGN.md section 16.5). None is a purchase from the platform.
+        seller=order.seller,
     )
     envelope = Envelope.create(event_type=EventType.ORDER_CREATED, producer=PRODUCER, data=data)
     return OutboxEvent(

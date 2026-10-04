@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 from fakes import FakeCatalog, FakeRepository, FakeStock, make_settings, product
+from fakes_market import FakeMarket, FakeOwners
 from fastapi.testclient import TestClient
 
 from app.domain.models import OrderLine
@@ -29,6 +30,8 @@ class Harness:
                 repository=self.repository,
                 catalog=self.catalog,
                 stock=self.stock,
+                market=FakeMarket(self.repository),
+                owners=FakeOwners(),
             )
         )
 
@@ -54,7 +57,9 @@ def test_create_returns_202_pending_with_the_documented_shape(h: Harness) -> Non
     assert body["status"] == "PENDING"
     assert body["total_amount"] == "39.98"
     assert body["currency"] == "USD"
-    assert body["items"] == [{"sku": "SKU-TSHIRT-BLK-M", "quantity": 2, "unit_price": "19.99"}]
+    assert body["items"] == [
+        {"sku": "SKU-TSHIRT-BLK-M", "quantity": 2, "unit_price": "19.99", "seller": None}
+    ]  # seller null: bought from the platform
     created_at = datetime.fromisoformat(body["created_at"])
     assert created_at.utcoffset() == timedelta(0)  # UTC
     assert abs(datetime.now(UTC) - created_at) < timedelta(minutes=1)

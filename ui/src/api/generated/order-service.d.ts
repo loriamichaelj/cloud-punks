@@ -4,6 +4,132 @@
  */
 
 export interface paths {
+    "/api/v1/activity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Activity
+         * @description Sales, listings and bids, newest first; for one CloudPunk with ``sku``.
+         */
+        get: operations["activity_api_v1_activity_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/bids": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Bids
+         * @description Bids on a CloudPunk (``sku``) or by a customer (``customer_id``); at least one is needed.
+         */
+        get: operations["list_bids_api_v1_bids_get"];
+        put?: never;
+        /**
+         * Place Bid
+         * @description A bid on a CloudPunk that is up for bid. The same key and body again returns it (200).
+         */
+        post: operations["place_bid_api_v1_bids_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/bids/{bid_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Withdraw Bid */
+        delete: operations["withdraw_bid_api_v1_bids__bid_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/bids/{bid_id}/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Accept Bid
+         * @description The owner accepts a bid: 202 with the bidder's order, PENDING until inventory moves the
+         *     CloudPunk. Accepting it again returns the same order (200).
+         */
+        post: operations["accept_bid_api_v1_bids__bid_id__accept_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/listings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Listings
+         * @description ``status=ACTIVE`` (the default) is the purple set: open, or with a bid being confirmed.
+         */
+        get: operations["list_listings_api_v1_listings_get"];
+        put?: never;
+        /**
+         * Put Up
+         * @description The owner puts a CloudPunk up for bid (it turns purple). Already up: 200 with that one.
+         */
+        post: operations["put_up_api_v1_listings_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/listings/{sku}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Take Off
+         * @description The owner takes it off the market (it turns blue); its open bids close.
+         */
+        delete: operations["take_off_api_v1_listings__sku__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/orders": {
         parameters: {
             query?: never;
@@ -80,6 +206,110 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** ActivityOut */
+        ActivityOut: {
+            /** Amount */
+            amount: string | null;
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+            /** Bid Id */
+            bid_id: string | null;
+            /** Currency */
+            currency: string | null;
+            /**
+             * From
+             * @description The seller (null for the platform) of a SALE; the owner of a listing
+             */
+            from: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "SALE" | "LISTED" | "UNLISTED" | "BID" | "BID_WITHDRAWN";
+            /** Order Id */
+            order_id: string | null;
+            /** Sku */
+            sku: string;
+            /**
+             * To
+             * @description The buyer of a SALE; the bidder of a bid
+             */
+            to: string | null;
+        };
+        /** ActivityPageOut */
+        ActivityPageOut: {
+            /** Items */
+            items: components["schemas"]["ActivityOut"][];
+            /** Page */
+            page: number;
+            /** Size */
+            size: number;
+            /** Total */
+            total: number;
+        };
+        /** BidAccept */
+        BidAccept: {
+            /** Customer Id */
+            customer_id: string;
+        };
+        /** BidCreate */
+        BidCreate: {
+            /**
+             * Amount
+             * @example 33.50
+             */
+            amount: string;
+            /** Customer Id */
+            customer_id: string;
+            /** Sku */
+            sku: string;
+        };
+        /** BidOut */
+        BidOut: {
+            /** Amount */
+            amount: string;
+            /** Bid Id */
+            bid_id: string;
+            /** Bidder */
+            bidder: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Currency */
+            currency: string;
+            /** Listing Id */
+            listing_id: string;
+            /** Order Id */
+            order_id: string | null;
+            /** Sku */
+            sku: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "OPEN" | "WITHDRAWN" | "ACCEPTED" | "FILLED" | "FAILED" | "CLOSED";
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** BidPageOut */
+        BidPageOut: {
+            /** Items */
+            items: components["schemas"]["BidOut"][];
+            /** Page */
+            page: number;
+            /** Size */
+            size: number;
+            /** Total */
+            total: number;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -89,6 +319,11 @@ export interface components {
         ItemOut: {
             /** Quantity */
             quantity: number;
+            /**
+             * Seller
+             * @description Who it was bought from: null for the platform, else the previous owner
+             */
+            seller: string | null;
             /** Sku */
             sku: string;
             /** Unit Price */
@@ -100,6 +335,48 @@ export interface components {
             quantity: number;
             /** Sku */
             sku: string;
+        };
+        /** ListingCreate */
+        ListingCreate: {
+            /** Customer Id */
+            customer_id: string;
+            /** Sku */
+            sku: string;
+        };
+        /** ListingOut */
+        ListingOut: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Listing Id */
+            listing_id: string;
+            /** Seller */
+            seller: string;
+            /** Sku */
+            sku: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "OPEN" | "SALE_PENDING" | "SOLD" | "CANCELLED";
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** ListingPageOut */
+        ListingPageOut: {
+            /** Items */
+            items: components["schemas"]["ListingOut"][];
+            /** Page */
+            page: number;
+            /** Size */
+            size: number;
+            /** Total */
+            total: number;
         };
         /** OrderCreate */
         OrderCreate: {
@@ -168,6 +445,277 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    activity_api_v1_activity_get: {
+        parameters: {
+            query?: {
+                sku?: string | null;
+                page?: number;
+                size?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActivityPageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_bids_api_v1_bids_get: {
+        parameters: {
+            query?: {
+                sku?: string | null;
+                customer_id?: string | null;
+                status?: ("OPEN" | "WITHDRAWN" | "ACCEPTED" | "FILLED" | "FAILED" | "CLOSED") | null;
+                page?: number;
+                size?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BidPageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    place_bid_api_v1_bids_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BidCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BidOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    withdraw_bid_api_v1_bids__bid_id__delete: {
+        parameters: {
+            query: {
+                customer_id: string;
+            };
+            header?: never;
+            path: {
+                bid_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BidOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    accept_bid_api_v1_bids__bid_id__accept_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                bid_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BidAccept"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_listings_api_v1_listings_get: {
+        parameters: {
+            query?: {
+                sku?: string | null;
+                status?: "ACTIVE" | "OPEN" | "SALE_PENDING" | "SOLD" | "CANCELLED" | "ALL";
+                page?: number;
+                size?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListingPageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_up_api_v1_listings_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ListingCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListingOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    take_off_api_v1_listings__sku__delete: {
+        parameters: {
+            query: {
+                customer_id: string;
+            };
+            header?: never;
+            path: {
+                sku: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListingOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_orders_api_v1_orders_get: {
         parameters: {
             query: {

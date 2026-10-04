@@ -1005,7 +1005,7 @@ ADR-18 to ADR-21 in section 2: ownership in inventory, with the reservation as t
 
 ### 16.4 API contract changes
 
-All additive: no existing field, path or status changes meaning. Recorded in the OpenAPI snapshots with `make openapi` in the milestone that builds each.
+All additive: no existing field, path or status changes meaning. Recorded in the OpenAPI snapshots with `make openapi` in the milestone that builds each. The gateway (`gateway/nginx.conf`) and the three Ingress values files route `/api/v1/listings`, `/api/v1/bids` and `/api/v1/activity` to order-service.
 
 **Inventory**
 
@@ -1020,14 +1020,14 @@ All additive: no existing field, path or status changes meaning. Recorded in the
 | --- | --- |
 | `POST /api/v1/orders` | Unchanged: buy now from the platform, at the product price. A CloudPunk someone owns has `available = 0`, so it is refused by the existing pre-check (409 `OUT_OF_STOCK`) and written nowhere |
 | Order items | Gain `seller` (null for a purchase from the platform, else the customer it was bought from), stored in `order_items.seller` |
-| `POST /api/v1/listings` (new) | Body `{customer_id, sku}`: the owner puts it up for bid. Checks ownership with a consistent inventory read. 201 with the listing; 200 with the existing one if it is already up. 409 `NOT_OWNER` (includes the platform's red ones, which are bought, not bid on) |
+| `POST /api/v1/listings` (new) | Body `{customer_id, sku}`: the owner puts it up for bid. Checks ownership with a consistent inventory read. 201 with the listing; 200 with the existing one if it is already up. 409 `NOT_OWNER` (includes the platform's red ones, which are bought, not bid on); 404 `ITEM_NOT_FOUND` (inventory has no such SKU). An open listing left by a former owner is cancelled and replaced |
 | `DELETE /api/v1/listings/{sku}?customer_id=` (new) | The owner takes it off: the listing becomes `CANCELLED` and its open bids `CLOSED`, in one transaction. 409 `NOT_OWNER`, 409 `NOT_LISTED`, 409 `SALE_PENDING` while an accepted bid is being confirmed |
-| `GET /api/v1/listings?sku=&status=&page=&size=` (new) | Default `status=ACTIVE` (open or sale pending): the purple set for the gallery. `size` 1 to 100 |
-| `POST /api/v1/bids` (new) | Header `Idempotency-Key` (as for orders), body `{customer_id, sku, amount}`. Needs an open listing for that CloudPunk: 201 with an `OPEN` bid. 409 `NOT_LISTED`, 422 `OWN_ITEM` (the owner cannot bid), amount rules as for prices (a string, two decimals, above 0). A customer may hold several open bids on one listing; the UI shows the highest |
+| `GET /api/v1/listings?sku=&status=&page=&size=` (new) | `status` is `ACTIVE` (the default: open or sale pending, the purple set for the gallery), `OPEN`, `SALE_PENDING`, `SOLD`, `CANCELLED` or `ALL`. `size` 1 to 100. A listing is `{listing_id, sku, seller, status, created_at, updated_at}` |
+| `POST /api/v1/bids` (new) | Header `Idempotency-Key` (as for orders), body `{customer_id, sku, amount}`. Needs an open listing for that CloudPunk: 201 with an `OPEN` bid `{bid_id, listing_id, sku, bidder, amount, currency, status, order_id, created_at, updated_at}`, in the product's currency. 409 `NOT_LISTED`, 409 `SALE_PENDING` (an accepted bid is being confirmed), 422 `OWN_ITEM` (the owner cannot bid), 422 `UNKNOWN_PRODUCT` / `PRODUCT_INACTIVE`, amount rules as for prices (a JSON string, at most two decimals, above 0, below 10^8). A customer may hold several open bids on one listing; the UI shows the highest |
 | `GET /api/v1/bids?sku=&customer_id=&status=&page=&size=` (new) | At least one of `sku` or `customer_id`. Newest first, `{items, page, size, total}` |
-| `DELETE /api/v1/bids/{bid_id}?customer_id=` (new) | The bidder withdraws an `OPEN` bid: `WITHDRAWN`. 409 `BID_NOT_OPEN`; 409 `NOT_BIDDER` (there is no auth, so no 403) |
-| `POST /api/v1/bids/{bid_id}/accept` (new) | Body `{customer_id}`, the owner. In one transaction, with the listing row locked: listing `OPEN` → `SALE_PENDING`, bid `OPEN` → `ACCEPTED`, an order for the bidder at the bid amount with `seller` = owner (idempotency key `bid-<bid_id>`), and the `OrderCreated` outbox row. 202 with the order. 409 `BID_NOT_OPEN`, `NOT_LISTED`, `NOT_OWNER` |
-| `GET /api/v1/activity?sku=&page=&size=` (new) | Newest first, all from `order_db`: `SALE` (a `CONFIRMED` order: price, `from` seller or the platform, `to` buyer), `LISTED`, `UNLISTED`, `BID`, `BID_WITHDRAWN` |
+| `DELETE /api/v1/bids/{bid_id}?customer_id=` (new) | The bidder withdraws an `OPEN` bid: `WITHDRAWN`. 409 `BID_NOT_OPEN`; 409 `NOT_BIDDER` (there is no auth, so no 403); 404 `BID_NOT_FOUND` |
+| `POST /api/v1/bids/{bid_id}/accept` (new) | Body `{customer_id}`, the owner. In one transaction, with the listing row locked: listing `OPEN` → `SALE_PENDING`, bid `OPEN` → `ACCEPTED`, an order for the bidder at the bid amount with `seller` = owner (idempotency key `bid-<bid_id>`), and the `OrderCreated` outbox row. 202 with the order and a `Location` header; accepting the same bid again returns the same order (200). 409 `BID_NOT_OPEN`, `NOT_LISTED`, `NOT_OWNER`, `SALE_PENDING` (another bid on it is being confirmed); 404 `BID_NOT_FOUND` |
+| `GET /api/v1/activity?sku=&page=&size=` (new) | Newest first, all from `order_db`: `SALE` (a `CONFIRMED` order: price, `from` seller or `null` for the platform, `to` buyer), `LISTED` and `UNLISTED` (`from` the owner), `BID` and `BID_WITHDRAWN` (`to` the bidder, with the amount). Each entry is `{kind, sku, at, amount, currency, from, to, order_id, bid_id}` |
 
 **After the accepted bid's order settles** (in the order consumer, in the same transaction as the order's status change): `CONFIRMED` → the bid `FILLED`, the listing `SOLD`, its other open bids `CLOSED`; `REJECTED` (the owner changed first, which only an admin reset can cause) → the bid `FAILED` and the listing back to `OPEN`.
 
@@ -1060,6 +1060,7 @@ CREATE TABLE bids (
                    CHECK (status IN ('OPEN', 'WITHDRAWN', 'ACCEPTED', 'FILLED', 'FAILED', 'CLOSED')),
   order_id         CHAR(26)      REFERENCES orders (order_id),
   idempotency_key  VARCHAR(64)   NOT NULL,
+  request_hash     CHAR(64)      NOT NULL,                    -- sha256 of bidder, sku, amount
   created_at       TIMESTAMPTZ   NOT NULL DEFAULT now(),
   updated_at       TIMESTAMPTZ   NOT NULL DEFAULT now(),
   CONSTRAINT uq_bids_bidder_idem UNIQUE (bidder_id, idempotency_key)
@@ -1067,7 +1068,11 @@ CREATE TABLE bids (
 CREATE INDEX ix_bids_listing_open ON bids (listing_id) WHERE status = 'OPEN';
 CREATE INDEX ix_bids_sku_created  ON bids (sku, created_at DESC);
 CREATE INDEX ix_bids_bidder       ON bids (bidder_id, created_at DESC);
+CREATE INDEX ix_bids_order        ON bids (order_id) WHERE order_id IS NOT NULL;  -- settling
+CREATE INDEX ix_listings_sku_created ON listings (sku, created_at DESC);
 ```
+
+`request_hash` makes a bid's Idempotency-Key behave like an order's: the same key and body return the original bid (200), a different body is 422 `IDEMPOTENCY_KEY_REUSED`. Every market write locks the CloudPunk's listing row first and its bid second, in the API and in the order consumer alike, so the writers cannot deadlock.
 
 `inventory` items gain `owner` (S, absent while the platform holds it). The reservation stays one `TransactWriteItems` with one `Update` per line, now in one of two modes chosen by `OrderCreated.data.seller`:
 
@@ -1109,8 +1114,8 @@ Same rules as section 12: one at a time, `make lint test` (and itest, e2e when s
 
 - [x] **N1 — Art.** *(Built and approved 3 Oct 2026.)* The generator, 100 SVGs in `nft-collection/` (0001 as approved), the trait and price data for the seed, `make ui-art` and its lint check. *Done when:* a contact sheet of all 100 is reviewed by the owner.
 - [x] **N2 — Catalog.** *(Built and approved 3 Oct 2026.)* Seed the five types and 100 products in ETH, one of each; delete the old catalog, art and palettes; the e2e fixtures move to `E2E-` products. *Done when:* `make lint test itest e2e` pass on a clean `make reset && make up && make seed`.
-- [x] **N3 — Ownership (inventory).** *(Built 3 Oct 2026; awaiting review.)* `owner`, the two reservation modes, the new response field, `reset_owner`, `InventoryFailed.detail`. *Done when:* unit and integration tests, including the two-buyer race, pass and the guards are shown able to fail.
-- [ ] **N4 — Listings, bids and activity (order-service).** Migration 0002, `seller` on items, the listing and bid endpoints, settling in the consumer, `/activity`, `OrderCreated.seller`. *Done when:* unit, integration and `make e2e` pass with the new acceptance steps.
+- [x] **N3 — Ownership (inventory).** *(Built and approved 3 Oct 2026.)* `owner`, the two reservation modes, the new response field, `reset_owner`, `InventoryFailed.detail`. *Done when:* unit and integration tests, including the two-buyer race, pass and the guards are shown able to fail.
+- [x] **N4 — Listings, bids and activity (order-service).** *(Built 3 Oct 2026; awaiting review.)* Migration 0002, `seller` on items, the listing and bid endpoints, settling in the consumer, `/activity`, `OrderCreated.seller`. *Done when:* unit, integration and `make e2e` pass with the new acceptance steps.
 - [ ] **N5 — UI.** The screens in 16.6, the old screens removed, component tests and browser journeys rewritten. *Done when:* `make lint test ui-e2e` pass; axe clean.
 - [ ] **N6 — Local cluster and cloud.** `make k8s-deploy k8s-e2e` pass; the cloud acceptance suite updated (it is run by `app-deploy` only when the owner chooses to deploy).
 - [ ] **N7 — Docs.** README, DESIGN.md sections 1 to 15 brought in line, the ADR notes, the OpenAPI baseline.

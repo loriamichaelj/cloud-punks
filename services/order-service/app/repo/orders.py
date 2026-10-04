@@ -47,13 +47,67 @@ def _items_by_order(connection: Connection, order_ids: Sequence[str]) -> dict[st
             order_items.c.sku,
             order_items.c.quantity,
             order_items.c.unit_price,
+            order_items.c.seller,
         )
         .where(order_items.c.order_id.in_(order_ids))
         .order_by(order_items.c.order_id, order_items.c.sku)
     )
     for row in rows:
-        grouped[row.order_id].append(OrderItem(row.sku, row.quantity, row.unit_price))
+        grouped[row.order_id].append(OrderItem(row.sku, row.quantity, row.unit_price, row.seller))
     return grouped
+
+
+def insert_order(
+    connection: Connection,
+    order: Order,
+    *,
+    idempotency_key: str,
+    request_hash: str,
+    event: OutboxEvent,
+) -> bool:
+    """Write the order, its items and its outbox row on the caller's transaction (ADR-04).
+
+    Returns False, writing nothing, if ``(customer_id, idempotency_key)`` already holds an order.
+    Used by a purchase from the platform and by an accepted bid alike."""
+    inserted = connection.execute(
+        pg_insert(orders)
+        .values(
+            order_id=order.order_id,
+            customer_id=order.customer_id,
+            status=order.status,
+            status_reason=order.status_reason,
+            total_amount=order.total_amount,
+            currency=order.currency,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+        # Only the idempotency constraint is a "replay"; any other conflict is a real error.
+        .on_conflict_do_nothing(index_elements=[orders.c.customer_id, orders.c.idempotency_key])
+        .returning(orders.c.order_id)
+    ).scalar_one_or_none()
+    if inserted is None:
+        return False
+    connection.execute(
+        insert(order_items),
+        [
+            {
+                "order_id": order.order_id,
+                "sku": item.sku,
+                "quantity": item.quantity,
+                "unit_price": item.unit_price,
+                "seller": item.seller,
+            }
+            for item in order.items
+        ],
+    )
+    # The outbox row shares this transaction: the order and its event commit together or not at
+    # all. This is what makes "202 Accepted" safe to say (ADR-04).
+    connection.execute(
+        insert(outbox).values(
+            event_id=event.event_id, detail_type=event.detail_type, payload=event.payload
+        )
+    )
+    return True
 
 
 def _to_order(row: Row[Any], items: Sequence[OrderItem]) -> Order:
@@ -82,51 +136,18 @@ class PostgresOrderRepository:
         self, order: Order, *, idempotency_key: str, request_hash: str, event: OutboxEvent
     ) -> CreateOutcome:
         with store_errors(), self._engine.begin() as connection:
-            inserted = connection.execute(
-                pg_insert(orders)
-                .values(
-                    order_id=order.order_id,
-                    customer_id=order.customer_id,
-                    status=order.status,
-                    status_reason=order.status_reason,
-                    total_amount=order.total_amount,
-                    currency=order.currency,
-                    idempotency_key=idempotency_key,
-                    request_hash=request_hash,
-                )
-                # Only the idempotency constraint is a "replay"; any other conflict is a real error.
-                .on_conflict_do_nothing(
-                    index_elements=[orders.c.customer_id, orders.c.idempotency_key]
-                )
-                .returning(orders.c.order_id)
-            ).scalar_one_or_none()
-
-            if inserted is None:
+            if not insert_order(
+                connection,
+                order,
+                idempotency_key=idempotency_key,
+                request_hash=request_hash,
+                event=event,
+            ):
                 # A concurrent request holding the same key committed first. Write nothing.
                 existing = self._find(connection, order.customer_id, idempotency_key)
                 if existing is None:  # pragma: no cover - a committed row cannot vanish
                     raise RuntimeError("idempotency conflict without a stored order")
                 return CreateOutcome(stored=existing, created=False)
-
-            connection.execute(
-                insert(order_items),
-                [
-                    {
-                        "order_id": order.order_id,
-                        "sku": item.sku,
-                        "quantity": item.quantity,
-                        "unit_price": item.unit_price,
-                    }
-                    for item in order.items
-                ],
-            )
-            # The outbox row shares this transaction: the order and its event commit together
-            # or not at all. This is what makes "202 Accepted" safe to say (ADR-04).
-            connection.execute(
-                insert(outbox).values(
-                    event_id=event.event_id, detail_type=event.detail_type, payload=event.payload
-                )
-            )
             stored = self._fetch(connection, order.order_id)
         if stored is None:  # pragma: no cover - the row was inserted in this very transaction
             raise RuntimeError("order vanished inside its own transaction")
@@ -169,8 +190,12 @@ class PostgresOrderRepository:
 
     @staticmethod
     def _fetch(connection: Connection, order_id: str) -> StoredOrder | None:
-        row = connection.execute(select(orders).where(orders.c.order_id == order_id)).one_or_none()
-        if row is None:
-            return None
-        items = _items_by_order(connection, [order_id]).get(order_id, [])
-        return StoredOrder(order=_to_order(row, items), request_hash=row.request_hash.strip())
+        return fetch_order(connection, order_id)
+
+
+def fetch_order(connection: Connection, order_id: str) -> StoredOrder | None:
+    row = connection.execute(select(orders).where(orders.c.order_id == order_id)).one_or_none()
+    if row is None:
+        return None
+    items = _items_by_order(connection, [order_id]).get(order_id, [])
+    return StoredOrder(order=_to_order(row, items), request_hash=row.request_hash.strip())
