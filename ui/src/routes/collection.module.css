@@ -6,6 +6,10 @@
   display: grid;
   grid-template-columns: repeat(18, 1fr);
   align-content: start; /* rows keep their square tiles: no stretched gaps */
+  /* Each row as tall as its square tiles. Without this, the fixed height below squeezes the rows to
+     fit (the tiles' overflow: hidden lets them shrink), and each row of opaque tiles covers all but
+     the top of the row above it once more rows exist than fit (narrow windows, 9 columns). */
+  grid-auto-rows: max-content;
   /* A fixed height, not a max: with no CloudPunks loaded (an error, a slow first load) the banner
      still holds its place, so the identity block's negative margin never tucks it under the header. */
   height: 240px;

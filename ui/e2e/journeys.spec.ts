@@ -219,3 +219,23 @@ test('an API path answered with the page (HTML) reads as an error, and nothing h
     expect(title!.y, String(width)).toBeGreaterThanOrEqual(header!.y + header!.height);
   }
 });
+
+test('the banner shows whole CloudPunks at every window width (rows never overlap)', async ({
+  page,
+}) => {
+  await page.goto('/');
+  const banner = page.getByTestId('banner');
+  await expect(banner.locator(':scope > div').first()).toBeVisible();
+  for (const width of [1440, 1100, 900, 802, 500, 360]) {
+    await page.setViewportSize({ width, height: 800 });
+    // the first tile of the first two rows: the second row must start where the first one ends
+    const [first, below, columns] = await banner.evaluate((el) => {
+      const cols = getComputedStyle(el).gridTemplateColumns.split(' ').length;
+      const tiles = el.children;
+      return [tiles[0]!.getBoundingClientRect(), tiles[cols]!.getBoundingClientRect(), cols];
+    });
+    const label = `${width}px, ${columns} columns`;
+    expect(Math.abs(first.height - first.width), label).toBeLessThan(1);
+    expect(below.top, label).toBeGreaterThanOrEqual(first.bottom - 1);
+  }
+});

@@ -50,7 +50,7 @@ function CollectionHeader({ punks }: { punks: CloudPunk[] | undefined }) {
   const [more, setMore] = useState(false);
   return (
     <section className={styles.hero} aria-labelledby="collection-name">
-      <div className={styles.banner} aria-hidden="true">
+      <div className={styles.banner} aria-hidden="true" data-testid="banner">
         {(punks ?? []).slice(0, 54).map((p) => (
           <PunkImage key={p.sku} sku={p.sku} state={p.state} size="card" />
         ))}
