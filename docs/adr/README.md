@@ -10,6 +10,14 @@ One file per ADR when a decision in DESIGN.md section 2 changes. Until then this
 
 Procedures (clean start, failure drills, the local cluster, and what to do when an alarm fires) are runbooks: `docs/runbooks/README.md`.
 
+## Current state (4 Oct 2026)
+
+- **Built:** the local stack, the local Kubernetes cluster, dev on AWS (release `v0.1.5`, with the CloudPunks market deployed), the PR checks and deploy workflows, alarms, dashboards and runbooks, and the market activity emails (live in dev).
+- **Never run:** the failure drills on EKS (so no alarm has fired and the path to an email is unproven), the teardown workflows, `app-rollback` and `promote` (stage and prod are not deployed).
+- **Not built:** HTTPS and a domain.
+
+The full list is in DESIGN.md section 14.
+
 ## Change history (was the DESIGN.md status line)
 
 **v2.9 (4 Oct 2026): documentation simplified.** README, DESIGN.md and the other READMEs were cut back to what is built and how to run it; dates, plan days, status prose, milestone lists, open questions and risks moved to "Moved from DESIGN.md" below, and the local procedures (clean start, drills, local cluster) became a runbook. State at that point: Phases 1 to 4 and the CloudPunks market are built; dev runs on AWS with the CloudPunks release deployed (the cloud acceptance suite passed 17 of 17) and has had its market reset; the market activity emails are live in dev (confirmed by the owner); the failure drills on EKS, the teardown workflows, `app-rollback` and `promote` have never run.

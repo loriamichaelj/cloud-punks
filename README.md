@@ -145,16 +145,8 @@ scripts/           the art generator, DLQ tools, OpenAPI export, db_init, packag
 
 The processes can run in OrbStack's Kubernetes cluster while PostgreSQL, Valkey and LocalStack stay in Compose, the shape EKS has: `make k8s-ingress`, `make k8s-deploy`, `make k8s-e2e`, then open <http://retail.k8s.orb.local/>. Steps and caveats: `docs/runbooks/local-environment.md`.
 
-## Running on AWS (dev)
+## Running on AWS Dev Environment
 
 Dev runs in `us-east-1`: two EKS nodes, RDS for PostgreSQL, ElastiCache for Valkey, DynamoDB, EventBridge and SQS, behind an internal ALB. No AWS credential exists on any laptop: every change is a workflow, started by hand, with an approval on the `bootstrap` or `dev` GitHub Environment. The one-time manual setup is in `infra/terraform/README.md`; the run order, the teardown order, resetting the market and opening the app in a browser are in `.github/workflows/README.md`.
 
 The short version: `bootstrap-*`, `platform-create`, `addons-create`, `app-database`, `app-prepare`, `app-deploy`, `app-seed`. `app-deploy` runs the acceptance suite through the load balancer. Dev costs roughly $360 a month while it runs (a list-price estimate; the budget alert is $350), so destroy it when idle.
-
-## Current state
-
-- **Built:** the local stack, the local Kubernetes cluster, dev on AWS (release `v0.1.5`, with the CloudPunks market deployed), the PR checks and deploy workflows, alarms, dashboards and runbooks, and the market activity emails (live in dev).
-- **Never run:** the failure drills on EKS (so no alarm has fired and the path to an email is unproven), the teardown workflows, `app-rollback` and `promote` (stage and prod are not deployed).
-- **Not built:** HTTPS and a domain.
-
-The full list is in DESIGN.md section 14.
