@@ -1,24 +1,24 @@
-# Retail Microservices Platform — Design Doc
+# CloudPunks: Retail Microservices Platform — Design Doc
 
-Author: M.L. · Status: Phases 1 to 4 are built and dev runs on AWS (release v0.1.5, 3 Oct 2026). One exit criterion is not met: Phase 4's failure drills were skipped. Change history, as-built notes and results: `docs/adr/README.md`.
+Author: M.L. · Status: Phases 1 to 4 are built and dev runs on AWS (release v0.1.5, 3 Oct 2026); one exit criterion is not met (Phase 4's failure drills were skipped). The CloudPunks redesign (section 16: one NFT-style collection, resale through bids, a marketplace UI) is built and verified on Compose and the local cluster, and not yet deployed to dev. Change history, as-built notes and results: `docs/adr/README.md`.
 
 ## 1. Overview
 
-We build a four-service retail order platform that runs end-to-end on localhost first, then moves to AWS EKS with no application code changes — only configuration. Every AWS dependency is reached through an adapter whose endpoint is an environment variable, so LocalStack, PostgreSQL and Valkey containers stand in for EventBridge/SQS/DynamoDB, RDS and ElastiCache.
+We build a four-service order platform that runs end-to-end on localhost first, then moves to AWS EKS with no application code changes — only configuration. Since the redesign (section 16) it is the marketplace for one collection, **CloudPunks**: 100 one-of-a-kind pixel-art characters, bought from the platform and resold between customers through bids. Sections 1 to 15 are the platform's design; section 16 is the marketplace on top of it, and where they differ section 16 wins. Every AWS dependency is reached through an adapter whose endpoint is an environment variable, so LocalStack, PostgreSQL and Valkey containers stand in for EventBridge/SQS/DynamoDB, RDS and ElastiCache.
 
 **Goals**
 
-- A customer can browse products, place an order, and see it move `PENDING → CONFIRMED | REJECTED` via asynchronous events.
+- A customer can browse products, place an order, and see it move `PENDING → CONFIRMED | REJECTED` via asynchronous events. With CloudPunks: browse the 100, buy an unsold one, put one you own up for bid, and accept a bid, each sale moving ownership through the same events (section 16).
 - Correct under retries and duplicates: no double reservation, no lost events, no stuck orders.
 - Observable from day one: structured logs with correlation IDs, Prometheus metrics, health endpoints.
 - Cloud-portable: the same container images and env-var contract run on Docker Compose and EKS.
-- The same journey works in a browser: a React single-page app (section 15) on top of the public API, served through the same gateway.
+- The same journey works in a browser: a React single-page app (sections 15 and 16.6, a marketplace collection page) on top of the public API, served through the same gateway.
 
 **Non-goals (this week)**
 
 - Payments, carts, auth/login, cancellations, returns, multi-currency.
 - Service mesh, Kafka, GitOps (ArgoCD/Flux) — documented as extensions only.
-- Login, payments and server-side carts stay out even with a UI: the UI uses a demo customer id and a client-side basket (section 15). Also out: SSR, PWA/offline, i18n, analytics.
+- Login, payments and server-side carts stay out even with a UI: the UI uses a demo customer id (section 15). Also out: SSR, PWA/offline, i18n, analytics. With CloudPunks: no blockchain, wallet, token or royalty; a bid reserves no funds.
 
 **Build strategy**
 
@@ -30,8 +30,9 @@ We build a four-service retail order platform that runs end-to-end on localhost 
 | 2 — Cloud infra, built through CI | Manual OIDC provider + `cloudbatch818-loria-retail-bootstrap` role; `bootstrap-state-bucket.yml`, `bootstrap-ci-roles.yml`; `platform-create.yml`; Terraform, ECR, EKS, in-VPC runners; the 1c chart with dev values. No AWS access exists outside GitHub Actions (ADR-14) | Day 3 | Same test passes against the EKS ingress, run from a workflow. **Met** (2 Oct 2026): `app-deploy.yml` runs the acceptance suite through the dev ALB |
 | 3 — CI/CD | `pr.yml` with one required `ci` gate, Trivy image and config scans, Checkov, tflint, actionlint; protected `stage` and `prod` branches and Environments; `promote.yml`; `app-rollback.yml`. No push trigger for the deploy (decided) | Day 4 | **Met in part** (2 Oct 2026, release `v0.1.0`): a pull request is gated by `ci`. `app-rollback.yml` and `promote.yml` have never run (stage and prod are not deployed) |
 | 4 — Reliability (P4.1 to P4.7, section 13) | CloudWatch alarms, Container Insights logs, Prometheus, Alertmanager and a view-only Grafana with the four SLIs, runbooks, failure drills on EKS, a second node | Day 5 | **Not met** (3 Oct 2026): each drill in section 11 detected and recovered. The drills were skipped, so the path from a failure to an email is unproven. The rest is built and applied in dev |
+| 5 — CloudPunks (N1 to N7, section 16) | One collection of 100 generated pixel-art CloudPunks priced in ETH, ownership in inventory, listings and bids in order-service, resale by accepting a bid, a marketplace UI | — | **Met locally** (3 Oct 2026): `make lint test itest e2e ui-e2e` on Compose and `make k8s-deploy k8s-e2e` on the local cluster. Not yet deployed to dev |
 
-This document is detailed for Phase 1 and gives forward-compatible contracts for Phases 2–4 so nothing built locally has to be rewritten.
+This document is detailed for Phase 1 and gives forward-compatible contracts for Phases 2–4 so nothing built locally has to be rewritten; section 16 does the same for the CloudPunks redesign.
 
 ## 2. Key architecture decisions
 
@@ -55,7 +56,7 @@ Each decision below is binding for Claude Code; changing one means updating this
 | ADR-14 | AWS is reached only from GitHub Actions through OIDC role assumption; no IAM users, access keys or local AWS credentials exist. The OIDC provider and the `cloudbatch818-loria-retail-bootstrap` role are created by hand once; all other roles are Terraform-managed | Removes long-lived credentials entirely; every cloud change is reviewed, logged and reproducible | Local `terraform apply` with SSO or keys (unreviewed changes, credentials on a laptop) |
 | ADR-15 | Jobs that need the EKS API (helm, kubectl, e2e, drills) run on ephemeral self-hosted runners inside the VPC; all other jobs use GitHub-hosted runners | EKS endpoint stays private and the ALB can be internal; Terraform AWS-API calls need no VPC access | Public EKS endpoint with IAM auth (simpler, larger attack surface) |
 | ADR-16 | The UI is a React + TypeScript single-page app built with Vite into static files, served by an unprivileged nginx container (`ui`), and reached through the same gateway/ALB as the API on the same origin (`/` goes to `ui`, `/api/v1/*` to the services) | No CORS and no per-environment API URL in the bundle (it calls relative `/api/v1`), so one image runs on Compose, local Kubernetes and EKS; static files need no Node runtime to operate | Next.js (a Node SSR runtime to run and patch for no benefit here); Create React App (deprecated); S3 + CloudFront (cloud-only, breaks "same image everywhere"; a possible later option); a separate UI origin with CORS |
-| ADR-17 | The UI is a pure client of the public API: no new endpoints, no direct database or AWS access, a client-side basket (not a server cart), and a browser-generated demo customer id that is explicitly not authentication | Keeps the backend contracts as the only source of truth and the non-goals (auth, payments, carts) intact; anything the UI needs that the API cannot do is an API-contract question, not UI logic | Server-side carts and sessions (scope and state to operate); a login form that only pretends |
+| ADR-17 | The UI is a pure client of the public API: no new endpoints, no direct database or AWS access, a client-side basket (not a server cart; the CloudPunks UI has none, one purchase at a time, and its market endpoints came as an API change of their own, section 16.4), and a browser-generated demo customer id that is explicitly not authentication | Keeps the backend contracts as the only source of truth and the non-goals (auth, payments, carts) intact; anything the UI needs that the API cannot do is an API-contract question, not UI logic | Server-side carts and sessions (scope and state to operate); a login form that only pretends |
 | ADR-18 | **Ownership lives in inventory.** Each `inventory` item gains `owner` (absent while the platform holds it). The reservation transaction (section 5) becomes the transfer: a purchase from the platform requires no owner and `available >= 1`; a resale requires `owner` = the seller. Either sets `owner` to the buyer in the same conditional write | The transfer must be atomic with "who owns it now", and the reservation is already the single conditional write that decides a race: two buyers of a red CloudPunk race on one item and exactly one wins | Ownership in order-service (two sources of truth for a sale); a new market service (a fifth service and store to run) |
 | ADR-19 | **Listings ("up for bid"), bids and activity live in order-service** (`listings` and `bids` in `order_db`). Accepting a bid creates an ordinary order for the bidder at the bid amount, so it travels the existing outbox, saga, reservation and notification path | Putting up, bidding, accepting and taking off are transitions of one listing, so they are serialized by one row lock in one database: a bid can never be accepted twice, nor accepted after the listing was taken off. Reusing the order path means no new event type, queue, rule or consumer | Listings or bids in inventory (no transaction across a listing and its bids; listing bids by NFT needs a DynamoDB index, which is a Terraform change) |
 | ADR-20 | **The art is generated, deterministic and committed.** `scripts/cloudpunks/generate.py` draws all 100 SVGs into `nft-collection/` from trait layers on the approved base head, with `0001.svg` kept exactly as approved. The UI bundles a copy (`ui/src/assets/cloudpunks/`) because the UI image is built from `ui/` only; `make ui-art` refreshes it and `make lint` fails if the copy drifts | One source of truth for the art, reviewable files in Git, no runtime image service, and the UI's CSP is unchanged | Images from the API (new endpoint and storage); art only inside `ui/` (the owner asked for `nft-collection/` at the root) |
@@ -74,17 +75,17 @@ flowchart TB
   gw -->|"/ (SPA)"| UIS["UI: static React app, nginx"]
   gw -->|/api/v1/products| P
   gw -->|/api/v1/inventory| I
-  gw -->|/api/v1/orders| O
+  gw -->|"/api/v1/orders, listings, bids, activity"| O
   gw -->|/api/v1/notifications| N
   subgraph P["Product (api)"]
     Ppg[("PostgreSQL product_db")]
     Pvk[("Valkey catalog cache")]
   end
   subgraph I["Inventory (api, consumer)"]
-    Iddb[("DynamoDB inventory + inventory_reservations")]
+    Iddb[("DynamoDB inventory (stock, owner) + inventory_reservations")]
   end
   subgraph O["Order (api, relay, consumer)"]
-    Opg[("PostgreSQL order_db + outbox")]
+    Opg[("PostgreSQL order_db: orders, listings, bids, outbox")]
   end
   subgraph N["Notification (api, consumer)"]
     Nddb[("DynamoDB notifications")]
@@ -102,7 +103,7 @@ flowchart TB
 
 *Orders enter through REST and settle through events. Dashed = synchronous REST; solid into the bus = events published; bus to queue to service = SQS delivery.*
 
-Order is the only service with both sync dependencies (Product for price, Inventory for the pre-check) and an outbox; Notification only listens. Product has no events this week.
+Order is the only service with both sync dependencies (Product for price, Inventory for the pre-check and, for the market, who owns a CloudPunk) and an outbox; Notification only listens. Product has no events. In the CloudPunks market the reservation is also the transfer of ownership, and accepting a bid is an ordinary order with a seller (section 16.5).
 
 ### Local to AWS mapping
 
@@ -126,9 +127,9 @@ All services expose JSON over HTTP under `/api/v1`, plus `/health/live`, `/healt
 
 | Service | Owns | Port (local) | Stores | Publishes | Consumes |
 | --- | --- | --- | --- | --- | --- |
-| product-service | Catalog, categories, prices | 8001 | PostgreSQL `product_db`, Valkey | — | — |
-| inventory-service | Stock levels, reservations | 8002 | DynamoDB `inventory`, `inventory_reservations` | InventoryReserved, InventoryFailed | OrderCreated |
-| order-service | Orders, order items, status | 8003 | PostgreSQL `order_db` (incl. outbox) | OrderCreated, OrderStatusUpdated | InventoryReserved, InventoryFailed |
+| product-service | Catalog (the 100 CloudPunks), categories (their five types), mint prices | 8001 | PostgreSQL `product_db`, Valkey | — | — |
+| inventory-service | Stock levels, reservations, who owns each CloudPunk | 8002 | DynamoDB `inventory`, `inventory_reservations` | InventoryReserved, InventoryFailed | OrderCreated |
+| order-service | Orders, order items, status; listings (up for bid), bids, the activity feed | 8003 | PostgreSQL `order_db` (incl. outbox) | OrderCreated, OrderStatusUpdated | InventoryReserved, InventoryFailed |
 | notification-service | Customer notifications (simulated) | 8004 | DynamoDB `notifications` | — | InventoryReserved, InventoryFailed, OrderStatusUpdated |
 | ui | The React single-page app (static files, section 15) | 8005 | — | — | — |
 | gateway (nginx) | Path routing, stands in for ALB | 8080 | — | — | — |
@@ -142,12 +143,15 @@ All services expose JSON over HTTP under `/api/v1`, plus `/health/live`, `/healt
 | product | `POST /api/v1/products` | Create product (admin) | Invalidates list cache keys |
 | product | `PUT /api/v1/products/{sku}` | Update price/details (admin) | Deletes `product:{sku}` and list keys |
 | product | `GET /api/v1/categories` | List categories | Cached, TTL 3600 s |
-| inventory | `GET /api/v1/inventory/{sku}` | Stock for one SKU | Never cached; strongly consistent read |
+| inventory | `GET /api/v1/inventory/{sku}` | Stock and owner for one SKU | Never cached; strongly consistent read; `owner` null while the platform holds it |
 | inventory | `POST /api/v1/inventory/availability` | Batch check; body and response in the OpenAPI spec | Advisory only; reservation is authoritative |
 | inventory | `PUT /api/v1/inventory/{sku}` | Set stock (admin/seed) | — |
 | order | `POST /api/v1/orders` | Create order | Requires `Idempotency-Key` header; returns 202 + order in `PENDING` |
 | order | `GET /api/v1/orders/{order_id}` | Order with items and status | — |
 | order | `GET /api/v1/orders?customer_id=` | Orders for a customer | Newest first, paginated |
+| order | `POST`, `GET /api/v1/listings`; `DELETE /api/v1/listings/{sku}` | Put a CloudPunk up for bid, list, take it off | Owner only (section 16.4) |
+| order | `POST`, `GET /api/v1/bids`; `DELETE /api/v1/bids/{bid_id}`; `POST /api/v1/bids/{bid_id}/accept` | Bid, list, withdraw, accept | `POST /bids` requires `Idempotency-Key`; accepting creates the bidder's order (section 16.4) |
+| order | `GET /api/v1/activity?sku=` | Sales, listings and bids | Newest first, paginated |
 | notification | `GET /api/v1/notifications?order_id=` | Notifications for an order | For demo and test assertions |
 
 The generated OpenAPI specs (`docs/openapi/<service>.json`, written by `make openapi`) are the contract of record for fields, limits and error codes; narrative summaries as built are in `docs/adr/README.md`.
@@ -161,7 +165,7 @@ POST /api/v1/orders
 Idempotency-Key: 6f1c2b1e-4a7d-4c55-9a51-0b8e3f0d2c11
 {
   "customer_id": "cust-1001",
-  "items": [ { "sku": "SKU-TSHIRT-BLK-M", "quantity": 2 } ]
+  "items": [ { "sku": "CP-0042", "quantity": 1 } ]
 }
 ```
 
@@ -171,9 +175,9 @@ Response `202 Accepted`:
 {
   "order_id": "01J9Z6Q4W8K3M2N1P0R7S5T4V3",
   "status": "PENDING",
-  "total_amount": "39.98",
-  "currency": "USD",
-  "items": [ { "sku": "SKU-TSHIRT-BLK-M", "quantity": 2, "unit_price": "19.99" } ],
+  "total_amount": "19.99",
+  "currency": "ETH",
+  "items": [ { "sku": "CP-0042", "quantity": 1, "unit_price": "19.99", "seller": null } ],
   "created_at": "2026-10-05T14:03:11Z"
 }
 ```
@@ -192,7 +196,7 @@ Rules:
 ### Error shape (all services)
 
 ```json
-{ "error": { "code": "OUT_OF_STOCK", "message": "SKU-TSHIRT-BLK-M: requested 2, available 1", "correlation_id": "…" } }
+{ "error": { "code": "OUT_OF_STOCK", "message": "CP-0042: requested 1, available 0", "correlation_id": "…" } }
 ```
 
 ## 5. Data model
@@ -285,8 +289,8 @@ PostgreSQL-specific rules:
 
 | Table | PK | SK | Attributes | Access pattern |
 | --- | --- | --- | --- | --- |
-| `inventory` | `sku` (S) | — | `available` (N), `reserved` (N), `updated_at` (S) | Get by SKU; conditional decrement on reserve |
-| `inventory_reservations` | `order_id` (S) | — | `items` (L), `status` (S: RESERVED/FAILED), `event_id` (S), `reason` (S), `failed_items` (L, FAILED only), `remaining` (M, RESERVED only), `created_at` (S), `ttl` (N) | Idempotency record per order (TTL 35 days, at least 30, so it outlives SQS retention and any archive replay; otherwise a replayed OrderCreated reserves twice); replay source for re-emitting the outcome event |
+| `inventory` | `sku` (S) | — | `available` (N), `reserved` (N), `updated_at` (S), `owner` (S, absent while the platform holds it; aliased `#owner`, a reserved word) | Get by SKU; conditional decrement on reserve, which also moves `owner` (section 16.5) |
+| `inventory_reservations` | `order_id` (S) | — | `items` (L), `status` (S: RESERVED/FAILED), `event_id` (S), `reason` (S), `failed_items` (L, FAILED only), `remaining` (M, RESERVED only), `created_at` (S), `ttl` (N), `buyer` (S), `seller` (S, a resale only), `detail` (S, FAILED only: `SOLD` or `OWNER_CHANGED`) | Idempotency record per order (TTL 35 days, at least 30, so it outlives SQS retention and any archive replay; otherwise a replayed OrderCreated reserves twice); replay source for re-emitting the outcome event |
 | `notifications` | `order_id` (S) | `event_id` (S) | `type`, `channel`, `message`, `created_at`, `ttl` | Conditional put `attribute_not_exists(event_id)` = dedupe; query by order |
 
 Reservation is one `TransactWriteItems` call: a `Put` on `inventory_reservations` with `attribute_not_exists(order_id)` plus one `Update` per SKU with `ConditionExpression: available >= :qty`, setting `available = available - :qty, reserved = reserved + :qty`. All succeed or none do. Limit: 100 items per transaction, well above the 20-line order cap.
@@ -336,9 +340,9 @@ EventBridge `PutEvents` entry: `Source = retail.<service>`, `DetailType = <Event
 
 | Event | Producer | Consumers | `data` payload |
 | --- | --- | --- | --- |
-| OrderCreated | order-service (via outbox) | inventory | `order_id, customer_id, items[{sku, quantity}], total_amount, currency` |
+| OrderCreated | order-service (via outbox) | inventory | `order_id, customer_id, items[{sku, quantity}], total_amount, currency, seller` (`seller` null for a purchase from the platform, set for an accepted bid; additive, section 16.5) |
 | InventoryReserved | inventory-service | order, notification, low-stock Lambda | `order_id, items[{sku, quantity, remaining}]` |
-| InventoryFailed | inventory-service | order, notification | `order_id, reason (OUT_OF_STOCK / UNKNOWN_SKU), failed_items[{sku, requested, available}]` |
+| InventoryFailed | inventory-service | order, notification | `order_id, reason (OUT_OF_STOCK / UNKNOWN_SKU), failed_items[{sku, requested, available}], detail` (`detail` optional: `SOLD`, `OWNER_CHANGED`; additive) |
 | OrderStatusUpdated | order-service (via outbox) | notification | `order_id, customer_id, old_status, new_status, reason` |
 
 ### Routing
@@ -524,16 +528,17 @@ retail-platform/
 │   ├── order-service/            # app/ + relay entrypoint + migrations/
 │   └── notification-service/     # consumer + small read API
 ├── functions/low-stock-alert/    # Lambda handler + tests
-├── ui/                           # React SPA, an npm project outside the uv workspace (section 15)
+├── nft-collection/               # the 100 CloudPunk SVGs, generated by scripts/cloudpunks (section 16.3)
+├── ui/                           # React SPA, the marketplace; an npm project outside the uv workspace (sections 15, 16.6)
 ├── gateway/nginx.conf            # path routing, mirrors ALB Ingress rules (/ goes to ui)
 ├── local/
 │   ├── docker-compose.yml
 │   ├── localstack/init/ready.d/10-bootstrap.sh
 │   ├── postgres/init/01-databases.sh
-│   ├── seed/                     # catalog.py (data) + seed.py; shipped in the product image
+│   ├── seed/                     # catalog.py + cloudpunks.json (generated) + seed.py; shipped in the product image
 │   └── observability/ (prometheus.yml, grafana/)
 ├── tests/e2e/                    # acceptance (test_acceptance.py) + failure drills (test_drills.py)
-├── scripts/                      # export_openapi.py, dlq.py, db_init.py, k8s_compose.py, viewer_cidr.py, package_lambda.py (tests in scripts/tests)
+├── scripts/                      # cloudpunks/ (the art generator), export_openapi.py, dlq.py, db_init.py, k8s_compose.py, viewer_cidr.py, package_lambda.py (tests in scripts/tests)
 ├── README.md                     # run instructions
 ├── deploy/helm/                  # retail-service, secret-store and monitoring charts, values/ (per release, per env), third-party/ (Traefik)
 ├── infra/terraform/              # bootstrap/, modules/, envs/dev/{platform,cluster-addons,alb-alarms}; applied only from workflows (README.md)
@@ -609,7 +614,7 @@ LocalStack does not enforce IAM, SQS queue policies or Lambda invoke permissions
 
 ### Makefile targets
 
-`up`, `down`, `reset` (drop volumes), `logs s=<svc>`, `seed`, `test` (unit), `itest` (integration), `e2e` (acceptance and all drills), `drills`, `drill-consumer-down`, `drill-poison`, `drill-duplicate`, `drill-bus-down`, `drill-cache-down`, `drill-db-down`, `lint`, `fmt`, `dlq-peek q=<queue>-dlq`, `dlq-redrive q=<queue>-dlq`, `obs-up`, `obs-down`, `openapi`, `ui-*`; plus `lock` and `sync` for the uv environment.
+`up`, `down`, `reset` (drop volumes), `logs s=<svc>`, `seed`, `test` (unit), `itest` (integration), `e2e` (acceptance, the market steps and all drills), `cloudpunks` and `ui-art` (the art, section 16.3), `drills`, `drill-consumer-down`, `drill-poison`, `drill-duplicate`, `drill-bus-down`, `drill-cache-down`, `drill-db-down`, `lint`, `fmt`, `dlq-peek q=<queue>-dlq`, `dlq-redrive q=<queue>-dlq`, `obs-up`, `obs-down`, `openapi`, `ui-*` (including `ui-fmt`); plus `lock` and `sync` for the uv environment.
 
 ### OrbStack and local Kubernetes
 
@@ -664,6 +669,8 @@ The same suite runs against three targets: Compose (`make e2e`), the local clust
 8. Replay step 3 with the same `Idempotency-Key` → same `order_id`, stock unchanged.
 9. All `/health/ready` return 200; all DLQs empty.
 10. Every log line for the order shares one `correlation_id` across all four services.
+
+The market steps (section 16.8) run in the same suite on the one-of-a-kind fixture `E2E-N`: bought from the platform, the owner changes; put up for bid, two bids, one withdrawn, the other accepted, ownership moves and the listing, bids and activity settle; taking it off closes its bids; four buyers race for one unsold item and exactly one owns it. The suite works on its own products (`E2E-A`, `E2E-B`, `E2E-N`, created if missing and deactivated afterwards) and never on the 100 CloudPunks.
 
 ### Failure drills
 
@@ -879,13 +886,13 @@ Closed questions and their reasons (UI scope and sequencing, Python and LocalSta
 
 ## 15. Frontend UI (React)
 
-Added in v1.6 (1 Oct 2026). Binding decisions are ADR-16 and ADR-17 in section 2. The UI is milestone M8 (section 12).
+Added in v1.6 (1 Oct 2026). Binding decisions are ADR-16 and ADR-17 in section 2. The UI was milestone M8 (section 12) and was rebuilt as the CloudPunks marketplace in N5 (section 16.6, which lists the screens). The stack, rules, build and tests below still hold; where this section described the retail shop, it now describes the marketplace.
 
 ### 15.1 Scope
 
-A customer can browse the catalog, build a basket, place an order, and watch it move `PENDING → CONFIRMED | REJECTED`, entirely in a browser. It is a pure client of the existing public API (ADR-17): no endpoint was added for it, and it adds no backend behavior.
+A customer can browse the 100 CloudPunks, buy an unsold one (one at a time: there is no basket), put one they own up for bid, bid on others and accept a bid, and watch each order move `PENDING → CONFIRMED | REJECTED`, entirely in a browser. It is a pure client of the public API (ADR-17): the market endpoints were added as an API change of their own (section 16.4), not for the UI's convenience, and the UI adds no backend behavior.
 
-Still out of scope, even with a UI: login or any notion of identity beyond a demo customer id, payments (the checkout button says so), server-side carts, cancellations and returns, multi-currency, server-side rendering, PWA/offline, i18n, analytics and RUM.
+Still out of scope, even with a UI: login or any notion of identity beyond a demo customer id, payments (the confirm step says so), carts of any kind, cancellations and returns, multi-currency, server-side rendering, PWA/offline, i18n, analytics and RUM.
 
 ### 15.2 Stack
 
@@ -898,7 +905,7 @@ Versions below were checked on 1 Oct 2026 and are pinned exactly in `package-loc
 | Packages | npm with `package-lock.json`; scripts and CI use `npm ci`, never `npm install` |
 | Routing | React Router, declarative routes |
 | Server state | TanStack Query (fetching, polling, retries); no Redux or other global store |
-| Styling | CSS Modules and CSS variables, one light theme with a per-category colour palette; no UI kit |
+| Styling | CSS Modules and CSS variables, one dark theme with the three market-state colours (section 16.1); no UI kit |
 | API types | openapi-typescript, generated from committed OpenAPI snapshots of each service (`make ui-types`; a stale snapshot fails the build) |
 | Tests | Vitest, Testing Library, MSW (component tests); Playwright with Chromium and axe (journeys) |
 | Lint / format | ESLint with typescript-eslint, react-hooks and jsx-a11y; Prettier |
@@ -907,28 +914,20 @@ This list is the approved set. Anything else is a "new dependency" and needs ask
 
 ### 15.3 Screens and the API behind them
 
-| Screen | Route | Calls | Notes |
-| --- | --- | --- | --- |
-| Catalog | `/` | `GET /categories`; `GET /products?category=&page=&size=20`; one `POST /inventory/availability` for the page's SKUs (a page is at most 20 lines, exactly the endpoint's cap) | Category filter and pagination. Stock badge: In stock / "Only N left" (N below 5) / Out of stock (add-to-basket disabled). |
-| Product | `/products/:sku` | `GET /products/{sku}`; `GET /inventory/{sku}` | Quantity 1 to 100; "Add to basket". |
-| Basket | `/basket` | none to submit; `POST /inventory/availability` to warn early | Held in the browser. Edit and remove lines; 20-line cap; the total is labelled an estimate. |
-| Checkout | `/checkout` | `POST /orders` | Shows the demo customer id, the lines and the estimate. The button reads "Place order (demo, no payment)". |
-| Order | `/orders/:id` | `GET /orders/{id}` (polled); `GET /notifications?order_id=` | Status timeline, the reason when `REJECTED`, snapshotted unit prices and the server's authoritative total, and the notifications. |
-| My orders | `/orders` | `GET /orders?customer_id=` | Newest first, paginated. |
-| Demo tools | `/demo` | `PUT /inventory/{sku}`; `PUT /products/{sku}` | Exists only in builds with `VITE_DEMO_TOOLS=true` (off in cloud builds). Labelled as unauthenticated admin endpoints. Makes out-of-stock and `REJECTED` demonstrable by hand. |
+The screens are listed in section 16.6: the collection (Items and Activity tabs), a CloudPunk's page, My CloudPunks, the order page and, in local builds only, the demo page that switches the customer id. The retail screens (catalog, product, basket, checkout, my orders, the stock-and-price demo tools) were removed in N5.
 
 ### 15.4 Behavior rules
 
 - **Money is never a JS `number`.** API decimal strings are parsed into integer minor units (`BigInt`) for arithmetic and formatted by string handling. Totals computed in the browser are estimates; the order response is authoritative and is what the order screen shows.
-- **Idempotency.** Each checkout attempt gets a UUID `Idempotency-Key`, stored with a fingerprint of the basket. It is reused on retry, refresh, network error and 503, so a double-submit creates one order; a `200` replay is treated as success and opens the order. A changed basket gets a new key (reusing the old one would be 422 `IDEMPOTENCY_KEY_REUSED`).
-- **Errors.** One mapping of the shared error shape `{error: {code, message, correlation_id}}`. 409 `OUT_OF_STOCK` shows the server's per-line message and links back to the basket; 422 `UNKNOWN_PRODUCT` / `PRODUCT_INACTIVE` mark the lines; 503 retries automatically (at most 3 times, honoring `Retry-After`) with the same key, then offers a button. A network failure is shown differently from an API error. Every error panel shows the `correlation_id` with a copy button. No stack traces, no raw server text beyond `message`.
+- **Idempotency.** Each action gets a UUID `Idempotency-Key`, stored per scope with a fingerprint of what it asks for: `buy:<sku>` (the customer) for a purchase and `bid:<sku>` (the customer and the amount) for a bid. It is reused on retry, refresh, network error and 503, so a double-submit creates one order or bid; a `200` replay is treated as success. A changed request gets a new key (reusing the old one would be 422 `IDEMPOTENCY_KEY_REUSED`). Accepting a bid needs no key: accepting the same bid again returns the same order.
+- **Errors.** One mapping of the shared error shape `{error: {code, message, correlation_id}}`. 409 `OUT_OF_STOCK` shows the server's message (someone bought it first); the market's 409s (`NOT_OWNER`, `NOT_LISTED`, `SALE_PENDING`, `BID_NOT_OPEN`) show theirs; 503 retries automatically (at most 3 times, honoring `Retry-After`) with the same key, then offers a button. A network failure is shown differently from an API error. Every error panel shows the `correlation_id` with a copy button. No stack traces, no raw server text beyond `message`.
 - **Correlation.** Every request carries `X-Correlation-ID` (one UUID per user action), so a click can be followed through the gateway, all four services and the events.
 - **Order tracking.** `GET /orders/{id}` every 1 s for the first 10 s, then every 2 s, stopping at a terminal status or after 60 s ("still processing, refresh"). Polling pauses while the tab is hidden. The SLO is 30 s (section 7).
-- **Stock is never cached.** Inventory queries use `staleTime: 0` and `gcTime: 0`, refetch on mount and on focus, and are never written to storage. Catalog data may be cached for up to 60 s in memory only, never persisted, consistent with the server's 5-minute tolerance.
-- **Customer identity.** `cust-` plus 8 random hex characters, generated once and kept in `localStorage`; editable and validated against the API's pattern. It is a label, not a credential, and the UI says so.
-- **Storage.** The basket lives under `retail.basket.v1`. Every `localStorage` access is wrapped in try/catch (it can be blocked, full or corrupt) and falls back to an empty basket.
+- **Stock is never cached,** nor anything that decides a tile's colour: inventory (stock and owner), listings, bids and activity use `staleTime: 0` and `gcTime: 0`, refetch on mount and on focus, and are never written to storage. The collection refreshes every 10 s while visible, a CloudPunk's page every 3 s. Catalog data may be cached for up to 60 s in memory only, never persisted, consistent with the server's 5-minute tolerance.
+- **Customer identity.** `cust-` plus 8 random hex characters, generated once and kept in `localStorage`; shown as a wallet-style pill and switchable on the local demo page, validated against the API's pattern. It is a label, not a credential or a wallet, and the UI says so.
+- **Storage.** The customer id lives under `retail.customer.v1` and pending idempotency keys under `cloudpunks.attempt.v1.<scope>`. Every `localStorage` access is wrapped in try/catch (it can be blocked, full or corrupt) and the app keeps working without it.
 - **Accessibility.** Semantic landmarks, labelled controls, keyboard operable, focus moved on route changes and errors, status changes announced through `aria-live="polite"`, AA contrast, usable from 360 px wide.
-- **No external requests and no inline script or style.** Product pictures are local SVG files bundled with the app (`ui/src/assets/products`, matched by SKU; a product without one shows its category icon), fonts are system fonts, and React's escaping is the only HTML escaping: no `dangerouslySetInnerHTML`.
+- **No external requests and no inline script or style.** The CloudPunk pictures are local SVG files bundled with the app (`ui/src/assets/cloudpunks`, a copy of `nft-collection/` kept current by `make ui-art`, matched by SKU and drawn with `image-rendering: pixelated`), fonts are system fonts, and React's escaping is the only HTML escaping: no `dangerouslySetInnerHTML`. Tile colours come from `data-state` attributes and CSS, never a `style` attribute.
 
 ### 15.5 Build, serve, run
 
@@ -943,15 +942,15 @@ This list is the approved set. Anything else is a "new dependency" and needs ask
 
 | Layer | Scope | Gate |
 | --- | --- | --- |
-| Unit | `ui/src/lib`: money (property-style tests on parsing, addition, formatting), idempotency-key lifecycle, polling schedule, storage fallbacks, correlation ids | at least 80% lines on `ui/src/lib` |
-| Component | Each screen with MSW at the network boundary, using fixtures that match the OpenAPI examples; error mapping; basket behavior; a stock query is re-fetched, never served from cache | green |
+| Unit | `ui/src/lib`: money (parsing, formatting, ETH, exact comparison), the collection (state, traits, filters, sort, rarity, stats), idempotency-key scopes, polling schedule, relative time, storage fallbacks, correlation ids | at least 80% lines on `ui/src/lib` |
+| Component | Each screen against an in-memory market behind MSW (`src/test/market.ts`): colours, filters, buy, bid, accept, withdraw, put up and take off, what is sent (keys, correlation ids, amounts as strings), error panels with the reference, and stock re-read on every visit | green |
 | Journeys | Playwright (headless Chromium, one worker) against the Compose stack after `make reset && make up && make seed` | green, axe reports no serious or critical violations on any screen |
 
-Journeys (`make ui-e2e`): browse, filter and paginate; the basket survives a reload; checkout shows `PENDING` and then `CONFIRMED` while stock drops by exactly the quantity; a synchronous out-of-stock shows the server's message; an **asynchronous** rejection (stop the inventory consumer, place the order, set the stock to zero, start the consumer, as in acceptance step 7) ends `REJECTED` with the reason; double-clicking "Place order" creates one order; stopping product-service shows a retryable catalog error with a correlation id and recovers when it returns; an unreachable gateway shows a network error, not an API error.
+Journeys (`make ui-e2e`, also run by `make k8s-e2e`): browse the 100 by colour and filter; the header search jumps to a CloudPunk; buying one confirms and turns its tile blue; a full resale (put up for bid, switch customer on the demo page, bid, switch back, accept, ownership moves); double-clicking "Confirm purchase" creates one order; losing a race to another buyer shows the error with a reference; My CloudPunks; stopping product-service shows a retryable error with a correlation id and recovers; an unreachable gateway shows a network error, not an API error; no horizontal scroll at 360 px. The journeys use CloudPunks #0091 to #0096 and hand them back to the platform afterwards.
 
 ### 15.7 Make targets
 
-`ui-install` (`npm ci`), `ui-dev`, `ui-types`, `ui-lint`, `ui-typecheck`, `ui-test`, `ui-build`, `ui-e2e`, plus `openapi` (writes `docs/openapi/<service>.json` from each app) and `openapi-check` / `ui-types-check` (fail on a stale snapshot, run by `make lint`). Once `ui/` exists, `make lint` and `make test` also run the UI's lint, type check, unit and component tests and the production build, so one command still gates everything. Node is a prerequisite from M8 on.
+`ui-install` (`npm ci`), `ui-dev`, `ui-types`, `ui-lint`, `ui-typecheck`, `ui-test`, `ui-build`, `ui-e2e`, `ui-fmt` (Prettier), `ui-art` and `ui-art-check` (the CloudPunk art), plus `openapi` (writes `docs/openapi/<service>.json` from each app) and `openapi-check` / `ui-types-check` (fail on a stale snapshot, run by `make lint`). Once `ui/` exists, `make lint` and `make test` also run the UI's lint, type check, unit and component tests and the production build, so one command still gates everything. Node is a prerequisite from M8 on.
 
 ### 15.8 Layout
 
@@ -962,10 +961,12 @@ ui/
 ├── Dockerfile, nginx.conf
 ├── src/
 │   ├── main.tsx, App.tsx
-│   ├── routes/        # catalog, product, basket, checkout, order, orders, demo
-│   ├── components/
-│   ├── api/           # client.ts (fetch wrapper, headers, error mapping), generated/ (types)
-│   ├── lib/           # money.ts, idempotency.ts, polling.ts, storage.ts, correlation.ts
+│   ├── routes/        # Collection (items, activity), Item, Account, Order, Demo, NotFound
+│   ├── components/    # Layout, PunkCard, PunkImage, StatePill, ActivityTable, Who, ErrorPanel, ...
+│   ├── api/           # client.ts (fetch wrapper, headers, error mapping), endpoints, hooks, generated/ (types)
+│   ├── lib/           # money, collection, idempotency, polling, storage, correlation, customer, time
+│   ├── assets/        # cloudpunks/ (the 100 SVGs, copied by make ui-art), cloudpunkArt.ts
+│   ├── test/          # MSW server, the in-memory market, render helper
 │   └── styles/
 ├── e2e/               # Playwright journeys
 └── README.md
@@ -1119,8 +1120,8 @@ Same rules as section 12: one at a time, `make lint test` (and itest, e2e when s
 - [x] **N3 — Ownership (inventory).** *(Built and approved 3 Oct 2026.)* `owner`, the two reservation modes, the new response field, `reset_owner`, `InventoryFailed.detail`. *Done when:* unit and integration tests, including the two-buyer race, pass and the guards are shown able to fail.
 - [x] **N4 — Listings, bids and activity (order-service).** *(Built and approved 3 Oct 2026.)* Migration 0002, `seller` on items, the listing and bid endpoints, settling in the consumer, `/activity`, `OrderCreated.seller`. *Done when:* unit, integration and `make e2e` pass with the new acceptance steps.
 - [x] **N5 — UI.** *(Built and approved 3 Oct 2026.)* The screens in 16.6, the old screens removed, component tests and browser journeys rewritten. *Done when:* `make lint test ui-e2e` pass; axe clean.
-- [x] **N6 — Local cluster and cloud.** *(Local cluster verified 3 Oct 2026; the cloud suite runs at the owner's next `app-deploy`.)* `make k8s-deploy k8s-e2e` pass; the cloud acceptance suite updated (it is run by `app-deploy` only when the owner chooses to deploy).
-- [ ] **N7 — Docs.** README, DESIGN.md sections 1 to 15 brought in line, the ADR notes, the OpenAPI baseline.
+- [x] **N6 — Local cluster and cloud.** *(Local cluster verified and approved 3 Oct 2026; the cloud suite runs at the owner's next `app-deploy`.)* `make k8s-deploy k8s-e2e` pass; the cloud acceptance suite updated (it is run by `app-deploy` only when the owner chooses to deploy).
+- [x] **N7 — Docs.** *(Done 3 Oct 2026; awaiting review.)* README, DESIGN.md sections 1 to 15 brought in line, the ADR notes, the OpenAPI baseline.
 
 ### 16.10 Settled with the owner (3 Oct 2026)
 
