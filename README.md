@@ -49,6 +49,20 @@ stateDiagram-v2
 
 The UI is a marketplace collection page: Items and Activity tabs, filters, a page per CloudPunk, **My CloudPunks**, and a customer menu in the header to switch between customers, so one browser can play buyer and seller. Every sale, bid and listing also produces an email (LocalStack keeps it locally; in dev it goes through SES). The art is generated into `nft-collection/` (`make cloudpunks`).
 
+## Screenshots
+
+The collection page: banner, stats and the status filter.
+
+![The CloudPunks collection page](docs/images/collection.png)
+
+The items grid, filtered by type, with an owned CloudPunk shown blue.
+
+![The items grid with filters](docs/images/items.png)
+
+A CloudPunk's page: owner, offers and item activity after a sale.
+
+![A CloudPunk page showing its offers and activity](docs/images/cloudpunk.png)
+
 ## Prerequisites
 
 - Docker with Compose (developed on OrbStack, Apple Silicon)
