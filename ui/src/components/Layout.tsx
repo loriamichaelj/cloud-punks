@@ -2,13 +2,12 @@ import { useEffect, useRef, useState, type SyntheticEvent } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router';
 import { artFor } from '../assets/cloudpunkArt';
 import { DEMO_TOOLS } from '../config';
-import { parseNumber } from '../lib/collection';
-import { useCustomer } from '../state';
+import { CustomerMenu } from './CustomerMenu';
+import { COLLECTION_FACE, parseNumber } from '../lib/collection';
 import layout from '../styles/layout.module.css';
 import { StateLegend } from './StatePill';
 
 export function Layout() {
-  const { customerId } = useCustomer();
   const location = useLocation();
   const navigate = useNavigate();
   const main = useRef<HTMLElement>(null);
@@ -44,7 +43,7 @@ export function Layout() {
         <div className={layout.headerInner}>
           <NavLink to="/" className={layout.brand}>
             <span className={layout.mark} aria-hidden="true">
-              <img src={artFor('CP-0001')} alt="" />
+              <img src={artFor(COLLECTION_FACE)} alt="" />
             </span>
             CloudPunks
           </NavLink>
@@ -69,14 +68,7 @@ export function Layout() {
             </NavLink>
             <NavLink to="/activity">Activity</NavLink>
             {DEMO_TOOLS && <NavLink to="/demo">Demo</NavLink>}
-            <NavLink
-              to="/account"
-              className={layout.wallet}
-              aria-label={`My CloudPunks (${customerId})`}
-            >
-              <span aria-hidden="true" className={layout.walletDot} />
-              {customerId}
-            </NavLink>
+            <CustomerMenu />
           </nav>
         </div>
       </header>

@@ -8,6 +8,7 @@ import {
   buyAs,
   cardFor,
   compose,
+  CUSTOMER_KEY,
   expectNoSeriousViolations,
   ownerOf,
   resetPunk,
@@ -26,6 +27,11 @@ test.afterAll(async ({ request }) => {
 
 test('browse the collection: 100 tiles by colour, filter and clear', async ({ page }) => {
   await page.goto('/');
+  await expect(page).toHaveTitle('CloudPunks');
+  const icon = await page.locator('link[rel="icon"]').getAttribute('href');
+  const favicon = await page.request.get(icon!);
+  expect(favicon.status()).toBe(200);
+  expect(favicon.headers()['content-type']).toContain('image/svg+xml');
   await expect(page.getByRole('heading', { name: 'CloudPunks', level: 1 })).toBeVisible();
   const cards = page.getByTestId('punk-card');
   await expect(cards).toHaveCount(100);
@@ -89,22 +95,21 @@ test('a resale end to end: put up for bid (purple), bid as someone else, accept'
   await page.goto('/');
   await expect(cardFor(page, 'CP-0092')).toHaveAttribute('data-state', 'bid');
 
-  // the demo page switches the customer, as a second person would
-  await page.goto('/demo');
-  await page.getByLabel('Customer id').fill(bob);
-  await page.getByRole('button', { name: 'Switch customer' }).click();
-  await expect(page.getByRole('status')).toContainText(`You are now ${bob}.`);
-  await expectNoSeriousViolations(page);
+  // the header menu creates a second person, then switches back: no page reload, no demo page
+  await page.getByTestId('customer-menu').click();
+  await page.getByLabel('New customer').fill(bob);
+  await expectNoSeriousViolations(page); // with the menu open
+  await page.getByRole('button', { name: 'Create' }).click();
+  await expect(page.getByTestId('customer-menu')).toHaveText(bob);
   await page.goto('/cloudpunks/0092');
   await page.getByLabel('Your offer (ETH)').fill('15.00');
   await page.getByRole('button', { name: 'Make offer' }).click();
   await expect(page.getByText('Offer placed.')).toBeVisible();
   await expectNoSeriousViolations(page);
 
-  await page.goto('/demo');
-  await page.getByLabel('Customer id').fill(alice);
-  await page.getByRole('button', { name: 'Switch customer' }).click();
-  await page.goto('/cloudpunks/0092');
+  await page.getByTestId('customer-menu').click();
+  await page.getByRole('button', { name: alice, exact: true }).click();
+  await expect(page.getByTestId('customer-menu')).toHaveText(alice);
   await page.getByRole('button', { name: 'Accept 15.00 ETH' }).click();
   await expect(page.getByText(/Bid accepted/)).toBeVisible();
 
@@ -196,6 +201,39 @@ test('a page at phone width has no horizontal scroll', async ({ page }) => {
       () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
     );
     expect(overflow, path).toBeLessThanOrEqual(0);
+  }
+});
+
+test('the customer menu opens inside the window at every width', async ({ page }) => {
+  // the page clips rather than scrolls, so measure the panel itself; a short name keeps the pill on
+  // the row with the links, a long one wraps it onto its own line
+  for (const [customer, width] of [
+    ['al', 360],
+    ['al', 390],
+    ['al', 430],
+    ['al', 600],
+    ['al', 860],
+    ['al', 1280],
+    ['cust-0123abcd', 390],
+    ['cust-0123abcd', 600],
+  ] as const) {
+    await page.setViewportSize({ width, height: 800 });
+    await page.goto('/');
+    await page.evaluate(
+      ({ key, id }) => {
+        window.localStorage.setItem(key, id);
+      },
+      { key: CUSTOMER_KEY, id: customer },
+    );
+    await page.reload();
+    await page.getByTestId('customer-menu').click();
+    const field = page.getByLabel('New customer');
+    await expect(field).toBeVisible();
+    const panel = await field.evaluate((el) =>
+      el.closest('details')!.lastElementChild!.getBoundingClientRect(),
+    );
+    expect(panel.left, `${width}px, ${customer}: left edge`).toBeGreaterThanOrEqual(0);
+    expect(panel.right, `${width}px, ${customer}: right edge`).toBeLessThanOrEqual(width);
   }
 });
 

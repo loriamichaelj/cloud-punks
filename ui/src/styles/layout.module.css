@@ -117,6 +117,132 @@
   background: linear-gradient(135deg, var(--state-bid), var(--state-unsold));
 }
 
+/* The customer menu: the pill is the summary of a <details>, the panel drops below it. */
+.customerMenu {
+  position: relative;
+}
+
+.customerMenu > summary {
+  cursor: pointer;
+  list-style: none;
+  color: var(--text);
+}
+
+.customerMenu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.customerMenu > summary::after {
+  content: '▾';
+  color: var(--muted);
+}
+
+.customerMenu[open] > summary {
+  border-color: var(--accent);
+}
+
+.menuPanel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 6;
+  width: min(340px, calc(100vw - 32px));
+  max-height: calc(100vh - 120px);
+  overflow-y: auto;
+  padding: 16px;
+  display: grid;
+  gap: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.menuPanel p {
+  margin: 0;
+}
+
+.nav .menuLink {
+  color: var(--text);
+}
+
+.menuHeading {
+  margin: 4px 0 0;
+  font-size: 0.875rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.customerList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.customerList li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.customerButton {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.875rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.customerButton:hover {
+  background: var(--surface-2);
+}
+
+.customerButton[aria-current='true'] {
+  border-color: var(--border);
+  background: var(--surface-2);
+}
+
+.forget {
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--muted);
+  font-size: 1.25rem;
+  cursor: pointer;
+}
+
+.forget:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.newCustomer {
+  display: grid;
+  gap: 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-weight: 700;
+}
+
+.newCustomer input {
+  flex: 1;
+  min-width: 0;
+}
+
 .main {
   flex: 1;
   width: 100%;
@@ -157,6 +283,22 @@
     flex-wrap: wrap;
     gap: 8px 14px;
     margin-left: 0;
+  }
+
+  /* Once the header wraps, the pill can sit anywhere along its row, so the panel hangs from the
+     header itself, under it at the left gutter, instead of from the pill. */
+  .headerInner {
+    position: relative;
+  }
+
+  .customerMenu {
+    position: static;
+  }
+
+  .menuPanel {
+    top: calc(100% - 4px);
+    left: 16px;
+    right: auto;
   }
 
   .main {

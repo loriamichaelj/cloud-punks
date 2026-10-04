@@ -34,6 +34,10 @@ export interface CloudPunk {
   lastSale: { amount: string; currency: string } | null;
 }
 
+/** The CloudPunk that stands for the collection: the header mark and the collection avatar (the
+ * tab icon, `src/assets/favicon.svg`, is drawn from the same one). */
+export const COLLECTION_FACE = 'CP-0023';
+
 const SKU = /^CP-(\d{4})$/;
 
 export function numberOf(sku: string): number | null {

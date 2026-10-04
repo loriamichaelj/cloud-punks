@@ -51,4 +51,7 @@ OpenAPI snapshot, stale generated types or a stale copy of the art.
 - Every `localStorage` access is in `src/lib/storage.ts` and wrapped in try/catch.
 - No inline script or style (tile colours come from `data-state` and CSS), no external requests, no
   `dangerouslySetInnerHTML` (the CSP forbids it).
-- `VITE_DEMO_TOOLS=true` enables `/demo`, which switches the customer id. Local builds only.
+- The customer pill in the header opens the customer menu: switch between the customers this
+  browser has acted as, create one (a name, or blank for a generated id) or forget one. Every
+  build has it; a customer id is a label, not a login.
+- `VITE_DEMO_TOOLS=true` enables `/demo`, which also switches the customer id. Local builds only.

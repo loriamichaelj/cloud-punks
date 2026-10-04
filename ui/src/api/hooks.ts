@@ -122,7 +122,6 @@ export function useCollection() {
       void catalog.refetch();
       void market.refetch();
     },
-    isFetching: market.isFetching,
   };
 }
 

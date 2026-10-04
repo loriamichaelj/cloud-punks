@@ -13,6 +13,7 @@ import {
   SORT_LABEL,
   STATE_LABEL,
   activeFilterCount,
+  COLLECTION_FACE,
   applyFilters,
   collectionStats,
   filtersFromSearch,
@@ -57,7 +58,7 @@ function CollectionHeader({ punks }: { punks: CloudPunk[] | undefined }) {
       </div>
       <div className={styles.identity}>
         <div className={styles.avatar}>
-          <PunkImage sku="CP-0001" state="unsold" size="card" />
+          <PunkImage sku={COLLECTION_FACE} state="unsold" size="card" />
         </div>
         <div>
           <h1 id="collection-name">CloudPunks</h1>
@@ -263,9 +264,10 @@ function Items({ collection }: { collection: ReturnType<typeof useCollection> })
               }}
             />
           </form>
+          {/* Only the count: the background refresh every 10 s stays invisible, so this line never
+              shifts or re-announces itself when nothing changed. */}
           <p className={styles.results} aria-live="polite" data-testid="result-count">
             {shown.length} {shown.length === 1 ? 'item' : 'items'}
-            {collection.isFetching ? <span className={ui.hint}> · updating</span> : null}
           </p>
           <label htmlFor="sort" className="visually-hidden">
             Sort by

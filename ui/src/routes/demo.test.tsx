@@ -3,7 +3,7 @@
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { CUSTOMER_KEY } from '../lib/customer';
+import { CUSTOMER_KEY, KNOWN_CUSTOMERS_KEY } from '../lib/customer';
 import { ME, marketHandlers, newMarket } from '../test/market';
 import { renderApp } from '../test/render';
 import { server } from '../test/server';
@@ -22,9 +22,11 @@ describe('demo tools', () => {
 
     await user.click(await screen.findByRole('button', { name: 'Be cust-bob' }));
 
-    expect(screen.getByRole('status')).toHaveTextContent('You are now cust-bob.');
-    expect(screen.getByRole('link', { name: 'My CloudPunks (cust-bob)' })).toBeInTheDocument();
+    expect(screen.getByText(/You are now cust-bob\./)).toBeInTheDocument();
+    expect(screen.getByTestId('customer-menu')).toHaveTextContent('cust-bob');
     expect(window.localStorage.getItem(CUSTOMER_KEY)).toBe('cust-bob');
+    // the header menu remembers both, to switch back
+    expect(JSON.parse(window.localStorage.getItem(KNOWN_CUSTOMERS_KEY)!)).toEqual([ME, 'cust-bob']);
   });
 
   it('refuses an id the API would refuse', async () => {

@@ -2,6 +2,7 @@
 // customer ME. What is checked is what a person sees and what the screens send.
 
 import { screen, waitFor, within } from '@testing-library/react';
+import { http } from 'msw';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { CUSTOMER_KEY } from '../lib/customer';
@@ -55,6 +56,26 @@ describe('the collection', () => {
 
     await user.click(screen.getByRole('button', { name: /Clear all filters/ }));
     expect(screen.getByTestId('result-count')).toHaveTextContent('4 items');
+  });
+
+  it('keeps the item count still while the market refreshes in the background', async () => {
+    const { client } = renderApp('/');
+    await screen.findAllByTestId('punk-card');
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // hold the refresh open, then let the market's own handler answer
+    server.use(http.get('*/api/v1/listings', () => gate.then(() => undefined)));
+
+    const refresh = client.refetchQueries({ queryKey: ['market'] });
+    await waitFor(() => {
+      expect(client.isFetching({ queryKey: ['market'] })).toBe(1);
+    });
+    expect(screen.getByTestId('result-count').textContent).toBe('4 items');
+    release();
+    await refresh;
+    expect(screen.getByTestId('result-count').textContent).toBe('4 items');
   });
 
   it('starts from the filters in the URL, sorts, and searches by number or trait', async () => {
