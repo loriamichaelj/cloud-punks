@@ -1,24 +1,22 @@
 import { Navigate, Route, Routes } from 'react-router';
 import { Layout } from './components/Layout';
 import { DEMO_TOOLS } from './config';
-import { BasketPage } from './routes/Basket';
-import { Catalog } from './routes/Catalog';
-import { CheckoutPage } from './routes/Checkout';
+import { AccountPage } from './routes/Account';
+import { CollectionPage } from './routes/Collection';
 import { DemoPage } from './routes/Demo';
+import { ItemPage } from './routes/Item';
 import { NotFound } from './routes/NotFound';
 import { OrderPage } from './routes/Order';
-import { OrdersPage } from './routes/Orders';
-import { ProductPage } from './routes/Product';
 
 export function App() {
   return (
     <Routes>
       <Route element={<Layout />}>
-        <Route index element={<Catalog />} />
-        <Route path="products/:sku" element={<ProductPage />} />
-        <Route path="basket" element={<BasketPage />} />
-        <Route path="checkout" element={<CheckoutPage />} />
-        <Route path="orders" element={<OrdersPage />} />
+        <Route index element={<CollectionPage tab="items" />} />
+        <Route path="activity" element={<CollectionPage tab="activity" />} />
+        <Route path="cloudpunks/:id" element={<ItemPage />} />
+        <Route path="account" element={<AccountPage />} />
+        <Route path="orders" element={<Navigate to="/account?tab=orders" replace />} />
         <Route path="orders/:id" element={<OrderPage />} />
         {DEMO_TOOLS ? <Route path="demo" element={<DemoPage />} /> : null}
         <Route path="home" element={<Navigate to="/" replace />} />

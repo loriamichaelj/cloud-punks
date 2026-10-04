@@ -1,39 +1,42 @@
 :root {
-  /* One light theme. Text on every surface is at least WCAG AA (axe checks it in the journeys). */
-  color-scheme: light;
-  --bg: #faf8ff;
-  --surface: #ffffff;
-  --surface-2: #f1eefc;
-  --text: #1c1b33;
-  --muted: #565a74;
-  --border: #e2def2;
-  --accent: #4f46e5;
-  --accent-strong: #3f37c9;
+  /* One dark theme, in the manner of an NFT marketplace. Text on every surface is at least WCAG
+     AA (axe checks it in the journeys). */
+  color-scheme: dark;
+  --bg: #121212;
+  --surface: #1b1b1d;
+  --surface-2: #242427;
+  --surface-3: #2e2e33;
+  --text: #f4f4f5;
+  --muted: #a6a6ad;
+  --border: #303036;
+  --accent: #1d64c8; /* white text on it is WCAG AA (5.6:1) */
+  --accent-strong: #1757b0;
   --accent-text: #ffffff;
-  --accent-soft: #eceafe;
-  --ok-bg: #d8f5e4;
-  --ok-text: #0a5a2c;
-  --warn-bg: #fff0c4;
-  --warn-text: #774600;
-  --bad-bg: #ffe1e5;
-  --bad-text: #a1122b;
-  --focus: #4f46e5;
+  --accent-soft: #19304f;
+  --link: #7ab3ff;
+  --ok-bg: #12351f;
+  --ok-text: #7ee2a2;
+  --warn-bg: #3a2c0c;
+  --warn-text: #f5c85a;
+  --bad-bg: #3d1418;
+  --bad-text: #ff9aa5;
+  --focus: #7ab3ff;
   --radius: 12px;
-  --radius-lg: 22px;
+  --radius-lg: 16px;
   --gap: 16px;
-  --shadow-sm: 0 1px 2px rgba(48, 36, 120, 0.06), 0 2px 8px rgba(48, 36, 120, 0.06);
-  --shadow-md: 0 10px 30px -10px rgba(48, 36, 120, 0.28);
-  --brand-gradient: linear-gradient(120deg, #4338ca 0%, #7e22ce 55%, #be185d 100%);
+  --shadow: 0 8px 30px -12px rgba(0, 0, 0, 0.7);
 
-  /* Category palette: tile tints, text ink (dark, for chips), solid (for filled pills). */
-  --cat-tint-a: #ece9f8;
-  --cat-tint-b: #f7f5fd;
-  --cat-ink: #46417a;
-  --cat-solid: #4f46e5;
+  /* The market states (DESIGN.md 16.1), measured from the owner's references. Tile colours sit
+     behind the art; the darker "ink" versions carry white text. */
+  --state-unsold: #855a53;
+  --state-bid: #8571ad;
+  --state-owned: #6f8392;
+  --state-unsold-ink: #7a4f48;
+  --state-bid-ink: #6a5893;
+  --state-owned-ink: #52667a;
 
   font-family:
-    ui-rounded,
-    'SF Pro Rounded',
+    Inter,
     system-ui,
     -apple-system,
     'Segoe UI',
@@ -41,42 +44,7 @@
     'Helvetica Neue',
     sans-serif;
   font-size: 16px;
-  line-height: 1.55;
-}
-
-[data-category='male'] {
-  --cat-tint-a: #d4e6ff;
-  --cat-tint-b: #e8f1ff;
-  --cat-ink: #1e40af;
-  --cat-solid: #1d4ed8;
-}
-
-[data-category='female'] {
-  --cat-tint-a: #ffe0ef;
-  --cat-tint-b: #ffeef6;
-  --cat-ink: #9d174d;
-  --cat-solid: #be185d;
-}
-
-[data-category='zombie'] {
-  --cat-tint-a: #d9f2d0;
-  --cat-tint-b: #ecf9e6;
-  --cat-ink: #3f6212;
-  --cat-solid: #4d7c0f;
-}
-
-[data-category='ape'] {
-  --cat-tint-a: #f3e3cf;
-  --cat-tint-b: #faf1e6;
-  --cat-ink: #78350f;
-  --cat-solid: #92400e;
-}
-
-[data-category='alien'] {
-  --cat-tint-a: #cff3f3;
-  --cat-tint-b: #e5fbfb;
-  --cat-ink: #0f5f63;
-  --cat-solid: #0e7490;
+  line-height: 1.5;
 }
 
 * {
@@ -87,14 +55,11 @@ body {
   margin: 0;
   min-height: 100vh;
   color: var(--text);
-  background:
-    radial-gradient(900px 420px at 92% -8%, #efe6ff 0, rgba(239, 230, 255, 0) 70%),
-    radial-gradient(800px 420px at -6% 4%, #ffe9de 0, rgba(255, 233, 222, 0) 65%), var(--bg);
-  background-repeat: no-repeat;
+  background: var(--bg);
 }
 
 a {
-  color: var(--accent-strong);
+  color: var(--link);
   text-underline-offset: 3px;
 }
 
@@ -117,7 +82,7 @@ h1 {
 }
 
 h2 {
-  font-size: 1.2rem;
+  font-size: 1.15rem;
   font-weight: 700;
 }
 
@@ -130,6 +95,21 @@ code {
   background: var(--surface-2);
   border-radius: 6px;
   padding: 1px 6px;
+}
+
+[data-state='unsold'] {
+  --tile: var(--state-unsold);
+  --ink: var(--state-unsold-ink);
+}
+
+[data-state='bid'] {
+  --tile: var(--state-bid);
+  --ink: var(--state-bid-ink);
+}
+
+[data-state='owned'] {
+  --tile: var(--state-owned);
+  --ink: var(--state-owned-ink);
 }
 
 .visually-hidden {

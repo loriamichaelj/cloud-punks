@@ -1,0 +1,119 @@
+.page {
+  display: grid;
+  grid-template-columns: minmax(280px, 5fr) 7fr;
+  gap: 32px;
+  padding-top: 28px;
+  align-items: start;
+}
+
+.left {
+  display: grid;
+  gap: var(--gap);
+}
+
+.media {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--tile);
+}
+
+.traits {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.trait {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  text-align: center;
+}
+
+.traitKind {
+  color: var(--muted);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.traitValue {
+  font-weight: 700;
+}
+
+.traitRarity {
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.right h1 {
+  font-size: 2.25rem;
+  margin-bottom: 8px;
+}
+
+.collectionLink {
+  margin: 0 0 4px;
+  font-weight: 700;
+}
+
+.ownerLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 20px;
+  color: var(--muted);
+}
+
+.pricePanel {
+  display: grid;
+  gap: 8px;
+}
+
+.priceLabel {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.bigPrice {
+  margin: 0 0 8px;
+  font-size: 2rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.confirm {
+  padding: 14px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.confirm p {
+  margin: 0 0 12px;
+}
+
+.offer {
+  display: grid;
+  gap: 8px;
+}
+
+@media (max-width: 960px) {
+  .page {
+    grid-template-columns: 1fr;
+    gap: 20px;
+  }
+
+  .right h1 {
+    font-size: 1.75rem;
+  }
+}

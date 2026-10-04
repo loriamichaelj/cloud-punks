@@ -1,422 +1,293 @@
+// Every screen against an in-memory market (src/test/market.ts) at the network boundary, as the
+// customer ME. What is checked is what a person sees and what the screens send.
+
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { http, HttpResponse } from 'msw';
-import { describe, expect, it } from 'vitest';
-import { BASKET_KEY } from '../lib/basket';
-import { ATTEMPT_KEY } from '../lib/idempotency';
-import { apiError, note, order, product } from '../test/fixtures';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { CUSTOMER_KEY } from '../lib/customer';
+import { CORRELATION_HEADER } from '../lib/correlation';
+import { ME, addBid, marketHandlers, newMarket, putUp, type Market } from '../test/market';
 import { renderApp } from '../test/render';
 import { server } from '../test/server';
 
-const categories = http.get('*/api/v1/categories', () =>
-  HttpResponse.json({
-    items: [
-      { slug: 'apparel', name: 'Apparel' },
-      { slug: 'footwear', name: 'Footwear' },
-    ],
-  }),
-);
+let market: Market;
 
-function availability(levels: Record<string, number>) {
-  return http.post('*/api/v1/inventory/availability', async ({ request }) => {
-    const body = (await request.json()) as { items: { sku: string; quantity: number }[] };
-    return HttpResponse.json({
-      available: body.items.every((i) => (levels[i.sku] ?? 0) >= i.quantity),
-      items: body.items.map((i) => ({
-        sku: i.sku,
-        requested: i.quantity,
-        available: levels[i.sku] ?? 0,
-        sufficient: (levels[i.sku] ?? 0) >= i.quantity,
-        reason: null,
-      })),
-    });
-  });
-}
+beforeEach(() => {
+  market = newMarket();
+  server.use(...marketHandlers(market));
+  window.localStorage.setItem(CUSTOMER_KEY, ME);
+});
 
-function seedBasket(quantity = 2) {
-  window.localStorage.setItem(
-    BASKET_KEY,
-    JSON.stringify([
-      { sku: 'SKU-A', name: 'Product SKU-A', unitPrice: '19.99', currency: 'USD', quantity },
-    ]),
-  );
-}
+const card = (sku: string) =>
+  screen.getAllByTestId('punk-card').find((c) => c.dataset.sku === sku)!;
+const sent = (method: string, path: string) =>
+  market.requests.filter((r) => r.method === method && r.path === `/api/v1${path}`);
 
-describe('catalog', () => {
-  it('lists products with stock badges and disables add-to-basket when out of stock', async () => {
-    server.use(
-      categories,
-      http.get('*/api/v1/products', () =>
-        HttpResponse.json({
-          items: [product('SKU-A'), product('SKU-B'), product('SKU-C')],
-          page: 1,
-          size: 20,
-          total: 3,
-        }),
-      ),
-      availability({ 'SKU-A': 50, 'SKU-B': 3, 'SKU-C': 0 }),
-    );
+// -- the collection -------------------------------------------------------------------------
+
+describe('the collection', () => {
+  it('shows every CloudPunk on the colour of its market state, with the header figures', async () => {
     renderApp('/');
 
-    const cards = await screen.findAllByRole('listitem');
-    expect(await within(cards[0]!).findByText('In stock')).toBeInTheDocument();
-    expect(await within(cards[1]!).findByText('Only 3 left')).toBeInTheDocument();
-    expect(await within(cards[2]!).findByText('Out of stock')).toBeInTheDocument();
-    expect(within(cards[2]!).getByRole('button', { name: /Add to basket/ })).toBeDisabled();
-    expect(within(cards[0]!).getByText('$19.99')).toBeInTheDocument();
+    await screen.findAllByTestId('punk-card');
+    expect(card('CP-0001').dataset.state).toBe('unsold');
+    expect(card('CP-0002').dataset.state).toBe('owned');
+    expect(card('CP-0003').dataset.state).toBe('bid');
+    expect(within(card('CP-0001')).getByText('31.43 ETH')).toBeInTheDocument();
+    expect(within(card('CP-0003')).getByText('Up for bid')).toBeInTheDocument();
+    expect(within(card('CP-0002')).getByText('Last sale 9.50 ETH')).toBeInTheDocument();
+    expect(within(card('CP-0002')).getByRole('link', { name: 'you' })).toBeInTheDocument();
+
+    const stats = screen.getByTestId('collection-stats');
+    expect(within(stats).getByText('31.43 ETH')).toBeInTheDocument(); // the floor: the cheapest unsold
+    expect(within(stats).getByText('Owners').closest('div')).toHaveTextContent('2'); // me and Bob
   });
 
-  it('asks for the right category and page, and shows pagination', async () => {
-    const seen: string[] = [];
-    server.use(
-      categories,
-      http.get('*/api/v1/products', ({ request }) => {
-        seen.push(new URL(request.url).search);
-        return HttpResponse.json({ items: [product('SKU-A')], page: 2, size: 20, total: 45 });
-      }),
-      availability({ 'SKU-A': 9 }),
-    );
+  it('filters by status, type and trait, and the URL keeps the filter', async () => {
     const user = userEvent.setup();
-    renderApp('/?category=footwear&page=2');
+    renderApp('/');
+    await screen.findAllByTestId('punk-card');
 
-    expect(await screen.findByText('Page 2 of 3')).toBeInTheDocument();
-    expect(seen[0]).toBe('?category=footwear&page=2&size=20');
-    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.click(screen.getByRole('checkbox', { name: /Buy now/ }));
+    expect(screen.getByTestId('result-count')).toHaveTextContent('2 items');
+    await user.click(screen.getByRole('checkbox', { name: /Zombie/ }));
+    expect(screen.getAllByTestId('punk-card').map((c) => c.dataset.sku)).toEqual(['CP-0004']);
+
+    await user.click(screen.getByRole('button', { name: /Clear all filters/ }));
+    expect(screen.getByTestId('result-count')).toHaveTextContent('4 items');
+  });
+
+  it('starts from the filters in the URL, sorts, and searches by number or trait', async () => {
+    const user = userEvent.setup();
+    renderApp('/?trait=Earring&sort=price-desc');
+    await screen.findAllByTestId('punk-card');
+
+    expect(screen.getAllByTestId('punk-card').map((c) => c.dataset.sku)).toEqual([
+      'CP-0004',
+      'CP-0001',
+      'CP-0003',
+    ]);
+    await user.selectOptions(screen.getByLabelText('Sort by'), 'number');
+    expect(screen.getAllByTestId('punk-card').map((c) => c.dataset.sku)).toEqual([
+      'CP-0001',
+      'CP-0003',
+      'CP-0004',
+    ]);
+
+    await user.type(screen.getByLabelText('Search the collection'), 'pipe{Enter}');
+    expect(screen.getAllByTestId('punk-card').map((c) => c.dataset.sku)).toEqual(['CP-0004']);
+  });
+
+  it('re-reads stock and listings on every visit, never serving them from a cache', async () => {
+    const user = userEvent.setup();
+    renderApp('/');
+    await screen.findAllByTestId('punk-card');
+    const reads = () => sent('POST', '/inventory/availability').length;
+    const before = reads();
+
+    market.stock.set('CP-0001', { available: 0, owner: 'cust-zed' }); // sold elsewhere
+    await user.click(within(card('CP-0004')).getAllByRole('link')[0]!); // to its page...
+    await screen.findByTestId('price-panel');
+    await user.click(screen.getAllByRole('link', { name: 'CloudPunks' })[0]!); // ...and back
+
     await waitFor(() => {
-      expect(seen.some((s) => s.includes('page=3'))).toBe(true);
+      expect(card('CP-0001').dataset.state).toBe('owned');
     });
+    expect(reads()).toBeGreaterThan(before);
   });
 
-  it('shows a retryable error with the correlation id when the catalog fails', async () => {
-    let fail = true;
-    server.use(
-      categories,
-      http.get('*/api/v1/products', () =>
-        fail
-          ? HttpResponse.json(apiError('STORE_UNAVAILABLE', 'temporarily unavailable', 'corr-77'), {
-              status: 503,
-            })
-          : HttpResponse.json({ items: [product('SKU-A')], page: 1, size: 20, total: 1 }),
-      ),
-      availability({ 'SKU-A': 9 }),
-    );
+  it('shows a failure with the server reference, and recovers on retry', async () => {
     const user = userEvent.setup();
+    market.failNext.set('POST /api/v1/inventory/availability', {
+      status: 500,
+      code: 'BOOM',
+      message: 'inventory fell over',
+    });
     renderApp('/');
 
     const panel = await screen.findByTestId('error-panel');
-    expect(panel).toHaveTextContent('Could not load the catalog');
-    expect(panel).toHaveTextContent('corr-77');
-    fail = false;
+    expect(panel).toHaveTextContent('inventory fell over');
+    expect(panel).toHaveTextContent('corr-from-server');
     await user.click(within(panel).getByRole('button', { name: 'Try again' }));
-    expect(await screen.findByText('Product SKU-A')).toBeInTheDocument();
+    expect(await screen.findAllByTestId('punk-card')).toHaveLength(4);
   });
 
-  it('never serves stock from cache: it is asked again when the page is shown again', async () => {
-    let calls = 0;
-    server.use(
-      categories,
-      http.get('*/api/v1/products', () =>
-        HttpResponse.json({ items: [product('SKU-A')], page: 1, size: 20, total: 1 }),
-      ),
-      http.post('*/api/v1/inventory/availability', () => {
-        calls += 1;
-        const available = calls === 1 ? 9 : 0;
-        return HttpResponse.json({
-          available: available > 0,
-          items: [
-            { sku: 'SKU-A', requested: 1, available, sufficient: available > 0, reason: null },
-          ],
-        });
-      }),
-      http.get('*/api/v1/products/SKU-A', () => HttpResponse.json(product('SKU-A'))),
-      http.get('*/api/v1/inventory/SKU-A', () =>
-        HttpResponse.json({
-          sku: 'SKU-A',
-          available: 9,
-          reserved: 0,
-          updated_at: '2026-10-01T12:00:00Z',
-        }),
-      ),
-    );
-    const user = userEvent.setup();
+  it('sends a correlation id with every request', async () => {
     renderApp('/');
-    expect(await screen.findByText('In stock')).toBeInTheDocument();
-
-    await user.click(screen.getByRole('link', { name: 'Product SKU-A' }));
-    await screen.findByRole('heading', { name: 'Product SKU-A', level: 1 });
-    await user.click(
-      within(screen.getByRole('navigation', { name: 'Main' })).getByRole('link', {
-        name: 'Catalog',
-      }),
+    await screen.findAllByTestId('punk-card');
+    expect(market.requests.length).toBeGreaterThan(3);
+    expect(market.requests.every((r) => (r.headers.get(CORRELATION_HEADER) ?? '').length > 0)).toBe(
+      true,
     );
+  });
 
-    expect(await screen.findByText('Out of stock')).toBeInTheDocument();
-    expect(calls).toBe(2);
+  it('lists the activity with who it came from and went to', async () => {
+    renderApp('/activity');
+    const table = await screen.findByTestId('activity-table');
+    const row = within(table).getByText('Sale').closest('tr')!;
+    expect(row).toHaveTextContent('CloudPunk #0002');
+    expect(row).toHaveTextContent('9.50 ETH');
+    expect(row).toHaveTextContent('CloudPunks'); // from the platform
   });
 });
 
-describe('basket', () => {
-  it('shows an estimate, warns about short stock and lets the quantity change', async () => {
-    seedBasket(5);
-    server.use(availability({ 'SKU-A': 2 }));
+// -- a CloudPunk ----------------------------------------------------------------------------
+
+describe('a CloudPunk', () => {
+  it('unsold: shows the price and buys it after a confirm step, then follows the order', async () => {
     const user = userEvent.setup();
-    renderApp('/basket');
+    renderApp('/cloudpunks/0001');
 
-    expect(await screen.findByText('Estimated total: $99.95')).toBeInTheDocument();
-    expect(await screen.findByText('Only 2 available')).toBeInTheDocument();
-    expect(screen.getByRole('alert')).toHaveTextContent('may not be available');
-
-    const qty = screen.getByLabelText('Quantity for Product SKU-A');
-    await user.clear(qty);
-    await user.type(qty, '2');
-    expect(await screen.findByText('Estimated total: $39.98')).toBeInTheDocument();
-    const stored = JSON.parse(window.localStorage.getItem(BASKET_KEY) ?? '[]') as {
-      quantity: number;
-    }[];
-    expect(stored[0]?.quantity).toBe(2);
-  });
-
-  it('starts empty when the stored basket is corrupt', async () => {
-    window.localStorage.setItem(BASKET_KEY, 'not json');
-    renderApp('/basket');
-    expect(await screen.findByText('Your basket is empty.')).toBeInTheDocument();
-  });
-});
-
-describe('checkout', () => {
-  const createdOrder = order({ order_id: '01J9Z6R0C4BBBBBBBBBBBBBBBB' });
-
-  function orderRoutes() {
-    return [
-      http.get('*/api/v1/orders/01J9Z6R0C4BBBBBBBBBBBBBBBB', () => HttpResponse.json(createdOrder)),
-      http.get('*/api/v1/notifications', () => HttpResponse.json({ items: [] })),
-    ];
-  }
-
-  it('places the order with an idempotency key and a correlation id, then opens it', async () => {
-    seedBasket(2);
-    let headers: Headers | undefined;
-    let body: unknown;
-    server.use(
-      ...orderRoutes(),
-      http.post('*/api/v1/orders', async ({ request }) => {
-        headers = request.headers;
-        body = await request.json();
-        return HttpResponse.json(createdOrder, { status: 202 });
-      }),
-    );
-    const user = userEvent.setup();
-    renderApp('/checkout');
-
-    expect(screen.getByRole('button', { name: 'Place order (demo, no payment)' })).toBeEnabled();
-    await user.click(screen.getByRole('button', { name: 'Place order (demo, no payment)' }));
-
-    expect(
-      await screen.findByRole('heading', { name: /Order 01J9Z6R0C4BBBBBBBBBBBBBBBB/ }),
-    ).toBeInTheDocument();
-    expect(headers?.get('idempotency-key')).toMatch(/^[0-9a-f-]{36}$/);
-    expect(headers?.get('x-correlation-id')).toBeTruthy();
-    expect(body).toMatchObject({ items: [{ sku: 'SKU-A', quantity: 2 }] });
-    expect(window.localStorage.getItem(BASKET_KEY)).toBe('[]'); // the basket is spent
-    expect(window.localStorage.getItem(ATTEMPT_KEY)).toBeNull(); // so is the attempt
-  });
-
-  it('reuses the same key when the user retries after a failure', async () => {
-    seedBasket(1);
-    const keys: string[] = [];
-    let fail = true;
-    server.use(
-      ...orderRoutes(),
-      http.post('*/api/v1/orders', ({ request }) => {
-        keys.push(request.headers.get('idempotency-key') ?? '');
-        return fail ? HttpResponse.error() : HttpResponse.json(createdOrder, { status: 200 }); // a replay is success too
-      }),
-    );
-    const user = userEvent.setup();
-    renderApp('/checkout');
-    await user.click(screen.getByRole('button', { name: 'Place order (demo, no payment)' }));
-
-    const panel = await screen.findByTestId('error-panel');
-    expect(panel).toHaveTextContent('could not be reached');
-    expect(panel).toHaveTextContent('connection problem, not a server error');
-    fail = false;
-    await user.click(within(panel).getByRole('button', { name: 'Try again' }));
-
-    expect(await screen.findByRole('heading', { name: /Order 01J9/ })).toBeInTheDocument();
-    expect(keys).toHaveLength(2);
-    expect(keys[1]).toBe(keys[0]);
-  });
-
-  it('shows the server message for an out-of-stock order and links back to the basket', async () => {
-    seedBasket(5);
-    server.use(
-      http.post('*/api/v1/orders', () =>
-        HttpResponse.json(apiError('OUT_OF_STOCK', 'SKU-A: requested 5, available 1', 'corr-409'), {
-          status: 409,
-        }),
-      ),
-    );
-    const user = userEvent.setup();
-    renderApp('/checkout');
-    await user.click(screen.getByRole('button', { name: 'Place order (demo, no payment)' }));
-
-    const panel = await screen.findByTestId('error-panel');
-    expect(panel).toHaveTextContent('SKU-A: requested 5, available 1');
-    expect(panel).toHaveTextContent('corr-409');
-    expect(within(panel).getByRole('link', { name: 'Back to the basket' })).toBeInTheDocument();
-    expect(within(panel).queryByRole('button', { name: 'Try again' })).toBeNull();
-  });
-
-  it('marks the lines the server says are unknown', async () => {
-    seedBasket(1);
-    server.use(
-      http.post('*/api/v1/orders', () =>
-        HttpResponse.json(apiError('UNKNOWN_PRODUCT', 'unknown product(s): SKU-A'), {
-          status: 422,
-        }),
-      ),
-    );
-    const user = userEvent.setup();
-    renderApp('/checkout');
-    await user.click(screen.getByRole('button', { name: 'Place order (demo, no payment)' }));
-
-    expect(await screen.findByText(/no longer available/)).toBeInTheDocument();
-  });
-
-  it('keeps retrying a 503 with the same key, then offers a button', async () => {
-    seedBasket(1);
-    const keys: string[] = [];
-    server.use(
-      http.post('*/api/v1/orders', ({ request }) => {
-        keys.push(request.headers.get('idempotency-key') ?? '');
-        return HttpResponse.json(apiError('STORE_UNAVAILABLE', 'later'), {
-          status: 503,
-          headers: { 'Retry-After': '0' }, // no wait in the test
-        });
-      }),
-    );
-    const user = userEvent.setup();
-    renderApp('/checkout');
-    await user.click(screen.getByRole('button', { name: 'Place order (demo, no payment)' }));
-
-    await screen.findByTestId('error-panel', undefined, { timeout: 15_000 });
-    expect(keys).toHaveLength(4); // the first try and 3 automatic retries
-    expect(new Set(keys).size).toBe(1);
-  }, 20_000);
-
-  it('rejects an invalid customer id before calling the API', async () => {
-    seedBasket(1);
-    const user = userEvent.setup();
-    renderApp('/checkout');
-    const input = screen.getByLabelText(/Customer id/);
-    await user.clear(input);
-    await user.type(input, 'has space');
-    expect(screen.getByRole('button', { name: 'Place order (demo, no payment)' })).toBeDisabled();
-  });
-});
-
-describe('order tracking', () => {
-  const id = '01J9Z6R0C4AAAAAAAAAAAAAAAA';
-
-  it('shows a rejected order with its reason, snapshotted prices, the authoritative total and notifications', async () => {
-    server.use(
-      http.get(`*/api/v1/orders/${id}`, () =>
-        HttpResponse.json(order({ status: 'REJECTED', status_reason: 'OUT_OF_STOCK' })),
-      ),
-      http.get('*/api/v1/notifications', () =>
-        HttpResponse.json({
-          items: [
-            note(
-              'InventoryFailed',
-              'We could not reserve stock for order X: some items are out of stock.',
-              'N1',
-            ),
-            note('OrderStatusUpdated', 'Your order X was rejected (OUT_OF_STOCK).', 'N2'),
-          ],
-        }),
-      ),
-    );
-    renderApp(`/orders/${id}`);
-
-    const status = await screen.findByTestId('order-status');
-    expect(status).toHaveAttribute('data-status', 'REJECTED');
-    expect(screen.getByText('OUT_OF_STOCK', { selector: 'code' })).toBeInTheDocument();
-    expect(
-      screen.getByText((_, el) => el?.tagName === 'STRONG' && el.textContent === 'Total: $39.98'),
-    ).toBeInTheDocument();
-    expect(screen.getByText('$19.99')).toBeInTheDocument();
-    expect(await screen.findByText(/could not reserve stock/)).toBeInTheDocument();
-    expect(screen.getByText(/was rejected \(OUT_OF_STOCK\)/)).toBeInTheDocument();
-  });
-
-  it('polls a PENDING order until it is CONFIRMED', async () => {
-    let calls = 0;
-    server.use(
-      http.get(`*/api/v1/orders/${id}`, () => {
-        calls += 1;
-        return HttpResponse.json(order({ status: calls < 3 ? 'PENDING' : 'CONFIRMED' }));
-      }),
-      http.get('*/api/v1/notifications', () => HttpResponse.json({ items: [] })),
-    );
-    renderApp(`/orders/${id}`);
+    expect(await screen.findByTestId('current-price')).toHaveTextContent('31.43 ETH');
+    expect(screen.getByText('Mohawk Thin')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Buy now' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm purchase' }));
 
     expect(await screen.findByTestId('order-status')).toHaveAttribute('data-status', 'PENDING');
+    const [post] = sent('POST', '/orders');
+    expect(post?.body).toEqual({ customer_id: ME, items: [{ sku: 'CP-0001', quantity: 1 }] });
+    expect(post?.headers.get('Idempotency-Key')).toBeTruthy();
+  });
+
+  it('unsold: a failed purchase keeps its Idempotency-Key, so retrying cannot buy twice', async () => {
+    const user = userEvent.setup();
+    market.failNext.set('POST /api/v1/orders', {
+      status: 409,
+      code: 'OUT_OF_STOCK',
+      message: 'CP-0001: requested 1, available 0',
+    });
+    renderApp('/cloudpunks/0001?buy=1');
+
+    await user.click(await screen.findByRole('button', { name: 'Confirm purchase' }));
+    expect(await screen.findByTestId('error-panel')).toHaveTextContent('requested 1, available 0');
+    await user.click(screen.getByRole('button', { name: 'Confirm purchase' }));
+
+    await screen.findByTestId('order-status');
+    const keys = sent('POST', '/orders').map((r) => r.headers.get('Idempotency-Key'));
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBe(keys[1]);
+  });
+
+  it('owned by me: puts it up for bid', async () => {
+    const user = userEvent.setup();
+    renderApp('/cloudpunks/0002');
+
+    await user.click(await screen.findByRole('button', { name: 'Put up for bid' }));
+
+    await waitFor(() => {
+      expect(sent('POST', '/listings')[0]?.body).toEqual({ customer_id: ME, sku: 'CP-0002' });
+    });
+    expect(await screen.findByRole('button', { name: 'Take off the market' })).toBeInTheDocument();
+  });
+
+  it('owned by someone else and not listed: nothing to do', async () => {
+    market.stock.set('CP-0004', { available: 0, owner: 'cust-zed' });
+    renderApp('/cloudpunks/0004');
+    expect(await screen.findByText('Only its owner can put it up for bid.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Buy now|Make offer|Put up/ })).toBeNull();
+  });
+
+  it('up for bid by someone else: refuses a bad amount and places a good one as a string', async () => {
+    const user = userEvent.setup();
+    addBid(market, 'CP-0003', 'cust-carol', '18.00');
+    renderApp('/cloudpunks/0003');
+
+    expect(await screen.findByText('Top bid, by cust-carol')).toBeInTheDocument();
+    const input = screen.getByLabelText('Your offer (ETH)');
+    await user.type(input, '12.345');
+    await user.click(screen.getByRole('button', { name: 'Make offer' }));
+    expect(screen.getByText(/at most two decimals/)).toBeInTheDocument();
+    expect(sent('POST', '/bids')).toHaveLength(0);
+
+    await user.clear(input);
+    await user.type(input, '25.5');
+    await user.click(screen.getByRole('button', { name: 'Make offer' }));
+
+    expect(await screen.findByText(/Offer placed/)).toBeInTheDocument();
+    const [post] = sent('POST', '/bids');
+    expect(post?.body).toEqual({ customer_id: ME, sku: 'CP-0003', amount: '25.5' });
+    expect(post?.headers.get('Idempotency-Key')).toBeTruthy();
+  });
+
+  it('up for bid by me: accepts a bid and can take it off the market', async () => {
+    const user = userEvent.setup();
+    putUp(market, 'CP-0002', ME);
+    addBid(market, 'CP-0002', 'cust-carol', '14.00');
+    renderApp('/cloudpunks/0002');
+
+    const offers = await screen.findByTestId('offers-table');
+    expect(screen.getByRole('button', { name: 'Take off the market' })).toBeInTheDocument();
+    await user.click(within(offers).getByRole('button', { name: 'Accept 14.00 ETH' }));
+
+    expect(await screen.findByText(/Bid accepted/)).toBeInTheDocument();
+    expect(sent('POST', `/bids/${market.bids[0]!.bid_id}/accept`)[0]?.body).toEqual({
+      customer_id: ME,
+    });
+    expect(await screen.findByText('Sale being confirmed')).toBeInTheDocument();
+  });
+
+  it('up for bid by me: taking it off sends the owner and turns it blue', async () => {
+    const user = userEvent.setup();
+    putUp(market, 'CP-0002', ME);
+    renderApp('/cloudpunks/0002');
+
+    await user.click(await screen.findByRole('button', { name: 'Take off the market' }));
+
+    await waitFor(() => {
+      expect(sent('DELETE', '/listings/CP-0002')[0]?.search.get('customer_id')).toBe(ME);
+    });
+    expect(await screen.findByRole('button', { name: 'Put up for bid' })).toBeInTheDocument();
+  });
+
+  it('withdraws my own open bid', async () => {
+    const user = userEvent.setup();
+    const bid = addBid(market, 'CP-0003', ME, '21.00');
+    renderApp('/cloudpunks/0003');
+
+    await user.click(await screen.findByRole('button', { name: 'Withdraw 21.00 ETH' }));
+
+    await waitFor(() => {
+      expect(sent('DELETE', `/bids/${bid.bid_id}`)).toHaveLength(1);
+    });
+    expect(await screen.findByText('withdrawn')).toBeInTheDocument();
+  });
+
+  it('is not found for a number outside the collection', async () => {
+    renderApp('/cloudpunks/0101');
+    expect(await screen.findByRole('heading', { name: 'Page not found' })).toBeInTheDocument();
+  });
+});
+
+// -- my CloudPunks and orders ---------------------------------------------------------------
+
+describe('my CloudPunks', () => {
+  it('lists what I own, my bids and my orders', async () => {
+    const user = userEvent.setup();
+    addBid(market, 'CP-0003', ME, '21.00');
+    renderApp('/account');
+
+    expect(await screen.findByText('CloudPunk #0002')).toBeInTheDocument();
+    expect(screen.queryByText('CloudPunk #0001')).toBeNull();
+    await user.click(screen.getByRole('link', { name: 'Bids' }));
+    expect(await screen.findByText('21.00 ETH')).toBeInTheDocument();
+    await user.click(screen.getByRole('link', { name: 'Orders' }));
+    expect(await screen.findByText('No orders yet.')).toBeInTheDocument();
+  });
+
+  it('says what a confirmed order means', async () => {
+    renderApp('/cloudpunks/0001?buy=1');
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Confirm purchase' }));
+    await screen.findByTestId('order-status');
+    market.orders[0]!.status = 'CONFIRMED';
+
     await waitFor(
       () => {
-        expect(screen.getByTestId('order-status')).toHaveAttribute('data-status', 'CONFIRMED');
+        expect(screen.getByTestId('order-status')).toHaveTextContent(
+          'You now own CloudPunk #0001.',
+        );
       },
-      { timeout: 8000 },
+      { timeout: 3000 },
     );
-    const settled = calls;
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    expect(calls).toBe(settled); // polling stopped at the terminal status
-  }, 15_000);
-
-  it('shows an error panel for an order that does not exist', async () => {
-    server.use(
-      http.get(`*/api/v1/orders/${id}`, () =>
-        HttpResponse.json(apiError('ORDER_NOT_FOUND', "order 'x' not found"), { status: 404 }),
-      ),
-      http.get('*/api/v1/notifications', () => HttpResponse.json({ items: [] })),
-    );
-    renderApp(`/orders/${id}`);
-    expect(await screen.findByTestId('error-panel')).toHaveTextContent('not found');
-  });
-});
-
-describe('my orders', () => {
-  it('lists the customer’s orders, newest first, from the API', async () => {
-    let queried = '';
-    server.use(
-      http.get('*/api/v1/orders', ({ request }) => {
-        queried = new URL(request.url).search;
-        return HttpResponse.json({
-          items: [order({ order_id: '01J9Z6R0C4CCCCCCCCCCCCCCCC', status: 'CONFIRMED' })],
-          page: 1,
-          size: 20,
-          total: 1,
-        });
-      }),
-    );
-    window.localStorage.setItem('retail.customer.v1', 'cust-test');
-    renderApp('/orders');
-
-    expect(
-      await screen.findByRole('link', { name: '01J9Z6R0C4CCCCCCCCCCCCCCCC' }),
-    ).toBeInTheDocument();
-    expect(queried).toBe('?customer_id=cust-test&page=1&size=20');
-    expect(screen.getByText('CONFIRMED')).toBeInTheDocument();
-  });
-});
-
-describe('unknown routes and demo tools', () => {
-  it('shows a not-found page', async () => {
-    renderApp('/nope');
-    expect(await screen.findByRole('heading', { name: 'Page not found' })).toBeInTheDocument();
-  });
-
-  it('has no demo tools route unless the build enables them', async () => {
-    renderApp('/demo');
-    expect(await screen.findByRole('heading', { name: 'Page not found' })).toBeInTheDocument();
   });
 });

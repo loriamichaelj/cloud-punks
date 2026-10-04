@@ -3,7 +3,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router';
 import { App } from './App';
-import { BasketProvider, CustomerProvider } from './state';
+import { CustomerProvider } from './state';
 import './styles/global.css';
 
 const client = new QueryClient();
@@ -15,9 +15,7 @@ createRoot(root).render(
     <QueryClientProvider client={client}>
       <BrowserRouter>
         <CustomerProvider>
-          <BasketProvider>
-            <App />
-          </BasketProvider>
+          <App />
         </CustomerProvider>
       </BrowserRouter>
     </QueryClientProvider>

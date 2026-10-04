@@ -16,7 +16,7 @@ export IMAGE_TAG
 
 RUN = uv run --frozen --no-sync
 
-.PHONY: rules-test k8s-monitoring help lock sync fmt lint test itest e2e drills drill-consumer-down drill-poison drill-duplicate drill-bus-down drill-cache-down drill-db-down dlq-peek dlq-redrive obs-up obs-down k8s-lint k8s-build k8s-build-multiarch k8s-secrets k8s-ingress k8s-deploy k8s-e2e k8s-resilience k8s-rollback k8s-down up down reset logs seed openapi ui-install ui-dev ui-types ui-lint ui-typecheck ui-test ui-build ui-e2e ui-types-check openapi-check cloudpunks cloudpunks-check ui-art ui-art-check
+.PHONY: rules-test k8s-monitoring help lock sync fmt lint test itest e2e drills drill-consumer-down drill-poison drill-duplicate drill-bus-down drill-cache-down drill-db-down dlq-peek dlq-redrive obs-up obs-down k8s-lint k8s-build k8s-build-multiarch k8s-secrets k8s-ingress k8s-deploy k8s-e2e k8s-resilience k8s-rollback k8s-down up down reset logs seed openapi ui-install ui-dev ui-types ui-lint ui-typecheck ui-test ui-build ui-e2e ui-types-check openapi-check cloudpunks cloudpunks-check ui-art ui-art-check ui-fmt
 
 help:
 	@echo "Targets: lock sync fmt lint test itest e2e up down reset logs s=<service> seed openapi cloudpunks ui-*"
@@ -302,6 +302,9 @@ ui-types: ui/node_modules
 
 ui-types-check: ui/node_modules
 	cd ui && npm run types:check
+
+ui-fmt: ui/node_modules
+	cd ui && npm run format
 
 ui-lint: ui/node_modules
 	cd ui && npm run lint

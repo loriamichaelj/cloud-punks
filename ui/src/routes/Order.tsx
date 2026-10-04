@@ -2,20 +2,27 @@ import { Link, useParams } from 'react-router';
 import { useGaveUp, useNotifications, useOrder } from '../api/hooks';
 import { ErrorPanel } from '../components/ErrorPanel';
 import { Loading } from '../components/Loading';
-import { ProductImage } from '../components/ProductImage';
-import { Price, formatPrice } from '../components/Price';
-import { minorToDecimal, parseMinor, timesMinor } from '../lib/money';
+import { formatPrice } from '../components/Price';
+import { PunkImage } from '../components/PunkImage';
+import { Who } from '../components/Who';
+import { numberOf } from '../lib/collection';
 import { isTerminal } from '../lib/polling';
+import { useCustomer } from '../state';
 import ui from '../styles/ui.module.css';
 import styles from './order.module.css';
 
 const REASONS: Record<string, string> = {
-  OUT_OF_STOCK: 'Some items ran out of stock before they could be reserved.',
-  UNKNOWN_SKU: 'An item in the order is no longer sold.',
+  OUT_OF_STOCK: 'Someone else got it first: it is no longer for sale by its seller.',
+  UNKNOWN_SKU: 'This item is no longer sold.',
 };
 
+const itemName = (sku: string) =>
+  numberOf(sku) === null ? sku : sku.replace('CP-', 'CloudPunk #');
+
+/** One order, followed until inventory moves the CloudPunk (CONFIRMED) or cannot (REJECTED). */
 export function OrderPage() {
   const { id = '' } = useParams();
+  const { customerId } = useCustomer();
   const order = useOrder(id);
   const notifications = useNotifications(id, order.data?.status);
   const gaveUp = useGaveUp(order.data?.status);
@@ -30,32 +37,56 @@ export function OrderPage() {
           void order.refetch();
         }}
       >
-        <Link to="/orders">My orders</Link>
+        <Link to="/account?tab=orders">My orders</Link>
       </ErrorPanel>
     );
   }
 
   const o = order.data;
+  const item = o.items[0];
   const terminal = isTerminal(o.status);
+  const buyer = o.customer_id === customerId ? 'You' : o.customer_id;
   const statusText =
     o.status === 'CONFIRMED'
-      ? 'Confirmed: your items are reserved.'
+      ? `${buyer} now own${buyer === 'You' ? '' : 's'} ${item ? itemName(item.sku) : 'it'}.`
       : o.status === 'REJECTED'
-        ? `Rejected. ${REASONS[o.status_reason ?? ''] ?? o.status_reason ?? ''}`
-        : 'Pending: waiting for the warehouse to reserve your items.';
+        ? (REASONS[o.status_reason ?? ''] ?? o.status_reason ?? 'The order was rejected.')
+        : 'Waiting for the transfer to be confirmed.';
 
   return (
-    <>
+    <div className={styles.page}>
       <p>
-        <Link to="/orders">← My orders</Link>
+        <Link to="/account?tab=orders">← My orders</Link>
       </p>
-      <h1>Order {o.order_id}</h1>
+      <div className={styles.head}>
+        {item && (
+          <PunkImage
+            sku={item.sku}
+            state={o.status === 'CONFIRMED' ? 'owned' : undefined}
+            size="card"
+          />
+        )}
+        <div>
+          <h1>{item ? itemName(item.sku) : 'Order'}</h1>
+          <p className={ui.muted}>
+            Order <span className={ui.correlation}>{o.order_id}</span>
+          </p>
+          <p className={styles.total}>{formatPrice(o.total_amount, o.currency)}</p>
+          {item && (
+            <p className={ui.muted}>
+              Bought by <Who id={o.customer_id} /> from <Who id={item.seller ?? null} />
+            </p>
+          )}
+        </div>
+      </div>
 
       <section className={ui.panel} aria-labelledby="status-heading">
-        <h2 id="status-heading">Status</h2>
+        <h2 id="status-heading" className={ui.panelTitle}>
+          Status
+        </h2>
         <ol className={styles.timeline} aria-label="Order progress">
           <li className={`${styles.step} ${styles.done}`}>Placed</li>
-          <li className={`${styles.step} ${styles.done}`}>Processing</li>
+          <li className={`${styles.step} ${styles.done}`}>Transferring</li>
           <li
             className={`${styles.step} ${terminal ? styles.done : ''} ${
               o.status === 'REJECTED'
@@ -77,20 +108,25 @@ export function OrderPage() {
           aria-live="polite"
           data-testid="order-status"
           data-status={o.status}
-          className={`${styles.banner} ${
+          className={`${ui.alert} ${
             o.status === 'CONFIRMED'
-              ? styles.bannerConfirmed
+              ? ui.alertOk
               : o.status === 'REJECTED'
-                ? styles.bannerRejected
-                : styles.bannerPending
+                ? ui.alertError
+                : ui.alertInfo
           }`}
         >
           <strong>{o.status}</strong>
           <span className="visually-hidden">. </span> {statusText}
         </p>
         {o.status === 'REJECTED' && o.status_reason && (
+          <p className={ui.hint}>
+            Reason code: <code>{o.status_reason}</code>
+          </p>
+        )}
+        {o.status === 'CONFIRMED' && item && (
           <p>
-            Reason: <code>{o.status_reason}</code>
+            <Link to={`/cloudpunks/${item.sku.slice(3)}`}>View {itemName(item.sku)}</Link>
           </p>
         )}
         {gaveUp && (
@@ -100,73 +136,23 @@ export function OrderPage() {
         )}
       </section>
 
-      <section className={ui.panel} aria-labelledby="items-heading">
-        <h2 id="items-heading">Items</h2>
-        <div className={ui.tableWrap}>
-          <table className={ui.table}>
-            <thead>
-              <tr>
-                <th scope="col">SKU</th>
-                <th scope="col" className={ui.num}>
-                  Quantity
-                </th>
-                <th scope="col" className={ui.num}>
-                  Unit price
-                </th>
-                <th scope="col" className={ui.num}>
-                  Line total
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {o.items.map((item) => (
-                <tr key={item.sku}>
-                  <td>
-                    <div className={ui.lineItem}>
-                      <ProductImage sku={item.sku} size="thumb" />
-                      {item.sku}
-                    </div>
-                  </td>
-                  <td className={ui.num}>{item.quantity}</td>
-                  <td className={ui.num}>
-                    <Price value={item.unit_price} currency={o.currency} />
-                  </td>
-                  <td className={ui.num}>
-                    {formatPrice(
-                      minorToDecimal(timesMinor(parseMinor(item.unit_price), item.quantity)),
-                      o.currency,
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <p>
-          <strong>
-            Total: <Price value={o.total_amount} currency={o.currency} />
-          </strong>{' '}
-          <span className={ui.hint}>(unit prices were fixed when the order was placed)</span>
-        </p>
-        <p className={ui.hint}>
-          Customer {o.customer_id} · placed {new Date(o.created_at).toLocaleString()}
-        </p>
-      </section>
-
       <section className={ui.panel} aria-labelledby="notes-heading">
-        <h2 id="notes-heading">Notifications</h2>
+        <h2 id="notes-heading" className={ui.panelTitle}>
+          Notifications
+        </h2>
         {notifications.isError && <p className={ui.fieldError}>Could not load notifications.</p>}
         {notifications.data?.items.length === 0 && (
           <p className={ui.muted}>None yet. They arrive a moment after each step.</p>
         )}
-        <ul>
+        <ul className={styles.notes}>
           {notifications.data?.items.map((n) => (
             <li key={n.event_id}>
               {n.message} <span className={ui.hint}>({n.type})</span>
             </li>
           ))}
         </ul>
+        <p className={ui.hint}>Placed {new Date(o.created_at).toLocaleString()}</p>
       </section>
-    </>
+    </div>
   );
 }

@@ -1,0 +1,75 @@
+.card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.card:hover,
+.card:focus-within {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow);
+}
+
+.link {
+  display: flex;
+  flex-direction: column;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.body {
+  display: grid;
+  gap: 2px;
+  padding: 12px 14px 8px;
+}
+
+.name {
+  font-weight: 700;
+  font-size: 0.9375rem;
+}
+
+.price {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.meta,
+.owner {
+  color: var(--muted);
+  font-size: 0.8125rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.owner {
+  margin: 0;
+  padding: 0 14px 14px;
+}
+
+.action {
+  margin: 0 10px 10px;
+  min-height: 38px;
+  padding: 6px 12px;
+  font-size: 0.875rem;
+}
+
+/* On a pointer device the button appears on hover, as on a marketplace; it is always there for
+   keyboards (focus-within) and touch screens. */
+@media (hover: hover) {
+  .action {
+    opacity: 0;
+  }
+
+  .card:hover .action,
+  .card:focus-within .action {
+    opacity: 1;
+  }
+}

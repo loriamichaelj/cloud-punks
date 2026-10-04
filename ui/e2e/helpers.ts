@@ -2,6 +2,8 @@ import { execFileSync } from 'node:child_process';
 import AxeBuilder from '@axe-core/playwright';
 import { expect, type APIRequestContext, type Page } from '@playwright/test';
 
+export const CUSTOMER_KEY = 'retail.customer.v1';
+
 export function compose(...args: string[]): void {
   const command = process.env.E2E_COMPOSE;
   if (!command) throw new Error('E2E_COMPOSE is not set: run through `make ui-e2e`');
@@ -9,20 +11,65 @@ export function compose(...args: string[]): void {
   execFileSync(bin!, [...base, ...args], { stdio: 'pipe', timeout: 120_000 });
 }
 
-export async function setStock(request: APIRequestContext, sku: string, available: number) {
-  const response = await request.put(`/api/v1/inventory/${sku}`, { data: { available } });
-  expect(response.status()).toBe(200);
+export function uniqueCustomer(name = 'pw'): string {
+  return `${name}-${Math.random().toString(16).slice(2, 10)}`;
 }
 
-export async function stockOf(request: APIRequestContext, sku: string): Promise<number> {
+/** Start the browser tab as this customer (the demo customer id lives in localStorage). Only on
+ * the tab's first page load, so a later switch on the demo page is not undone. */
+export async function actAs(page: Page, customer: string): Promise<void> {
+  await page.addInitScript(
+    ([key, id]) => {
+      if (window.sessionStorage.getItem('pw-acted') !== null) return;
+      window.sessionStorage.setItem('pw-acted', '1');
+      window.localStorage.setItem(key!, id!);
+    },
+    [CUSTOMER_KEY, customer],
+  );
+}
+
+interface ListingBody {
+  items: { seller: string; status: string }[];
+}
+
+/** Hand a CloudPunk back to the platform: end its listing (after any pending sale settles) and
+ * reset its owner, so the collection is all red again for the next run. */
+export async function resetPunk(request: APIRequestContext, sku: string): Promise<void> {
+  await expect
+    .poll(async () => {
+      const body = (await (await request.get(`/api/v1/listings?sku=${sku}`)).json()) as ListingBody;
+      return body.items.some((l) => l.status === 'SALE_PENDING');
+    })
+    .toBe(false);
+  const body = (await (await request.get(`/api/v1/listings?sku=${sku}`)).json()) as ListingBody;
+  for (const listing of body.items) {
+    await request.delete(`/api/v1/listings/${sku}?customer_id=${listing.seller}`);
+  }
+  const reset = await request.put(`/api/v1/inventory/${sku}`, {
+    data: { available: 1, reset_owner: true },
+  });
+  expect(reset.status()).toBe(200);
+}
+
+/** Buy a CloudPunk through the API as ``customer`` and wait until they own it. */
+export async function buyAs(
+  request: APIRequestContext,
+  customer: string,
+  sku: string,
+): Promise<void> {
+  const response = await request.post('/api/v1/orders', {
+    data: { customer_id: customer, items: [{ sku, quantity: 1 }] },
+    headers: { 'Idempotency-Key': `pw-${customer}-${sku}` },
+  });
+  expect([200, 202]).toContain(response.status());
+  await expect.poll(async () => ownerOf(request, sku)).toBe(customer);
+}
+
+export async function ownerOf(request: APIRequestContext, sku: string): Promise<string | null> {
   const body = (await (await request.get(`/api/v1/inventory/${sku}`)).json()) as {
-    available: number;
+    owner: string | null;
   };
-  return body.available;
-}
-
-export function uniqueCustomer(): string {
-  return `pw-${Math.random().toString(16).slice(2, 10)}`;
+  return body.owner;
 }
 
 /** Fail on any serious or critical accessibility violation on the page as it is now. */
@@ -34,17 +81,6 @@ export async function expectNoSeriousViolations(page: Page): Promise<void> {
   );
 }
 
-/** Add `quantity` of a product from its page, then open the basket. */
-export async function addFromProductPage(page: Page, sku: string, quantity: number) {
-  await page.goto(`/products/${sku}`);
-  await expect(page.getByRole('heading', { level: 1 })).not.toHaveText('');
-  await page.getByLabel('Quantity').fill(String(quantity));
-  await page.getByRole('button', { name: 'Add to basket' }).click();
-  await expect(page.getByRole('status').filter({ hasText: 'Added' })).toBeVisible();
-}
-
-export async function checkout(page: Page, customer: string) {
-  await page.goto('/checkout');
-  await page.getByLabel(/Customer id/).fill(customer);
-  await page.getByRole('button', { name: 'Place order (demo, no payment)' }).click();
+export function cardFor(page: Page, sku: string) {
+  return page.locator(`[data-testid="punk-card"][data-sku="${sku}"]`);
 }

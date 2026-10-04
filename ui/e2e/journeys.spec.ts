@@ -1,175 +1,171 @@
+// Browser journeys against the Compose stack through the gateway (`make up seed`, then
+// `make ui-e2e`). Each journey owns a few CloudPunks (#0091 to #0096) and hands them back to the
+// platform afterwards, so the collection is all red again when the suite ends.
+
 import { expect, test } from '@playwright/test';
 import {
-  addFromProductPage,
-  checkout,
+  actAs,
+  buyAs,
+  cardFor,
   compose,
   expectNoSeriousViolations,
-  setStock,
-  stockOf,
+  ownerOf,
+  resetPunk,
   uniqueCustomer,
 } from './helpers';
 
-const CONFIRM_SKU = 'SKU-MUG-WHT';
-const SYNC_SKU = 'SKU-VASE-GLS';
-const ASYNC_SKU = 'SKU-CANDLE-VAN';
-const DOUBLE_SKU = 'SKU-THROW-GRY';
-const PAGER_SKU = 'SKU-CAP-NAVY';
+const OWNED = ['CP-0091', 'CP-0092', 'CP-0093', 'CP-0094', 'CP-0095', 'CP-0096'];
 
-test('browse the catalog and filter by category', async ({ page }) => {
+test.beforeAll(async ({ request }) => {
+  for (const sku of OWNED) await resetPunk(request, sku);
+});
+
+test.afterAll(async ({ request }) => {
+  for (const sku of OWNED) await resetPunk(request, sku);
+});
+
+test('browse the collection: 100 tiles by colour, filter and clear', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Catalog' })).toBeVisible();
-  await expect(page.getByRole('list', { name: 'Products' }).getByRole('listitem')).toHaveCount(20);
+  await expect(page.getByRole('heading', { name: 'CloudPunks', level: 1 })).toBeVisible();
+  const cards = page.getByTestId('punk-card');
+  await expect(cards).toHaveCount(100);
+  await expect(cardFor(page, 'CP-0091')).toHaveAttribute('data-state', 'unsold');
 
-  await page.getByRole('button', { name: 'Footwear' }).click();
-  const cards = page.getByRole('list', { name: 'Products' }).getByRole('listitem');
-  await expect(cards).toHaveCount(4);
-  await expect(page).toHaveURL(/category=footwear/);
-
-  await page.getByRole('button', { name: 'All', exact: true }).click();
-  await expect(cards).toHaveCount(20);
+  const zombie = page.getByRole('checkbox', { name: /Zombie/ });
+  await zombie.click(); // the state comes from the URL, a moment after the click
+  await expect(zombie).toBeChecked();
+  await expect(page).toHaveURL(/type=zombie/);
+  await expect(cards).toHaveCount(6);
+  await page.getByRole('button', { name: /Clear all filters/ }).click();
+  await expect(cards).toHaveCount(100);
   await expectNoSeriousViolations(page);
 });
 
-test('stock badges show In stock, Only N left and Out of stock', async ({ page, request }) => {
-  await setStock(request, 'SKU-SCARF-RED', 3);
-  await setStock(request, 'SKU-WALLET-BRN', 0);
+test('the header search jumps straight to a CloudPunk', async ({ page }) => {
   await page.goto('/');
-  const scarf = page.getByRole('listitem').filter({ hasText: 'Red Scarf' });
-  const wallet = page.getByRole('listitem').filter({ hasText: 'Brown Wallet' });
-  await expect(scarf.getByText('Only 3 left')).toBeVisible();
-  await expect(wallet.getByText('Out of stock')).toBeVisible();
-  await expect(wallet.getByRole('button', { name: /Add to basket/ })).toBeDisabled();
-  await setStock(request, 'SKU-SCARF-RED', 25);
-  await setStock(request, 'SKU-WALLET-BRN', 25);
-});
-
-test('the basket survives a reload', async ({ page, request }) => {
-  await setStock(request, CONFIRM_SKU, 50);
-  await addFromProductPage(page, CONFIRM_SKU, 3);
-  await page.goto('/basket');
-  await expect(page.getByRole('link', { name: 'Basket (3)' })).toBeVisible();
-  await page.reload();
-  await expect(page.getByRole('link', { name: 'Basket (3)' })).toBeVisible();
-  await expect(page.getByLabel('Quantity for White Mug')).toHaveValue('3');
-  await expect(page.getByText(/Estimated total/).first()).toBeVisible();
+  await page.getByLabel('Search CloudPunks by number or trait').fill('#42');
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/\/cloudpunks\/0042$/);
+  await expect(page.getByRole('heading', { name: 'CloudPunk #0042', level: 1 })).toBeVisible();
+  await expect(page.getByTestId('current-price')).toContainText('ETH');
   await expectNoSeriousViolations(page);
 });
 
-test('checkout shows PENDING then CONFIRMED and stock drops by exactly the quantity', async ({
+test('buy an unsold CloudPunk: the order confirms and its tile turns blue', async ({
   page,
   request,
 }) => {
-  await setStock(request, CONFIRM_SKU, 20);
-  const customer = uniqueCustomer();
-  await addFromProductPage(page, CONFIRM_SKU, 2);
-  await page.goto('/checkout');
-  await expectNoSeriousViolations(page);
+  const me = uniqueCustomer('pw-buyer');
+  await actAs(page, me);
+  await page.goto('/');
+  await cardFor(page, 'CP-0091').hover();
+  await cardFor(page, 'CP-0091').getByRole('link', { name: 'Buy now CloudPunk #0091' }).click();
 
-  await checkout(page, customer);
-  await expect(page).toHaveURL(/\/orders\/[0-9A-Z]{26}$/);
+  await page.getByRole('button', { name: 'Confirm purchase' }).click();
   const status = page.getByTestId('order-status');
-  await expect(status).toHaveAttribute('data-status', /PENDING|CONFIRMED/);
   await expect(status).toHaveAttribute('data-status', 'CONFIRMED');
-  await expect(page.getByText('Stock is reserved for order')).toBeVisible();
-  await expect(page.getByText(/is confirmed\./)).toBeVisible();
-  expect(await stockOf(request, CONFIRM_SKU)).toBe(18);
+  await expect(status).toContainText('You now own CloudPunk #0091.');
   await expectNoSeriousViolations(page);
+  expect(await ownerOf(request, 'CP-0091')).toBe(me);
 
-  await page.goto('/orders');
-  await expect(page.getByRole('table')).toBeVisible();
-  await expectNoSeriousViolations(page);
+  await page.goto('/');
+  await expect(cardFor(page, 'CP-0091')).toHaveAttribute('data-state', 'owned');
+  await expect(cardFor(page, 'CP-0091')).toContainText('Owned by you');
 });
 
-test('a synchronous out-of-stock shows the server message and a way back', async ({
+test('a resale end to end: put up for bid (purple), bid as someone else, accept', async ({
   page,
   request,
 }) => {
-  await setStock(request, SYNC_SKU, 1);
-  await addFromProductPage(page, SYNC_SKU, 5);
-  await checkout(page, uniqueCustomer());
+  test.setTimeout(120_000);
+  const alice = uniqueCustomer('pw-alice');
+  const bob = uniqueCustomer('pw-bob');
+  await buyAs(request, alice, 'CP-0092');
 
-  const panel = page.getByTestId('error-panel');
-  await expect(panel).toContainText(`${SYNC_SKU}: requested 5, available 1`);
-  await expect(panel).toContainText(/Reference\s+\S+/);
-  await panel.getByRole('link', { name: 'Back to the basket' }).click();
-  await expect(page).toHaveURL(/\/basket$/);
-  await expect(page.getByText('Only 1 available')).toBeVisible();
-  await setStock(request, SYNC_SKU, 25);
-});
+  await actAs(page, alice);
+  await page.goto('/cloudpunks/0092');
+  await page.getByRole('button', { name: 'Put up for bid' }).click();
+  await expect(page.getByRole('button', { name: 'Take off the market' })).toBeVisible();
+  await page.goto('/');
+  await expect(cardFor(page, 'CP-0092')).toHaveAttribute('data-state', 'bid');
 
-test('an asynchronous rejection ends REJECTED with the reason', async ({ page, request }) => {
-  test.setTimeout(150_000);
-  await setStock(request, ASYNC_SKU, 3);
-  await addFromProductPage(page, ASYNC_SKU, 2);
-  compose('stop', 'inventory-consumer');
-  try {
-    await checkout(page, uniqueCustomer());
-    await expect(page).toHaveURL(/\/orders\/[0-9A-Z]{26}$/);
-    await expect(page.getByTestId('order-status')).toHaveAttribute('data-status', 'PENDING');
-    await setStock(request, ASYNC_SKU, 0); // the stock disappears before the consumer looks
-  } finally {
-    compose('start', 'inventory-consumer');
-  }
-  await expect(page.getByTestId('order-status')).toHaveAttribute('data-status', 'REJECTED', {
-    timeout: 60_000,
-  });
-  await expect(page.getByText('OUT_OF_STOCK').first()).toBeVisible();
-  await expect(page.getByText(/could not reserve stock/)).toBeVisible();
+  // the demo page switches the customer, as a second person would
+  await page.goto('/demo');
+  await page.getByLabel('Customer id').fill(bob);
+  await page.getByRole('button', { name: 'Switch customer' }).click();
+  await expect(page.getByRole('status')).toContainText(`You are now ${bob}.`);
   await expectNoSeriousViolations(page);
-  await setStock(request, ASYNC_SKU, 25);
+  await page.goto('/cloudpunks/0092');
+  await page.getByLabel('Your offer (ETH)').fill('15.00');
+  await page.getByRole('button', { name: 'Make offer' }).click();
+  await expect(page.getByText('Offer placed.')).toBeVisible();
+  await expectNoSeriousViolations(page);
+
+  await page.goto('/demo');
+  await page.getByLabel('Customer id').fill(alice);
+  await page.getByRole('button', { name: 'Switch customer' }).click();
+  await page.goto('/cloudpunks/0092');
+  await page.getByRole('button', { name: 'Accept 15.00 ETH' }).click();
+  await expect(page.getByText(/Bid accepted/)).toBeVisible();
+
+  await expect.poll(async () => ownerOf(request, 'CP-0092'), { timeout: 30_000 }).toBe(bob);
+  await page.goto('/cloudpunks/0092');
+  await expect(page.getByText(`Owned by ${bob}`)).toBeVisible();
+  const activity = page.getByTestId('activity-table');
+  await expect(activity.getByRole('row').filter({ hasText: 'Sale' }).first()).toContainText(
+    '15.00 ETH',
+  );
 });
 
-test('double-clicking Place order creates one order', async ({ page, request }) => {
-  await setStock(request, DOUBLE_SKU, 30);
-  const customer = uniqueCustomer();
-  await addFromProductPage(page, DOUBLE_SKU, 1);
-  await page.goto('/checkout');
-  await page.getByLabel(/Customer id/).fill(customer);
-  await page.getByRole('button', { name: 'Place order (demo, no payment)' }).dblclick();
-  await expect(page).toHaveURL(/\/orders\/[0-9A-Z]{26}$/);
+test('double-clicking Confirm purchase creates one order', async ({ page, request }) => {
+  const me = uniqueCustomer('pw-double');
+  await actAs(page, me);
+  await page.goto('/cloudpunks/0093?buy=1');
+  await page.getByRole('button', { name: 'Confirm purchase' }).dblclick();
   await expect(page.getByTestId('order-status')).toHaveAttribute('data-status', 'CONFIRMED');
 
-  const list = (await (await request.get(`/api/v1/orders?customer_id=${customer}`)).json()) as {
+  const orders = (await (await request.get(`/api/v1/orders?customer_id=${me}`)).json()) as {
     total: number;
   };
-  expect(list.total).toBe(1);
+  expect(orders.total).toBe(1);
 });
 
-test('my orders paginates', async ({ page, request }) => {
-  test.setTimeout(150_000);
-  const customer = 'pw-pager';
-  await setStock(request, PAGER_SKU, 500);
-  // Fixed keys: a second run replays the same 21 orders instead of creating more.
-  for (let i = 0; i < 21; i += 1) {
-    const response = await request.post('/api/v1/orders', {
-      data: { customer_id: customer, items: [{ sku: PAGER_SKU, quantity: 1 }] },
-      headers: { 'Idempotency-Key': `pw-pager-${i}` },
-    });
-    expect([200, 202]).toContain(response.status());
-  }
-  await page.addInitScript((id) => {
-    window.localStorage.setItem('retail.customer.v1', id);
-  }, customer);
-  await page.goto('/orders');
-  await expect(page.getByText('Page 1 of 2')).toBeVisible();
-  await expect(page.getByRole('table').getByRole('row')).toHaveCount(21); // header + 20
-  await page.getByRole('button', { name: 'Next' }).click();
-  await expect(page.getByText('Page 2 of 2')).toBeVisible();
-  await expect(page.getByRole('table').getByRole('row')).toHaveCount(2); // header + 1
-});
-
-test('stopping product-service shows a retryable catalog error and recovers', async ({
+test('someone else buys it first: the error says so and carries a reference', async ({
   page,
   request,
 }) => {
+  await actAs(page, uniqueCustomer('pw-late'));
+  await page.goto('/cloudpunks/0094?buy=1');
+  await expect(page.getByTestId('current-price')).toBeVisible();
+  await buyAs(request, uniqueCustomer('pw-early'), 'CP-0094');
+
+  await page.getByRole('button', { name: 'Confirm purchase' }).click();
+  const panel = page.getByTestId('error-panel');
+  await expect(panel).toContainText('requested 1, available 0');
+  await expect(panel).toContainText(/Reference\s+\S+/);
+  await expectNoSeriousViolations(page);
+});
+
+test('my CloudPunks lists what I own, my bids and my orders', async ({ page, request }) => {
+  const me = uniqueCustomer('pw-profile');
+  await buyAs(request, me, 'CP-0095');
+  await actAs(page, me);
+  await page.goto('/account');
+  await expect(page.getByRole('heading', { name: 'My CloudPunks' })).toBeVisible();
+  await expect(cardFor(page, 'CP-0095')).toBeVisible();
+  await expectNoSeriousViolations(page);
+  await page.getByRole('link', { name: 'Orders' }).click();
+  await expect(page.getByTestId('orders-table')).toContainText('CloudPunk #0095');
+});
+
+test('stopping product-service shows a retryable error and recovers', async ({ page, request }) => {
   test.setTimeout(150_000);
   compose('stop', 'product-service');
   try {
     await page.goto('/');
     const panel = page.getByTestId('error-panel');
-    await expect(panel).toContainText('Could not load the catalog');
+    await expect(panel).toContainText('Could not load the collection');
     await expect(panel).toContainText(/Reference\s+\S+/);
-    await expect(panel.getByRole('button', { name: 'Try again' })).toBeVisible();
     await expectNoSeriousViolations(page);
   } finally {
     compose('start', 'product-service');
@@ -178,7 +174,7 @@ test('stopping product-service shows a retryable catalog error and recovers', as
     .poll(async () => (await request.get('/api/v1/categories')).status(), { timeout: 60_000 })
     .toBe(200);
   await page.getByRole('button', { name: 'Try again' }).click();
-  await expect(page.getByRole('list', { name: 'Products' })).toBeVisible();
+  await expect(page.getByTestId('punk-card')).toHaveCount(100);
 });
 
 test('an unreachable gateway is reported as a network error, not an API error', async ({
@@ -191,20 +187,9 @@ test('an unreachable gateway is reported as a network error, not an API error', 
   await expect(panel).toContainText('connection problem, not a server error');
 });
 
-test('demo tools are available in this local build', async ({ page, request }) => {
-  await page.goto('/demo');
-  await expect(page.getByRole('heading', { name: 'Demo tools' })).toBeVisible();
-  await page.getByLabel('SKU').fill('SKU-SLIPPER-GRY-41');
-  await page.getByLabel('Available units').fill('17');
-  await page.getByRole('button', { name: 'Set stock' }).click();
-  await expect(page.getByText('Stock for SKU-SLIPPER-GRY-41 is now 17')).toBeVisible();
-  expect(await stockOf(request, 'SKU-SLIPPER-GRY-41')).toBe(17);
-  await expectNoSeriousViolations(page);
-});
-
 test('a page at phone width has no horizontal scroll', async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 740 });
-  for (const path of ['/', '/basket', '/orders']) {
+  for (const path of ['/', '/cloudpunks/0096', '/activity', '/account']) {
     await page.goto(path);
     await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
     const overflow = await page.evaluate(

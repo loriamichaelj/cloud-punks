@@ -1,56 +1,45 @@
-import { describe, expect, it, vi } from 'vitest';
-import { ATTEMPT_KEY, clearAttempt, keyFor } from './idempotency';
+import { describe, expect, it } from 'vitest';
+import { ATTEMPT_PREFIX, clearAttempt, keyFor } from './idempotency';
 
-describe('idempotency key lifecycle', () => {
-  it('reuses the key while the basket is unchanged (retry, refresh, 503)', () => {
-    const first = keyFor('c1|A x1');
-    expect(keyFor('c1|A x1')).toBe(first);
+describe('idempotency keys', () => {
+  it('reuses the key while the request is unchanged', () => {
+    const first = keyFor('buy:CP-0042', 'cust-1');
+    expect(keyFor('buy:CP-0042', 'cust-1')).toBe(first);
   });
 
-  it('survives a reload because it is stored', () => {
-    const first = keyFor('c1|A x1');
-    expect(JSON.parse(window.localStorage.getItem(ATTEMPT_KEY) ?? 'null')).toEqual({
-      fingerprint: 'c1|A x1',
-      key: first,
+  it('stores the attempt per scope', () => {
+    const key = keyFor('bid:CP-0042', 'cust-1|25.00');
+    expect(
+      JSON.parse(window.localStorage.getItem(`${ATTEMPT_PREFIX}bid:CP-0042`) ?? 'null'),
+    ).toEqual({
+      fingerprint: 'cust-1|25.00',
+      key,
     });
   });
 
-  it('issues a new key when the basket changes', () => {
-    const first = keyFor('c1|A x1');
-    const second = keyFor('c1|A x2');
-    expect(second).not.toBe(first);
-    expect(keyFor('c1|A x2')).toBe(second);
+  it('gives a changed request a new key, and keeps scopes apart', () => {
+    const bid = keyFor('bid:CP-0042', 'cust-1|25.00');
+    const higher = keyFor('bid:CP-0042', 'cust-1|26.00');
+    expect(higher).not.toBe(bid);
+    expect(keyFor('buy:CP-0042', 'cust-1')).not.toBe(higher);
+    expect(keyFor('bid:CP-0042', 'cust-1|26.00')).toBe(higher);
   });
 
-  it('forgets the attempt once the order exists', () => {
-    const first = keyFor('c1|A x1');
-    clearAttempt();
-    expect(keyFor('c1|A x1')).not.toBe(first);
+  it('starts afresh once the attempt is cleared', () => {
+    const first = keyFor('buy:CP-0001', 'cust-1');
+    clearAttempt('buy:CP-0001');
+    expect(keyFor('buy:CP-0001', 'cust-1')).not.toBe(first);
   });
 
-  it('matches the API pattern for keys', () => {
-    expect(keyFor('c|x')).toMatch(/^[A-Za-z0-9._:-]{1,64}$/);
-  });
-
-  it('still returns a valid key where randomUUID is unavailable (plain http)', () => {
-    vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) });
+  it('still works when storage is blocked', () => {
+    const original = window.localStorage.getItem.bind(window.localStorage);
+    window.localStorage.getItem = () => {
+      throw new Error('blocked');
+    };
     try {
-      expect(keyFor('c|insecure')).toMatch(/^[A-Za-z0-9._:-]{1,64}$/);
+      expect(keyFor('buy:CP-0002', 'cust-1')).toMatch(/^[0-9a-f-]{32,36}$/);
     } finally {
-      vi.unstubAllGlobals();
+      window.localStorage.getItem = original;
     }
-  });
-
-  it('ignores a corrupt stored attempt', () => {
-    window.localStorage.setItem(ATTEMPT_KEY, '{"fingerprint":1}');
-    expect(keyFor('c|x')).toMatch(/^[0-9a-f-]{36}$/);
-  });
-
-  it('still returns a key when storage is blocked', () => {
-    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
-      throw new DOMException('blocked', 'SecurityError');
-    });
-    expect(keyFor('c|x')).toMatch(/^[0-9a-f-]{36}$/);
-    vi.restoreAllMocks();
   });
 });

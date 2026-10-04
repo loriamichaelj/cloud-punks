@@ -1,19 +1,36 @@
-import { useEffect, useRef } from 'react';
-import { NavLink, Outlet, useLocation } from 'react-router';
+import { useEffect, useRef, useState, type SyntheticEvent } from 'react';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router';
+import { artFor } from '../assets/cloudpunkArt';
 import { DEMO_TOOLS } from '../config';
-import { useBasket } from '../state';
+import { parseNumber } from '../lib/collection';
+import { useCustomer } from '../state';
 import layout from '../styles/layout.module.css';
+import { StateLegend } from './StatePill';
 
 export function Layout() {
-  const { count } = useBasket();
+  const { customerId } = useCustomer();
   const location = useLocation();
+  const navigate = useNavigate();
   const main = useRef<HTMLElement>(null);
+  const [query, setQuery] = useState('');
 
   // Move focus to the page on every route change so keyboard and screen-reader users start at the
   // top of the new screen instead of on a link that no longer exists.
   useEffect(() => {
     main.current?.focus();
   }, [location.pathname]);
+
+  const search = (event: SyntheticEvent) => {
+    event.preventDefault();
+    const text = query.trim();
+    const number = parseNumber(text);
+    if (number !== null) {
+      void navigate(`/cloudpunks/${String(number).padStart(4, '0')}`);
+    } else {
+      void navigate(text ? `/?q=${encodeURIComponent(text)}` : '/');
+    }
+    setQuery('');
+  };
 
   return (
     <div className={layout.shell}>
@@ -24,32 +41,39 @@ export function Layout() {
         <div className={layout.headerInner}>
           <NavLink to="/" className={layout.brand}>
             <span className={layout.mark} aria-hidden="true">
-              <svg
-                width="20"
-                height="20"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                focusable="false"
-              >
-                <path d="M5 8h14l1 13H4L5 8Z" />
-                <path d="M9 8V6a3 3 0 0 1 6 0v2" />
-              </svg>
+              <img src={artFor('CP-0001')} alt="" />
             </span>
-            Retail demo shop
+            CloudPunks
           </NavLink>
+          <form role="search" className={layout.search} onSubmit={search}>
+            <label htmlFor="site-search" className="visually-hidden">
+              Search CloudPunks by number or trait
+            </label>
+            <input
+              id="site-search"
+              className={layout.searchInput}
+              type="search"
+              placeholder="Search by number or trait"
+              value={query}
+              onChange={(e) => {
+                setQuery(e.target.value);
+              }}
+            />
+          </form>
           <nav aria-label="Main" className={layout.nav}>
             <NavLink to="/" end>
-              Catalog
+              Collection
             </NavLink>
-            <NavLink to="/basket">Basket ({count})</NavLink>
-            <NavLink to="/orders" end>
-              My orders
+            <NavLink to="/activity">Activity</NavLink>
+            {DEMO_TOOLS && <NavLink to="/demo">Demo</NavLink>}
+            <NavLink
+              to="/account"
+              className={layout.wallet}
+              aria-label={`My CloudPunks (${customerId})`}
+            >
+              <span aria-hidden="true" className={layout.walletDot} />
+              {customerId}
             </NavLink>
-            {DEMO_TOOLS && <NavLink to="/demo">Demo tools</NavLink>}
           </nav>
         </div>
       </header>
@@ -57,15 +81,10 @@ export function Layout() {
         <Outlet />
       </main>
       <footer className={layout.footer}>
-        <span className={layout.dots} aria-hidden="true">
-          <i data-category="male" />
-          <i data-category="female" />
-          <i data-category="zombie" />
-          <i data-category="ape" />
-          <i data-category="alien" />
-        </span>
+        <StateLegend />
         <span>
-          Demo only: no login and no payments. Your customer id is a label, not a credential.
+          A proof of concept: no blockchain, no login and no payments. Your customer id is a label,
+          not a wallet or a credential.
         </span>
       </footer>
     </div>

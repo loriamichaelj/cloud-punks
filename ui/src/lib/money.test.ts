@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   MoneyParseError,
   addMinor,
+  compareDecimal,
   formatDecimal,
   formatMinor,
   minorToDecimal,
@@ -87,6 +88,17 @@ describe('formatting', () => {
     expect(formatMinor(123456789n, 'USD')).toBe('$1,234,567.89');
     expect(formatMinor(-250n, 'USD')).toBe('-$2.50');
     expect(formatMinor(1200n, 'CHF')).toBe('CHF 12.00');
+    expect(formatMinor(3143n, 'ETH')).toBe('31.43 ETH');
+    expect(formatMinor(123456n, 'ETH')).toBe('1,234.56 ETH');
+    expect(formatMinor(-5n, 'ETH')).toBe('-0.05 ETH');
     expect(formatDecimal('27.5', 'USD')).toBe('$27.50');
+  });
+});
+
+describe('compareDecimal', () => {
+  it('orders decimal strings exactly, never through a float', () => {
+    expect(compareDecimal('10.10', '10.1')).toBe(0);
+    expect(compareDecimal('9.99', '10.00')).toBe(-1);
+    expect(compareDecimal('100000000000.01', '100000000000.00')).toBe(1);
   });
 });

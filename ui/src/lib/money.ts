@@ -38,19 +38,30 @@ export function minorToDecimal(minor: bigint): string {
 }
 
 const SYMBOLS: Record<string, string> = { USD: '$', EUR: '€', GBP: '£' };
+// Shown after the amount, the way the collection is priced: "31.43 ETH".
+const SUFFIXED = new Set(['ETH']);
 
 function groupThousands(whole: string): string {
   return whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
-/** 12950n, "USD" -> "$129.50"; an unknown currency is shown as a prefix code ("CHF 12.00"). */
+/** 12950n, "USD" -> "$129.50"; 3143n, "ETH" -> "31.43 ETH"; another currency is shown as a
+ * prefix code ("CHF 12.00"). */
 export function formatMinor(minor: bigint, currency: string): string {
   const decimal = minorToDecimal(minor);
   const negative = decimal.startsWith('-');
   const [whole = '0', cents = '00'] = (negative ? decimal.slice(1) : decimal).split('.');
-  const symbol = SYMBOLS[currency];
+  const sign = negative ? '-' : '';
   const amount = `${groupThousands(whole)}.${cents}`;
-  return `${negative ? '-' : ''}${symbol ?? `${currency} `}${amount}`;
+  if (SUFFIXED.has(currency)) return `${sign}${amount} ${currency}`;
+  const symbol = SYMBOLS[currency];
+  return `${sign}${symbol ?? `${currency} `}${amount}`;
+}
+
+/** Compare two API decimal strings exactly: negative, zero or positive, like a sort comparator. */
+export function compareDecimal(a: string, b: string): number {
+  const diff = parseMinor(a) - parseMinor(b);
+  return diff < 0n ? -1 : diff > 0n ? 1 : 0;
 }
 
 /** Format an API decimal string without ever converting it to a number. */

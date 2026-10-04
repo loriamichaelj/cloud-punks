@@ -41,7 +41,7 @@ export class NetworkError extends Error {
 }
 
 export interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PUT';
+  method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
   body?: unknown;
   headers?: Record<string, string>;
   /** One id per user action; generated when the caller does not pass one. */
