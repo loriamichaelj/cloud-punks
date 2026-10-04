@@ -2,7 +2,7 @@
 
 A marketplace for one collection of 100 one-of-a-kind 24×24 pixel-art characters, **CloudPunks**: buy one from the platform, put it up for bid, accept the bid you like. Under it sit four microservices that talk through asynchronous events: an order goes `PENDING` → `CONFIRMED` or `REJECTED` while inventory moves the CloudPunk to its new owner. There is no blockchain, wallet or payment: a sale is an order, prices are in ETH as two-decimal strings, and your customer id plays the part of a wallet address.
 
-It runs end to end with Docker Compose (LocalStack stands in for AWS, so no account or credential is involved), on a local Kubernetes cluster, and on AWS EKS, built and operated only by GitHub Actions.
+It runs end to end with Docker Compose (LocalStack stands in for AWS, so no account or credential is involved), on a local Kubernetes cluster (OrbStack), and on AWS EKS, built and operated only by GitHub Actions.
 
 ```mermaid
 flowchart LR

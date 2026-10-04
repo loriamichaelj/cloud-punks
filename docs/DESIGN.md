@@ -4,7 +4,7 @@ How the platform is built and why. How it got here, what went wrong and what was
 
 ## 1. Overview
 
-A four-service order platform and, on top of it, a marketplace for one collection, **CloudPunks**: 100 one-of-a-kind pixel-art characters that customers buy from the platform and resell to each other through bids (section 16). It runs end to end on localhost (Docker Compose, then OrbStack Kubernetes) and on AWS EKS with no application code changes, only configuration: every AWS dependency is reached through an adapter whose endpoint is an environment variable, so LocalStack, PostgreSQL and Valkey containers stand in for EventBridge/SQS/DynamoDB, RDS and ElastiCache.
+An order platform with event driven microservices, and on top of it, a marketplace for one collection, **CloudPunks**: 100 one-of-a-kind pixel-art characters that customers buy from the platform and resell to each other through bids (section 16). It runs end to end on localhost (Docker Compose, then OrbStack Kubernetes) and on AWS EKS with no application code changes, only configuration: every AWS dependency is reached through an adapter whose endpoint is an environment variable, so LocalStack, PostgreSQL and Valkey containers stand in for EventBridge/SQS/DynamoDB, RDS and ElastiCache.
 
 **Goals**
 
@@ -12,7 +12,7 @@ A four-service order platform and, on top of it, a marketplace for one collectio
 - Correct under retries and duplicates: no double reservation, no lost events, no stuck orders.
 - Observable: structured logs with correlation IDs, Prometheus metrics, health endpoints.
 - Cloud-portable: the same container images and env-var contract run on Compose and EKS.
-- The same journey works in a browser: a React single-page app on the public API, served through the same gateway (sections 15 and 16.6).
+- The same journey works in a browser: a React SPA on the public API, served through the same gateway (sections 15 and 16.6).
 
 **Non-goals**
 
