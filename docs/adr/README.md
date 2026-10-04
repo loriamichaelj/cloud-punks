@@ -466,6 +466,15 @@ The README is rewritten around CloudPunks (what it is, how the market works, the
 
 Guards: a client test (a 200 with HTML is an `ApiError`), an `ErrorPanel` test (one focus per distinct failure, never scrolling) and an e2e journey (market paths answered with HTML: the panel says so with a reference, `scrollY` is 0 and the title is below the header at 1280 and 360 px). Each was shown to fail with its fix removed (the journey read scrollY 71). `make lint test` and the 11 journeys pass on Compose.
 
+## Market reset (4 Oct 2026)
+
+The owner asked for a way to put the app back to a clean state, with no orders or activity. `app-seed` cannot do it, by design (it never undoes a sale), and `app-destroy` removes releases and images, not data. So `local/seed/reset.py` and `app-reset.yml` (the owner approved adding the workflow) do it:
+
+- **No IAM change.** The `db` role that `app-seed` uses already reads every `loria-retail-dev/*` secret (so the order app password), describes the RDS instance and may put items into the inventory table. The order app role may delete rows (`db_init.py` grants it DML). The reset uses nothing more: `DELETE` on `bids`, `listings`, `order_items`, `orders` and `outbox` in one transaction, children first, and an unconditional put of each CloudPunk's stock item as the seed first writes it (no `owner`, one available, none reserved).
+- **Kept on purpose:** `processed_events` (the consumers' dedupe: a late redelivery of an old event must still be seen as a duplicate), the reservation records (keyed by order id; a new order always has a new ULID) and the notifications (keyed and read by order id, so nothing can show them once the orders are gone; no role may delete from that table, and none needs to).
+- **Guards:** a `confirm` input that must be exactly `reset`, checked on a hosted runner before the approval; the `dev` approval; the `app-dev` group, so it never overlaps a deploy or a seed; and the script refuses any `ENVIRONMENT` other than `local` or `dev`. Unit tests (`scripts/tests/test_market_reset.py`, run by `make test` with `local/seed` on the path) cover the delete order, the single transaction, the kept dedupe, the 100 puts without an owner or condition and the refusal; the transaction and refusal tests were shown to fail with their guard removed.
+- **Checked locally,** by running the same script in the order-service container against Compose: before, CP-0077 owned with an open listing and bid, 534 orders and 526 activity rows; after, 534 orders, 11 listings, 13 bids and 1068 outbox rows deleted, all 100 items back with the platform, every list empty; a purchase straight after confirmed normally. **Not yet run in dev.**
+
 ## Decided questions
 
 - [x] Cloud database is Amazon RDS for PostgreSQL 17, not Aurora (decided 1 Oct 2026). Dev is a single Single-AZ instance; RDS Proxy is optional and off by default with one node. DESIGN.md sections 2, 3, 5, 8, 10 and 13 updated.

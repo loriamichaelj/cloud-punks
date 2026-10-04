@@ -56,7 +56,7 @@ test: sync
 		PYTHONPATH=services/$$s $(RUN) pytest services/$$s/tests/unit -q || exit 1; \
 	done
 	@echo "pytest scripts"
-	@PYTHONPATH=scripts $(RUN) pytest scripts/tests -q
+	@PYTHONPATH=scripts:local/seed $(RUN) pytest scripts/tests -q
 	@echo "pytest e2e helpers"
 	@PYTHONPATH=tests/e2e:scripts $(RUN) pytest tests/e2e/test_cwlogs.py tests/e2e/test_cloud_helpers.py -q
 	@echo "pytest functions/low-stock-alert"

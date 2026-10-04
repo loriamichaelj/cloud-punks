@@ -158,6 +158,8 @@ Bring-up, in order (details and the teardown order are in `.github/workflows/REA
 5. `alarms-create` (plan, then apply), once `app-deploy` has made the load balancer: the two ALB alarms.
 6. `app-expose` (optional): a browser view for one address, held in the `DEV_VIEWER_CIDR` environment secret. It also serves the Grafana dashboards at `/grafana`.
 
+To start the market over (no orders, listings, bids or activity; every CloudPunk red again), run `app-reset` and type `reset`. Locally, `make reset` followed by `make up seed` does the same and more (it empties every store).
+
 On an environment that was running before the redesign, the order is `app-prepare`, `app-seed` (it loads the CloudPunks and removes the old catalog), then `app-deploy` (it migrates `order_db` and runs the suite).
 
 Tear down in the reverse order: `alarms-destroy`, `app-destroy`, `addons-destroy`, `platform-destroy`. Dev costs roughly $360 a month while it runs (a list-price estimate, not measured; the budget alert is $350), so destroy it when idle.

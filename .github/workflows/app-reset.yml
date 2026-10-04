@@ -1,0 +1,95 @@
+name: "App: reset"
+
+# Puts the dev market back to a clean state: every order, listing and bid deleted (so the activity
+# feed is empty) and all 100 CloudPunks back with the platform, red and unsold. The catalog, the
+# schema and the deployed releases are untouched. The same local/seed/reset.py runs against the
+# local stack; local/seed/reset.py says what it deletes, what it keeps and why.
+#
+# Runs on the in-VPC runner (RDS is private) as cloudbatch818-loria-retail-db-dev, the role
+# app-seed uses: it can read the order app password, describe the RDS instance and put items into
+# the inventory table, which is all this needs. One approval from the `dev` environment's
+# reviewer, after a check that needs none: the `confirm` input must be exactly `reset`.
+#
+# Run it while nobody is buying. The password is read into this step's memory only: masked, never
+# printed, never written to the environment file and never passed as an argument.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type reset to delete every order, listing and bid in dev and return all CloudPunks to the platform"
+        type: string
+        required: true
+
+run-name: app-reset
+
+permissions:
+  contents: read
+
+# Shares the group with the other app workflows so a reset never overlaps a deploy or a seed.
+concurrency:
+  group: app-dev
+  cancel-in-progress: false
+
+env:
+  DB_INSTANCE: loria-retail-dev
+  SECRET_PREFIX: loria-retail-dev
+
+jobs:
+  confirm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require the confirmation word
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "reset" ]; then
+            echo "::error::The confirm input must be exactly 'reset'. Nothing was changed."
+            exit 1
+          fi
+
+  reset:
+    needs: confirm
+    runs-on: [self-hosted, retail-vpc]
+    environment: dev
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_DB }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Install the workspace
+        env:
+          UV_PYTHON_DOWNLOADS: never
+        run: uv sync --all-packages --locked
+
+      - name: Reset the market
+        env:
+          ENVIRONMENT: dev
+          DB_NAME: order_db
+          DB_USER: order_app
+          DB_SSLMODE: require
+          INVENTORY_TABLE: loria-inventory
+        run: |
+          set -euo pipefail
+          endpoint=$(aws rds describe-db-instances --db-instance-identifier "$DB_INSTANCE" \
+            --query 'DBInstances[0].[Endpoint.Address,Endpoint.Port]' --output text)
+          DB_HOST=$(echo "$endpoint" | cut -f1)
+          DB_PORT=$(echo "$endpoint" | cut -f2)
+
+          password=$(aws secretsmanager get-secret-value \
+            --secret-id "${SECRET_PREFIX}/order-app-db" \
+            --query SecretString --output text | jq -r .password)
+          echo "::add-mask::${password}"
+          export DB_HOST DB_PORT DB_PASSWORD="$password"
+          unset password
+
+          uv run --frozen --no-sync python local/seed/reset.py
