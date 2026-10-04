@@ -4,8 +4,9 @@ How dev gets a name and a certificate, in the order to do it, and what to check 
 design is DESIGN.md section 13 ("Network and names") and ADR-24. No step needs the AWS CLI or CloudShell: one
 step is the Route 53 console, the rest are workflows.
 
-**Status: written from the design and the code. None of it has been applied yet** (the Route 53 permission for
-the Terraform role is the first step, below).
+**Status: applied in dev on 4 Oct 2026 and checked** (the public name over HTTPS, and the internal name from the
+runner). The order below is the one that worked; what the run showed is in `docs/adr/README.md`, "HTTPS and a domain
+as built". The destroy workflows have not been run.
 
 ## What you end up with
 
@@ -26,9 +27,10 @@ the Terraform role is the first step, below).
 4. **`dns-create`** (`plan`, then `apply`): the certificate, its validation records and the private zone. The
    apply waits until ACM has issued the certificate.
 5. **`app-deploy`**: the `gateway` release gets its `tls` host and both listeners. If `app-expose` is installed
-   it is refreshed the same way. On the first deploy the HTTPS check in the run summary says "not ready": the name
-   does not exist until the next step.
-6. **`app-expose`** with `expose`, if the browser address is wanted.
+   it is refreshed the same way (already installed means this is the whole step). On the first deploy the HTTPS
+   check in the run summary says "not ready" (`answered 000`): the name does not exist until the next step.
+6. **`app-expose`** with `expose`, if the browser address is wanted and the viewer ALB is not installed yet. If it
+   is, `app-deploy` has already given it HTTPS and kept its address; run `app-expose` only when the address changes.
 7. **`alb-dns-create`** (`plan`, then `apply`): the alias records for whichever ALBs exist.
 8. **`app-deploy` again**: its HTTPS check should now say `answered 200 with a valid certificate`. Open
    `https://dev.<domain>` from the `DEV_VIEWER_CIDR` address.
@@ -53,3 +55,5 @@ fee continues until you let it lapse in the console.
 | The browser warns about the certificate on the viewer ALB | You opened the ALB's own `...elb.amazonaws.com` name, which the certificate does not cover | Use `https://dev.<domain>` |
 | The viewer name times out | The ALB's security group admits only `DEV_VIEWER_CIDR`, and your address changed | Update the secret and run `app-expose` again (the DNS record does not change) |
 | The viewer name gives a DNS error | The viewer ALB was removed, or recreated and the record is stale | `app-expose` with `expose`, then `alb-dns-create` |
+| Every workflow stops at the AWS sign-in with `Not authorized to perform sts:AssumeRoleWithWebIdentity` | The GitHub repository was renamed: the `sub` in the trust policies contains its name | Change the name in the hand-made `cloudbatch818-loria-retail-bootstrap` role's trust policy in the IAM console, run `Bootstrap: CI roles`, which re-points the other roles |
+| `App: deploy` waits for a runner and GitHub lists none | The runner registers with the repository named by `github_repository` (`envs/dev/platform/variables.tf`), which is stale after a rename | Fix the default, apply `Platform: create` (the group follows the launch template, so the runner is replaced), then check the repository's runners |
