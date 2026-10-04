@@ -1,12 +1,13 @@
 # Runbooks
 
-Five runbooks, each tied to the alarms and alerts that point at it (DESIGN.md section 13, Phase 4).
-Every alarm and alert in dev is in the table below. If one is not, `scripts/tests/test_runbooks.py` fails.
+Five runbooks, each tied to the alarms and alerts that point at it (DESIGN.md section 13), and one for the
+local environment. Every alarm and alert in dev is in the table below. If one is not,
+`scripts/tests/test_runbooks.py` fails.
 
 **Status: written from the design and from reading the code, not from following them during a drill.** The
-failure drills were skipped (ADR, 3 Oct 2026), so no alarm or alert has ever fired in dev and no step
-below has been exercised against a real failure. Treat a step that does not match what you see as a
-runbook bug and fix the runbook.
+failure drills on EKS were skipped, so no alarm or alert has ever fired in dev and no step below has been
+exercised against a real failure. Treat a step that does not match what you see as a runbook bug and fix the
+runbook.
 
 ## Where the alarms come from
 
@@ -30,6 +31,13 @@ Everything arrives by email through one SNS topic (`loria-retail-dev-alarms`):
 | `db-cpu`, `db-connections`, `db-freeable-memory`, `db-free-storage`, `db-transaction-ids` | RDS is under pressure or filling | [database-connectivity](database-connectivity.md) |
 | `alb-5xx-rate`, `alb-p95-latency` | The load balancer is returning 5xx or answering slowly | [failed-deployment](failed-deployment.md), then [unhealthy-pods](unhealthy-pods.md) and [database-connectivity](database-connectivity.md) |
 | An `app-deploy` run that is red | A release or the acceptance suite failed | [failed-deployment](failed-deployment.md) |
+
+## Procedures
+
+Not tied to an alarm:
+
+- [local-environment](local-environment.md): the clean start, restarting LocalStack, the failure drills and the local Kubernetes cluster.
+- Dev environment (bring-up, teardown, resetting the market, opening it in a browser): `.github/workflows/README.md`.
 
 ## What a person can use
 

@@ -2,7 +2,17 @@
 
 One file per ADR when a decision in DESIGN.md section 2 changes. Until then this file is the record of what was learned and decided while building: DESIGN.md holds the baseline, this holds the updates. Nothing here overrides DESIGN.md; if they disagree, stop and ask.
 
+**Where things are.** The README and DESIGN.md describe the system as it is now and nothing else; everything about how it got here is in this file:
+
+- Change history (below), then what each stage built and what went wrong: API contracts, data model, events, local environment, testing rules, UI, hardening and local Kubernetes (Phase 1); "Cloud (dev on AWS) as built" (Phase 2); "CI/CD as built" (Phase 3); "Observability and reliability as built" (Phase 4); the CloudPunks sections (N1 to N7, and what followed).
+- "Decided questions" and "Working notes moved out of CLAUDE.md".
+- "Moved from DESIGN.md" at the end: the build plan, milestone lists, open questions, risks and the working rules as they were.
+
+Procedures (clean start, failure drills, the local cluster, and what to do when an alarm fires) are runbooks: `docs/runbooks/README.md`.
+
 ## Change history (was the DESIGN.md status line)
+
+**v2.9 (4 Oct 2026): documentation simplified.** README, DESIGN.md and the other READMEs were cut back to what is built and how to run it; dates, plan days, status prose, milestone lists, open questions and risks moved to "Moved from DESIGN.md" below, and the local procedures (clean start, drills, local cluster) became a runbook. State at that point: Phases 1 to 4 and the CloudPunks market are built; dev runs on AWS with the CloudPunks release deployed (the cloud acceptance suite passed 17 of 17) and has had its market reset; the market activity emails are live in dev (confirmed by the owner); the failure drills on EKS, the teardown workflows, `app-rollback` and `promote` have never run.
 
 **v2.8 (3 Oct 2026): the CloudPunks redesign (DESIGN.md section 16).** One collection of 100 generated pixel-art CloudPunks priced in ETH; ownership in inventory, with the reservation as the transfer; listings, bids, resale and activity in order-service; a marketplace UI after OpenSea's collection page. Built in milestones N1 to N7 (see the sections "CloudPunks art as built" through "Local cluster and cloud" below) and verified on Compose and the local cluster; not yet deployed to dev. DESIGN.md sections 1 to 15 and the README now describe it; section 16 holds the design.
 
@@ -493,7 +503,7 @@ The owner asked for an email for every sale, bid, listing and take-off, with the
 - **SES v1, not v2.** The first version called SES v2 `SendEmail` with raw content; LocalStack answers that with 501, so it uses v1 `SendRawEmail`, which both accept. The role may only `ses:SendRawEmail` as the one identity.
 - **The picture** is drawn in the Lambda from the CloudPunk's SVG (rects with fill and fill-opacity only) into a 240 x 240 PNG with zlib, because Gmail and most clients block inline SVG. The packager takes the SVGs from `nft-collection/` at build time, so the art keeps one home; `scripts/package_lambda.py` now builds both Lambda zips into a directory (the workflows call it without arguments, unchanged), and LocalStack builds them with the same script (it mounts the script and `nft-collection/`).
 - **Found on the way:** the OrbStack cluster's releases from N6 were still running old images against Compose's LocalStack and PostgreSQL, so two order consumers and two relays shared the queues and the outbox: a purchase confirmed by the old consumer wrote no `SALE`. `make k8s-down` removed them (`make k8s-deploy` brings them back); local work is on Compose again. Earlier journey runs passed with both running, so this had gone unnoticed.
-- **Checked locally,** end to end on Compose: a purchase from CloudPunks, putting it up, a bid, a withdrawal, another bid, accepting it, putting it up again and taking it off each produced their email in LocalStack's SES store (`/_aws/ses`), with the right subject, a plain-text and an HTML part, and the PNG inline. Integration tests (order-service 77, three new), the Lambda's 20 tests and the packager's were each shown to fail with their guard removed where they guard behaviour (the sale write). terraform fmt and validate, tflint and checkov (CI's image) pass. **Not yet in the cloud:** `bootstrap-ci-roles`, `platform-create` (plan and apply), the verification click, then `app-prepare` and `app-deploy`.
+- **Checked locally,** end to end on Compose: a purchase from CloudPunks, putting it up, a bid, a withdrawal, another bid, accepting it, putting it up again and taking it off each produced their email in LocalStack's SES store (`/_aws/ses`), with the right subject, a plain-text and an HTML part, and the PNG inline. Integration tests (order-service 77, three new), the Lambda's 20 tests and the packager's were each shown to fail with their guard removed where they guard behaviour (the sale write). terraform fmt and validate, tflint and checkov (CI's image) pass. **In the cloud:** applied and working in dev (confirmed by the owner, 4 Oct 2026).
 
 ## Decided questions
 
@@ -544,3 +554,165 @@ The owner asked for an email for every sale, bid, listing and take-off, with the
 - [x] P4.5 drills skipped (3 Oct 2026, owner's decision): `drills.yml` (consumer-down, bus-down) exists and was not run; poison, duplicate, cache-down and DB-down on EKS were not built. Consequences recorded: the failure drills have still never been run against dev; no alarm or alert has fired in dev, so the email path (CloudWatch alarms and Alertmanager to SNS to the owner's inbox) is configured and confirmed subscribed but unproven; and the runbooks (P4.6) are written from the design, not from following them during a drill. Also learned while deploying P4.4: `app-prepare`'s `verify` job failed once the monitoring release put upstream images in the namespace, because it compared every pod with ECR; it now compares only `loria-retail/*` images and lists the rest as third party.
 - [x] P4.4 applied in dev (3 Oct 2026): `platform-create` added the Alertmanager role (3 resources) and `app-deploy` installed Alertmanager and passed 14 of 14, including the check that the four rules are loaded and healthy and that Prometheus reaches a ready Alertmanager.
 - [x] P4.6 built (3 Oct 2026): five runbooks and an index in `docs/runbooks/`, a consistency test between them and the alarms, and pod triage output in `cluster-capacity.yml`. Unexercised: no drill ran, so every step is from reading the design and the code. Three gaps are recorded rather than papered over: no restart workflow, no way to read the database, and no dead-letter peek or redrive in the cloud outside the SQS console.
+
+## Moved from DESIGN.md (4 Oct 2026)
+
+DESIGN.md now describes only what is built and how it works. The build plan, the milestone lists, the status prose, the open questions and the risks that had collected in it are kept here as they were written. They are a record, not a description of the system.
+
+### The build plan and its phases
+
+| Phase | Scope | Plan day | Exit criterion |
+| --- | --- | --- | --- |
+| 1a — Local (Compose on OrbStack) | Services, data layer, events, tests | Day 1–2 | Acceptance test passes on `make up` |
+| 1b — UI (React) | `ui/` single-page app and nginx image, gateway `/` route, Playwright journeys (M8; section 15) | Day 2 (late) | Browser journeys pass on Compose via `make ui-e2e` |
+| 1c — Local Kubernetes (OrbStack) | Helm chart for every process including the UI, probes, HPA, ingress, rollback on the local cluster | Day 3 (morning) | Same test (API acceptance and UI journeys) passes via local ingress; `helm rollback` demonstrated |
+| 2 — Cloud infra, built through CI | Manual OIDC provider + `cloudbatch818-loria-retail-bootstrap` role; `bootstrap-state-bucket.yml`, `bootstrap-ci-roles.yml`; `platform-create.yml`; Terraform, ECR, EKS, in-VPC runners; the 1c chart with dev values. No AWS access exists outside GitHub Actions (ADR-14) | Day 3 | Same test passes against the EKS ingress, run from a workflow. **Met** (2 Oct 2026): `app-deploy.yml` runs the acceptance suite through the dev ALB |
+| 3 — CI/CD | `pr.yml` with one required `ci` gate, Trivy image and config scans, Checkov, tflint, actionlint; protected `stage` and `prod` branches and Environments; `promote.yml`; `app-rollback.yml`. No push trigger for the deploy (decided) | Day 4 | **Met in part** (2 Oct 2026, release `v0.1.0`): a pull request is gated by `ci`. `app-rollback.yml` and `promote.yml` have never run (stage and prod are not deployed) |
+| 4 — Reliability (P4.1 to P4.7, section 13) | CloudWatch alarms, Container Insights logs, Prometheus, Alertmanager and a view-only Grafana with the four SLIs, runbooks, failure drills on EKS, a second node | Day 5 | **Not met** (3 Oct 2026): each drill in section 11 detected and recovered. The drills were skipped, so the path from a failure to an email is unproven. The rest is built and applied in dev |
+| 5 — CloudPunks (N1 to N7, section 16) | One collection of 100 generated pixel-art CloudPunks priced in ETH, ownership in inventory, listings and bids in order-service, resale by accepting a bid, a marketplace UI | — | **Met locally** (3 Oct 2026): `make lint test itest e2e ui-e2e` on Compose and `make k8s-deploy k8s-e2e` on the local cluster. Not yet deployed to dev |
+
+This document is detailed for Phase 1 and gives forward-compatible contracts for Phases 2–4 so nothing built locally has to be rewritten; section 16 does the same for the CloudPunks redesign.
+
+### Phase 1 milestones (M0 to M10)
+
+Eleven milestones (M0 to M10), each a separate PR-sized unit that leaves `make up` working. Claude Code finishes one, runs its checks, and stops for review before the next.
+
+- [x] **M0 — Scaffold.** Repo tree from section 9, uv workspace, ruff/mypy/pytest config, Makefile, `.env.example`, `CLAUDE.md`, empty service apps returning `/health/live`. *Done when:* `make lint test` passes; `make up` starts four services with 200 on `/health/live`.
+- [x] **M1 — `libs/common`.** Settings, structlog + correlation middleware, metrics middleware, health router, error model, httpx2 client, envelope + v1 schemas, EventBridge publisher, SQS consumer loop. *Done when:* unit tests cover partial `PutEvents` failure, poison vs transient handling, correlation propagation.
+- [x] **M2 — Local infrastructure.** Compose with PostgreSQL, Valkey, LocalStack (auth token in .env), gateway; PostgreSQL init (two DBs; per service an owner role for migrations and an app role with DML only); LocalStack bootstrap (including DynamoDB TTL and a stub `functions/low-stock-alert/handler.py` that M7 replaces); seed script (5 categories, 20 products, stock 10–50 each; the catalog half needs the M3 migration and fails loudly if the schema is missing; stock seeds regardless). *Done when:* `awslocal events list-rules --event-bus-name retail-events` shows 4 rules; tables and queues exist; seed is idempotent.
+- [x] **M3 — Product Service.** Alembic migration, CRUD, cache-aside + invalidation, readiness on PostgreSQL. *Done when:* integration tests pass with Valkey up and down.
+- [x] **M4 — Inventory Service API.** Get stock, batch availability, admin set-stock. *Done when:* strongly consistent reads verified in integration test.
+- [x] **M5 — Order Service (sync path + outbox).** Migration (all four order tables, including `processed_events`, which M6 first uses), create order with price snapshot, idempotency key, pre-check, outbox write in the same transaction, relay process. *Done when:* `POST /orders` → row in `orders` + `outbox`; relay publishes; the "Bus unavailable" drill passes.
+- [x] **M6 — Async flow.** Inventory consumer (transactional reservation, duplicate re-emit), Order consumer (state machine, `processed_events`), outcome → `OrderStatusUpdated` via outbox. *Done when:* acceptance steps 1–5, 7 and 8 pass (`make e2e`); step 6 needs M7's notifications and is tested there.
+- [x] **M7 — Notification + Lambda.** Notification consumer + read API; low-stock Lambda with unit test and LocalStack invocation. *Done when:* acceptance steps 1–10 pass (step 6 first runs here); low-stock log visible in LocalStack logs.
+- [x] **M8 — UI (React).** `ui/` built to section 15: a Vite + TypeScript SPA with catalog (category filter, pagination, stock badges), product, basket, checkout, live order tracking (polls to `CONFIRMED`/`REJECTED`, shows notifications), my orders, and a demo-tools page behind a build flag; API types generated from committed OpenAPI snapshots; `ui` nginx image; gateway `/` route; `make ui-*` targets. Depends on M7 (order status transitions and notifications must exist). *Done when:* `make lint test` runs and passes the UI checks (eslint, `tsc`, vitest, production build within the bundle budget); after `make reset && make up && make seed` the UI is served at `http://localhost:8080/`; `make ui-e2e` passes every journey in section 15.6 including the async `REJECTED` order and the double-submit idempotency case; its Helm values (`values-ui-local.yaml`) and Traefik route arrive with M10.
+- [x] **M9 — Hardening.** All failure drills scripted as Make targets and pytest e2e cases; stuck-order sweeper; Prometheus + Grafana profile with one dashboard (RED per service, queue depth, outbox lag); README with run instructions. *Done when:* `make e2e` runs acceptance + all drills green from a clean `make reset && make up`, and `make ui-e2e` passes on the same clean start.
+- [x] **M10 — Local Kubernetes on OrbStack.** Helm library chart `deploy/helm/retail-service` built to the section 13 spec, `values-<svc>-local.yaml` (including `values-ui-local.yaml`), Traefik ingress mirroring the gateway paths, migration Jobs as `pre-install,pre-upgrade` hooks, HPA on the API services, PDBs, multi-arch `docker buildx` build. *Done when:* `make k8s-deploy k8s-e2e` passes (API acceptance and the UI journeys); `kubectl delete pod` on any service recovers with no failed orders; a deliberately broken release (bad readiness path) fails `--atomic`, and `helm rollback` restores a passing e2e.
+
+M8 deliberately sits right after M7, which it needs (order status transitions and notifications), and before hardening and Kubernetes: it is the first real client of the APIs, and it touches the gateway, Compose, the clean-start e2e and the Helm chart, so building it first means M9 and M10 include it instead of reopening them.
+
+Phase 1 is complete when M10 (local Kubernetes) is done. Only then start Phase 2 (Terraform, ECR, EKS).
+
+### Phase 2 bring-up order, and the in-VPC runner mechanism
+
+Bring-up order as designed (the workflow run order is in `.github/workflows/README.md`):
+
+1. **Manual, once, by the owner (console or CloudShell):** create the IAM OIDC provider `token.actions.githubusercontent.com` (audience `sts.amazonaws.com`) and the role `cloudbatch818-loria-retail-bootstrap`. Trust: `aud = sts.amazonaws.com` and `sub = <sub prefix>:environment:bootstrap`, where the prefix is `repo:<owner>@<owner id>/<repo>@<repo id>` because this repo uses immutable OIDC subjects (check `gh api repos/<owner>/<repo>/actions/oidc/customization/sub`). Permissions: S3 on the state bucket, and IAM create/update on `role/cloudbatch818-loria-*` and `policy/cloudbatch818-loria-*`, with an explicit Deny on IAM actions against its own role (its name matches the prefix, so the Allow would otherwise cover it). Create the GitHub Environment `bootstrap` (required reviewer, deployment branch limited to `dev`) and set `AWS_ROLE_ARN_BOOTSTRAP` and `AWS_REGION`. Nothing else is created by hand. Because this role can mint roles it is effectively admin; the pinned `sub`, the reviewer gate, and `workflow_dispatch`-only trigger are its controls.
+2. **`bootstrap-state-bucket.yml` (`workflow_dispatch`, environment `bootstrap`):** idempotent AWS CLI calls (not Terraform; there is no state to start from) create `loria-retail-tfstate-<account-id>-<region>` with versioning, SSE, all public access blocked, a TLS-only bucket policy and noncurrent-version expiry. Then **`bootstrap-ci-roles.yml`** (also `workflow_dispatch`, environment `bootstrap`, independent of the first) runs `terraform apply` of `infra/terraform/bootstrap/` (state key `bootstrap/terraform.tfstate`), which uses the `github-oidc` module to create the roles in the table below.
+3. **`platform-create.yml` on GitHub-hosted runners** applies `envs/<env>/platform` (network, eks, data, events, ecr, runners). The EKS endpoint is private, but creating the cluster only needs the AWS API, so hosted runners suffice.
+4. **`addons-create.yml` on the in-VPC runners** applies `envs/<env>/cluster-addons` (AWS Load Balancer Controller, External Secrets Operator, namespace, `ExternalSecret`/ingress class). Terraform's `helm`/`kubernetes` providers need the private API, so this stack cannot run on hosted runners.
+5. `app-prepare.yml` tests, builds and pushes to ECR, and verifies; `app-deploy.yml` runs `helm upgrade --install --atomic` and e2e on the in-VPC runners.
+
+**In-VPC runners (`modules/runners`).** Ephemeral EC2 runners (arm64, private-app subnets, one job each via `--ephemeral`), label `retail-vpc`, in a runner group limited to this repo. Their instance profile grants nothing beyond SSM; jobs get AWS access only through OIDC, never the instance role. The runner registration credential is a GitHub App key or fine-grained token held in Secrets Manager (a GitHub credential, not an AWS one). Mechanism (decided 2 Oct 2026): one arm64 EC2 instance in an Auto Scaling group of one. A systemd loop registers it with `--ephemeral`, runs one job, deregisters and repeats. The registration credential is a fine-grained PAT (Administration: read and write on this repository) that the loop reads from Secrets Manager as root; job processes run as another user, and iptables blocks that user's traffic to the instance metadata service, so jobs cannot borrow the instance role. Scale-to-zero (webhook-launched instances) and actions-runner-controller were rejected for now: the first adds API Gateway, Lambda and SQS, and ARC needs a first runner to install through the private API. **The repo is public, so:** self-hosted jobs run only for `push` to `dev` (the default branch), `workflow_dispatch`, tags, and approved environments — never `pull_request`; enable "Require approval for all outside collaborators"; fork PRs never reach these runners.
+
+### Phase 4 status when it was written
+
+**Status: built and applied in dev (release v0.1.5), with one exit criterion not met.** The failure drills were skipped, so nothing has fired in dev: the path from a failure to an email (Alertmanager or a CloudWatch alarm, then SNS, then the inbox) is configured and confirmed subscribed but has never carried an alert, and the runbooks are written from the design and the code, not from a drill. What exists, what was proved and what was learned: `docs/adr/README.md`, "Observability and reliability as built (Phase 4)".
+
+The seven milestones (P4.1 to P4.7), the as-built notes for each and the drill plan for the four unbuilt drills: `docs/adr/README.md`, "Phase 4 scope and decisions".
+
+### Working rules (a copy of CLAUDE.md)
+
+CLAUDE.md is git-ignored and kept locally; this is the copy DESIGN.md section 14 used to carry, as it stood on 4 Oct 2026. CLAUDE.md is the one to change.
+
+```markdown
+# CLAUDE.md
+Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not silently diverge.
+
+## Workflow
+- Work one milestone (M0–M10) at a time. Finish with: make lint test (and itest/e2e when the milestone says so).
+- Stop after each milestone with a summary of what changed, what was verified, and any deviation from DESIGN.md.
+- Ask before adding a dependency, a service, a table, an event type, or changing an API contract.
+- `dev` is the default branch and the only one developed on (no `main`). `stage` and `prod` exist for promotion and take changes only by a reviewed pull request, never a direct push; `dev` blocks force pushes and deletion but needs no pull request. Develop and push on `dev`; PRs only when asked. Commit, push and open PRs only when asked. No AI attribution in commits or PRs.
+- Record a changed API contract in the same change (`make openapi` for the generated spec; baseline in DESIGN.md).
+- Run lint, test, up, down, seed, logs and the local cluster (`k8s-*`) through `make` (Compose needs its `IMAGE_TAG` and `--env-file .env`).
+- Unit tests are hermetic (no AWS, no LocalStack). Integration tests touch only their own data and never the shared queues or the real `retail-events` bus.
+- A test that guards critical behavior must be shown able to fail: break the code once, see it fail, restore it.
+- Every service's package is named `app`: run mypy and pytest once per service, never over several.
+- Node work goes through `make ui-*`; `npm ci`, never `npm install`; ask before adding an npm dependency outside DESIGN.md section 15.2.
+- Operating notes and lessons from earlier milestones: docs/adr/README.md.
+
+## Must
+- Domain code has no I/O imports (boto3, sqlalchemy, httpx2, redis).
+- Every consumer is idempotent on event_id; dedupe happens in the same transaction as the business write.
+- Order events go through the outbox. Never call PutEvents from a request handler.
+- Money: Decimal, strings in JSON (NUMERIC(10,2) prices, NUMERIC(12,2) totals; JSON numbers rejected). IDs: ULID.
+- AWS clients are built from env only; no endpoint URLs or credentials in code.
+- Liveness checks nothing external. Readiness checks required stores only.
+- Structured JSON logs with correlation_id; metric labels use route templates.
+- Migrations: Alembic, backward compatible, forward-only, run via the migrate command only, as the schema owner role.
+- Stock reads use `ConsistentRead=True`; inventory responses are `Cache-Control: no-store`.
+- Make downstream calls (HTTP, bus) before opening the write transaction, never while holding a database connection (the outbox relay is the one exception).
+- A store that cannot serve a request is a 503 with Retry-After and a generic message, never a 500. A cache failure is a miss, never an error.
+- Cloud AWS access only through GitHub Actions OIDC roles; jobs that touch EKS run on the in-VPC ephemeral runners.
+- UI (`ui/`, DESIGN.md section 15) is a pure client of the public `/api/v1` API, same-origin through the gateway: relative URLs, no secrets, no AWS or database access. A need the API cannot meet is a question for the owner, never a new endpoint.
+- UI money is integer minor units (`BigInt`) formatted by string; browser totals are labelled estimates. Every order submit sends an `Idempotency-Key` (same basket, same key); every request sends `X-Correlation-ID`; error panels show the `correlation_id`.
+- UI: TypeScript `strict`; wrap every `localStorage` access in try/catch; UI image built from `ui/` only, multi-stage, non-root; `VITE_DEMO_TOOLS` off outside local.
+
+## Must not
+- Commit secrets or .env (use .env.example), or read, print or log values from .env.
+- Cache inventory/stock data.
+- Cache stock in the UI either (`staleTime: 0`, `gcTime: 0`, never persisted).
+- In the UI: use a JS `number` or `parseFloat` for money, `any`, `dangerouslySetInnerHTML`, inline scripts or styles, or external requests.
+- Use :latest image tags anywhere, KEYS * in Valkey, floats for money, or bare except.
+- Add Kafka, a service mesh, auth, payments, or GitOps tooling (login, payments and server-side carts stay out even with the UI).
+- Write Terraform or GitHub Actions before M10 is done.
+- Run kubectl or helm without an explicit --context (local work targets `orbstack`).
+- Use, request, create or store AWS credentials, or run terraform plan/apply, aws, kubectl or helm against AWS/EKS from the laptop (locally only: terraform fmt/validate, tflint, checkov, helm lint, kubeconform).
+- Manage the OIDC provider or the `cloudbatch818-loria-retail-bootstrap` role in Terraform, or run self-hosted runners for fork PRs.
+
+```
+
+### Open questions
+
+- [ ] Node: pinned to 24 LTS (Active LTS today); Node 26 becomes LTS on 28 Oct 2026, so revisit then.
+- [ ] Later hosting: serve the static UI files from S3 + CloudFront instead of a container? Not before the cloud strategy pass.
+- [ ] Should `reserved` stock ever be released or committed? This design never releases (no cancellation). Needed before adding cancellations in a later week.
+- [ ] Database TLS: dev uses `DB_SSLMODE=require`. `verify-full` needs the RDS CA bundle in the images.
+- [ ] A Valkey AUTH token (it has TLS and a security-group limit now), pinned EKS add-on versions and a pinned PostgreSQL minor.
+- [ ] HTTPS and a domain (ACM certificate, Route 53). Until then dev is plain HTTP.
+- [ ] The failure drills on EKS (section 11): skipped on 3 Oct 2026. `drills.yml` has `consumer-down` and `bus-down`; poison, duplicate, cache-down and DB-down are not built. No alarm has been seen to fire in dev.
+- [ ] Teardown, rollback and promotion: `app-destroy`, `addons-destroy`, `platform-destroy`, `alarms-destroy`, the viewer's `remove`, `app-rollback` and `promote` have never run. A first promotion also needs a second reviewer, because the owner cannot approve their own pull request into `stage` or `prod`.
+
+Closed questions and their reasons (UI scope and sequencing, Python and LocalStack, environments, bootstrap, runners, names, roles, the budget, Phase 3 and Phase 4 decisions) are recorded in `docs/adr/README.md`, "Decided questions" and "Open questions that were closed".
+
+### Risks
+
+| Risk | Impact | Mitigation |
+| --- | --- | --- |
+| LocalStack behaviour differs from AWS (IAM not enforced, queue policies ignored) | Works locally, fails silently in cloud | The acceptance suite runs against dev after every deploy; alarm on `FailedInvocations`. The failure drills have not been run against dev |
+| Outbox relay implemented as "publish then mark" outside a lock | Duplicate or skipped events | Unit test for partial failure; `SKIP LOCKED`; idempotent consumers absorb duplicates |
+| Reservation logic conflates duplicate vs out-of-stock cancellations | Oversell or false rejects | Explicit `CancellationReasons` handling + unit tests (section 5) |
+| Scope creep from Day 1–2 into Day 3+ | No cloud deployment by Day 5 | Milestone gates; M10 is the hard stop for Phase 1 |
+| UI scope creep (login, payments, carts, pixel polish) | Delays the cloud phase | The non-goals are fixed in section 15; the UI holds no backend logic; M8 has a done-when gate |
+| npm supply-chain compromise | Malicious code in the build or the shipped bundle | Exact versions in the lockfile, `npm ci` only, a short approved dependency list, `npm audit` and Trivy in CI, no secrets anywhere near the build |
+| Playwright and Chromium on top of the stack on an 8 GB Mac | Memory pressure and Docker engine restarts (seen in M5) | Headless Chromium, one worker, run on a freshly started stack with other apps closed; CI runs it on hosted runners |
+| Wrong money or stale stock shown in the UI | Customers see wrong totals or buy what is not there | Integer minor-unit arithmetic with server totals authoritative; stock never cached (`staleTime: 0`, `gcTime: 0`); both covered by tests |
+| Idle AWS resources over nights/weekend | Unexpected bill | Tag everything `Project=retail-platform` (default tags in each stack), the $350 AWS Budgets alert, destroy dev (`alarms-destroy`, `app-destroy`, `addons-destroy`, then `platform-destroy`) when idle |
+| Self-hosted runner on a public repo executes untrusted fork code | Code execution inside the VPC next to the cluster | Runners serve only push-to-`dev`/dispatch/tag/environment jobs, never `pull_request`; approval required for outside collaborators; ephemeral single-job runners; instance profile grants SSM only |
+| `cloudbatch818-loria-retail-bootstrap` can create IAM roles | Effectively admin if the trust is widened or the workflow is edited | Exact `sub` pin to `environment:bootstrap`, required reviewer, `workflow_dispatch` only, the `bootstrap` environment accepts only the `dev` branch (branch protection on `.github/` is not set up yet) |
+| No local way to run plan/apply/kubectl | Slow feedback; cloud errors surface only in CI | Static checks locally; workflows dump diagnostics on failure; small, frequent infra PRs |
+| Public viewer ALB (`app-expose.yml`) | Anyone at the allowed address reaches an app with no login and unauthenticated admin endpoints, over plain HTTP | Dev only; one address from an environment secret (masked, never in the repo); `scripts/viewer_cidr.py` refuses anything wider than a /24, private addresses and `0.0.0.0/0`; `remove` deletes it |
+| The alarm and alert path is untested | An outage could pass without an email: a wrong rule, a muted subscription or a broken Alertmanager role would not show until a real failure | Rules are unit-tested (`make rules-test`), the subscription is confirmed, a cloud test checks the rules are loaded and Alertmanager is ready, and the runbook index is tested against the alarms. Not covered: a failure that actually fires one. Run `drills.yml` (`bus-down`, then `consumer-down`) to close this |
+| The nodes' pod limit and CPU | Pods stay `Pending` if the pod limit (about 29 per node) or CPU is reached, for example when an HPA scales up or another stack is added | Dev has two nodes (about 58 pods; the measurement that led to the second is in the ADR notes). Run `cluster-capacity.yml` after a change that adds pods |
+| Teardown workflows never run | `app-destroy`, `addons-destroy` and `platform-destroy` are untested end to end; a destroy could hang on an ALB or a security group | Order is fixed (app, addons, platform); `platform-destroy` refuses while the addons state has resources; run them once in dev before relying on them |
+
+### CloudPunks status and milestones (N1 to N7)
+
+**Status: approved by the owner (3 Oct 2026), being built milestone by milestone (16.9).** ADR-18 to ADR-21 are in section 2; section 15 is updated to match 16.6 in N5.
+
+Same rules as section 12: one at a time, `make lint test` (and itest, e2e when stated), a summary and a stop after each.
+
+- [x] **N1 — Art.** *(Built and approved 3 Oct 2026.)* The generator, 100 SVGs in `nft-collection/` (0001 as approved), the trait and price data for the seed, `make ui-art` and its lint check. *Done when:* a contact sheet of all 100 is reviewed by the owner.
+- [x] **N2 — Catalog.** *(Built and approved 3 Oct 2026.)* Seed the five types and 100 products in ETH, one of each; delete the old catalog, art and palettes; the e2e fixtures move to `E2E-` products. *Done when:* `make lint test itest e2e` pass on a clean `make reset && make up && make seed`.
+- [x] **N3 — Ownership (inventory).** *(Built and approved 3 Oct 2026.)* `owner`, the two reservation modes, the new response field, `reset_owner`, `InventoryFailed.detail`. *Done when:* unit and integration tests, including the two-buyer race, pass and the guards are shown able to fail.
+- [x] **N4 — Listings, bids and activity (order-service).** *(Built and approved 3 Oct 2026.)* Migration 0002, `seller` on items, the listing and bid endpoints, settling in the consumer, `/activity`, `OrderCreated.seller`. *Done when:* unit, integration and `make e2e` pass with the new acceptance steps.
+- [x] **N5 — UI.** *(Built and approved 3 Oct 2026.)* The screens in 16.6, the old screens removed, component tests and browser journeys rewritten. *Done when:* `make lint test ui-e2e` pass; axe clean.
+- [x] **N6 — Local cluster and cloud.** *(Local cluster verified and approved 3 Oct 2026; the cloud suite runs at the owner's next `app-deploy`.)* `make k8s-deploy k8s-e2e` pass; the cloud acceptance suite updated (it is run by `app-deploy` only when the owner chooses to deploy).
+- [x] **N7 — Docs.** *(Done 3 Oct 2026; awaiting review.)* README, DESIGN.md sections 1 to 15 brought in line, the ADR notes, the OpenAPI baseline.
+
+**Settled with the owner (3 Oct 2026)**
+
+1. Purple has no fixed price: a resale happens only when the owner accepts a bid (no buy-now on purple, no minimum bid).
+2. The e2e suite works on its own `E2E-` products, never on the 100.
+3. The seed never resets an existing CloudPunk; `make reset` is the clean start.

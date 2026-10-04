@@ -1,38 +1,38 @@
-# CloudPunks: Retail Microservices Platform — Design Doc
+# CloudPunks: Retail Microservices Platform — Design
 
-Author: M.L. · Status: Phases 1 to 4 are built and dev runs on AWS (release v0.1.5, 3 Oct 2026); one exit criterion is not met (Phase 4's failure drills were skipped). The CloudPunks redesign (section 16: one NFT-style collection, resale through bids, a marketplace UI) is built and verified on Compose and the local cluster, and not yet deployed to dev. Change history, as-built notes and results: `docs/adr/README.md`.
+How the platform is built and why. How it got here, what went wrong and what was decided on the way: `docs/adr/README.md`. What to do when something breaks, and the local procedures: `docs/runbooks/README.md`.
 
 ## 1. Overview
 
-We build a four-service order platform that runs end-to-end on localhost first, then moves to AWS EKS with no application code changes — only configuration. Since the redesign (section 16) it is the marketplace for one collection, **CloudPunks**: 100 one-of-a-kind pixel-art characters, bought from the platform and resold between customers through bids. Sections 1 to 15 are the platform's design; section 16 is the marketplace on top of it, and where they differ section 16 wins. Every AWS dependency is reached through an adapter whose endpoint is an environment variable, so LocalStack, PostgreSQL and Valkey containers stand in for EventBridge/SQS/DynamoDB, RDS and ElastiCache.
+A four-service order platform and, on top of it, a marketplace for one collection, **CloudPunks**: 100 one-of-a-kind pixel-art characters that customers buy from the platform and resell to each other through bids (section 16). It runs end to end on localhost (Docker Compose, then OrbStack Kubernetes) and on AWS EKS with no application code changes, only configuration: every AWS dependency is reached through an adapter whose endpoint is an environment variable, so LocalStack, PostgreSQL and Valkey containers stand in for EventBridge/SQS/DynamoDB, RDS and ElastiCache.
 
 **Goals**
 
-- A customer can browse products, place an order, and see it move `PENDING → CONFIRMED | REJECTED` via asynchronous events. With CloudPunks: browse the 100, buy an unsold one, put one you own up for bid, and accept a bid, each sale moving ownership through the same events (section 16).
+- A customer can browse the 100 CloudPunks, buy an unsold one, put one they own up for bid and accept a bid. Every sale is an order that moves `PENDING → CONFIRMED | REJECTED` through asynchronous events, and moves ownership.
 - Correct under retries and duplicates: no double reservation, no lost events, no stuck orders.
-- Observable from day one: structured logs with correlation IDs, Prometheus metrics, health endpoints.
-- Cloud-portable: the same container images and env-var contract run on Docker Compose and EKS.
-- The same journey works in a browser: a React single-page app (sections 15 and 16.6, a marketplace collection page) on top of the public API, served through the same gateway.
+- Observable: structured logs with correlation IDs, Prometheus metrics, health endpoints.
+- Cloud-portable: the same container images and env-var contract run on Compose and EKS.
+- The same journey works in a browser: a React single-page app on the public API, served through the same gateway (sections 15 and 16.6).
 
-**Non-goals (this week)**
+**Non-goals**
 
-- Payments, carts, auth/login, cancellations, returns, multi-currency.
-- Service mesh, Kafka, GitOps (ArgoCD/Flux) — documented as extensions only.
-- Login, payments and server-side carts stay out even with a UI: the UI uses a demo customer id (section 15). Also out: SSR, PWA/offline, i18n, analytics. With CloudPunks: no blockchain, wallet, token or royalty; a bid reserves no funds.
+- Payments, carts, login, cancellations, returns, multi-currency. The UI uses a demo customer id, and a bid reserves no funds.
+- Blockchain, wallet, token, royalty.
+- Service mesh, Kafka, GitOps (ArgoCD/Flux).
+- SSR, PWA/offline, i18n, analytics.
 
-**Build strategy**
+**What is built**
 
-| Phase | Scope | Plan day | Exit criterion |
-| --- | --- | --- | --- |
-| 1a — Local (Compose on OrbStack) | Services, data layer, events, tests | Day 1–2 | Acceptance test passes on `make up` |
-| 1b — UI (React) | `ui/` single-page app and nginx image, gateway `/` route, Playwright journeys (M8; section 15) | Day 2 (late) | Browser journeys pass on Compose via `make ui-e2e` |
-| 1c — Local Kubernetes (OrbStack) | Helm chart for every process including the UI, probes, HPA, ingress, rollback on the local cluster | Day 3 (morning) | Same test (API acceptance and UI journeys) passes via local ingress; `helm rollback` demonstrated |
-| 2 — Cloud infra, built through CI | Manual OIDC provider + `cloudbatch818-loria-retail-bootstrap` role; `bootstrap-state-bucket.yml`, `bootstrap-ci-roles.yml`; `platform-create.yml`; Terraform, ECR, EKS, in-VPC runners; the 1c chart with dev values. No AWS access exists outside GitHub Actions (ADR-14) | Day 3 | Same test passes against the EKS ingress, run from a workflow. **Met** (2 Oct 2026): `app-deploy.yml` runs the acceptance suite through the dev ALB |
-| 3 — CI/CD | `pr.yml` with one required `ci` gate, Trivy image and config scans, Checkov, tflint, actionlint; protected `stage` and `prod` branches and Environments; `promote.yml`; `app-rollback.yml`. No push trigger for the deploy (decided) | Day 4 | **Met in part** (2 Oct 2026, release `v0.1.0`): a pull request is gated by `ci`. `app-rollback.yml` and `promote.yml` have never run (stage and prod are not deployed) |
-| 4 — Reliability (P4.1 to P4.7, section 13) | CloudWatch alarms, Container Insights logs, Prometheus, Alertmanager and a view-only Grafana with the four SLIs, runbooks, failure drills on EKS, a second node | Day 5 | **Not met** (3 Oct 2026): each drill in section 11 detected and recovered. The drills were skipped, so the path from a failure to an email is unproven. The rest is built and applied in dev |
-| 5 — CloudPunks (N1 to N7, section 16) | One collection of 100 generated pixel-art CloudPunks priced in ETH, ownership in inventory, listings and bids in order-service, resale by accepting a bid, a marketplace UI | — | **Met locally** (3 Oct 2026): `make lint test itest e2e ui-e2e` on Compose and `make k8s-deploy k8s-e2e` on the local cluster. Not yet deployed to dev |
+| Layer | What exists |
+| --- | --- |
+| Local | Docker Compose on OrbStack: the four services, the UI and the gateway, with PostgreSQL, Valkey and LocalStack standing in for the cloud stores (`make up`, `make seed`) |
+| Local Kubernetes | One Helm chart for every process, Traefik ingress, probes, HPA, PDBs and rollback on OrbStack Kubernetes (`make k8s-deploy`) |
+| Cloud (dev) | Terraform stacks applied only from GitHub Actions: network, ECR, EKS with two nodes, RDS, ElastiCache, DynamoDB, EventBridge and SQS, the in-VPC runner. The same chart with dev values, behind an internal ALB (section 13) |
+| CI/CD | `pr.yml` with one required `ci` gate; the `app-*` workflows build, deploy, seed, reset, expose, roll back and destroy; `promote.yml` for stage and prod |
+| Reliability | CloudWatch alarms and a budget alert, Container Insights logs, Prometheus, Alertmanager and a view-only Grafana, a runbook for every alarm |
+| Marketplace | The 100 CloudPunks, ownership, listings, bids, activity, the marketplace UI and an email for every market event (section 16) |
 
-This document is detailed for Phase 1 and gives forward-compatible contracts for Phases 2–4 so nothing built locally has to be rewritten; section 16 does the same for the CloudPunks redesign.
+What has never run, and what is not built, is in section 14.
 
 ## 2. Key architecture decisions
 
@@ -44,7 +44,7 @@ Each decision below is binding for Claude Code; changing one means updating this
 | ADR-02 | Monorepo, one image per service, shared `libs/common` package | Atomic changes to event schemas; one CI pipeline with path filters | Polyrepo (schema drift, 4× pipeline work) |
 | ADR-03 | Database per service: `product_db` and `order_db` are separate PostgreSQL databases with separate roles | Services cannot join across boundaries; enables independent migration | Shared schema (hidden coupling) |
 | ADR-04 | Transactional outbox for Order Service events | Order write and event publish must be atomic; `POST /orders` is not a retryable message | Publish after commit (lost events on crash), 2PC (unavailable) |
-| ADR-05 | Inventory uses idempotent redelivery instead of an outbox | It is triggered by SQS; if publish fails, the message is not deleted and the retry re-emits from the stored reservation | DynamoDB Streams + EventBridge Pipes (better in cloud, weak local emulation) — Phase 4 option |
+| ADR-05 | Inventory uses idempotent redelivery instead of an outbox | It is triggered by SQS; if publish fails, the message is not deleted and the retry re-emits from the stored reservation | DynamoDB Streams + EventBridge Pipes (better in cloud, weak local emulation) — a possible later option |
 | ADR-06 | EventBridge custom bus → SQS queue per consumer → DLQ | Bus gives content routing and fan-out; SQS gives durability, backpressure, retries | SNS→SQS (no content filtering on detail), direct SQS (producer knows consumers) |
 | ADR-07 | All consumers idempotent keyed on `event.id` | SQS standard is at-least-once and unordered | FIFO queues (throughput caps, still need idempotency across the bus) |
 | ADR-08 | Synchronous inventory pre-check, asynchronous reservation | Fast feedback for obvious out-of-stock; reservation remains authoritative and race-safe | Sync reservation (tight coupling, distributed rollback) |
@@ -52,7 +52,7 @@ Each decision below is binding for Claude Code; changing one means updating this
 | ADR-10 | AWS SDK endpoint via `AWS_ENDPOINT_URL`, no code branches for local | Identical code path local and cloud; boto3 honours the env var natively | `if ENV == local` branches (untested prod paths) |
 | ADR-11 | Schema migrations run as a separate one-shot process, never at app startup | N replicas racing migrations; later maps to a Helm pre-upgrade Job | Migrate on boot (race, slow readiness) |
 | ADR-12 | Valkey 9.0 locally and on ElastiCache | ElastiCache now offers Valkey at lower cost than Redis OSS; wire-compatible with `redis-py` | Redis OSS 7 (fine, pricier on ElastiCache) |
-| ADR-13 | PostgreSQL 17 locally, Amazon RDS for PostgreSQL 17 in cloud (changed from Aurora on 1 Oct 2026 to cut cost and moving parts; deviates from the original brief's Aurora/RDS MySQL; that brief is not in this repo) | Transactional DDL (a failed migration rolls back cleanly), `JSONB` for the outbox, partial indexes, `INSERT … ON CONFLICT DO NOTHING` for dedupe, `SKIP LOCKED` | Aurora MySQL 3 (the original brief's default; non-transactional DDL, weaker partial-index story) |
+| ADR-13 | PostgreSQL 17 locally, Amazon RDS for PostgreSQL 17 in cloud (not Aurora: lower cost, fewer moving parts) | Transactional DDL (a failed migration rolls back cleanly), `JSONB` for the outbox, partial indexes, `INSERT … ON CONFLICT DO NOTHING` for dedupe, `SKIP LOCKED` | Aurora MySQL 3 (non-transactional DDL, weaker partial-index story) |
 | ADR-14 | AWS is reached only from GitHub Actions through OIDC role assumption; no IAM users, access keys or local AWS credentials exist. The OIDC provider and the `cloudbatch818-loria-retail-bootstrap` role are created by hand once; all other roles are Terraform-managed | Removes long-lived credentials entirely; every cloud change is reviewed, logged and reproducible | Local `terraform apply` with SSO or keys (unreviewed changes, credentials on a laptop) |
 | ADR-15 | Jobs that need the EKS API (helm, kubectl, e2e, drills) run on ephemeral self-hosted runners inside the VPC; all other jobs use GitHub-hosted runners | EKS endpoint stays private and the ALB can be internal; Terraform AWS-API calls need no VPC access | Public EKS endpoint with IAM auth (simpler, larger attack surface) |
 | ADR-16 | The UI is a React + TypeScript single-page app built with Vite into static files, served by an unprivileged nginx container (`ui`), and reached through the same gateway/ALB as the API on the same origin (`/` goes to `ui`, `/api/v1/*` to the services) | No CORS and no per-environment API URL in the bundle (it calls relative `/api/v1`), so one image runs on Compose, local Kubernetes and EKS; static files need no Node runtime to operate | Next.js (a Node SSR runtime to run and patch for no benefit here); Create React App (deprecated); S3 + CloudFront (cloud-only, breaks "same image everywhere"; a possible later option); a separate UI origin with CORS |
@@ -92,26 +92,27 @@ flowchart TB
     Nddb[("DynamoDB notifications")]
   end
   O -. "sync REST: price" .-> P
-  O -. "sync REST: stock pre-check" .-> I
-  O -->|"OrderCreated, OrderStatusUpdated (outbox relay only)"| BUS
+  O -. "sync REST: stock pre-check, owner" .-> I
+  O -->|"OrderCreated, OrderStatusUpdated, MarketActivity (outbox relay only)"| BUS
   I -->|"InventoryReserved / InventoryFailed"| BUS
   BUS{{"EventBridge bus: retail-events"}}
   BUS --> Q1["SQS inventory-order-events (+DLQ after 5)"] --> I
   BUS --> Q2["SQS order-inventory-events (+DLQ after 5)"] --> O
   BUS --> Q3["SQS notification-events (+DLQ after 5)"] --> N
   BUS --> L["Lambda low-stock-alert"]
+  BUS --> M["Lambda market-activity-email"] --> SES["SES email"]
 ```
 
-*Orders enter through REST and settle through events. Dashed = synchronous REST; solid into the bus = events published; bus to queue to service = SQS delivery.*
+*Orders enter through REST and settle through events. Dashed = synchronous REST; solid into the bus = events published; bus to queue to service = SQS delivery; the two Lambdas are invoked by the bus directly.*
 
-Order is the only service with both sync dependencies (Product for price, Inventory for the pre-check and, for the market, who owns a CloudPunk) and an outbox; Notification only listens. Product has no events. In the CloudPunks market the reservation is also the transfer of ownership, and accepting a bid is an ordinary order with a seller (section 16.5).
+Order is the only service with both sync dependencies (Product for price, Inventory for the pre-check and, for the market, who owns a CloudPunk) and an outbox; Notification only listens. Product has no events. In the marketplace the reservation is also the transfer of ownership, and accepting a bid is an ordinary order with a seller (section 16.5).
 
 ### Local to AWS mapping
 
-| Concern | Local (Phase 1) | AWS (Phase 2+) | What changes |
+| Concern | Local | AWS | What changes |
 | --- | --- | --- | --- |
-| Compute | Docker Compose containers (M0–M9), then OrbStack Kubernetes (M10) | EKS Deployments on managed node groups | Nothing in the image; Helm values |
-| Ingress | nginx gateway on :8080; Traefik in M10 | ALB via AWS Load Balancer Controller | Same path rules in Ingress (`/api/v1/*` to the services, everything else to `ui`) |
+| Compute | Docker Compose containers, or OrbStack Kubernetes | EKS Deployments on managed node groups | Nothing in the image; Helm values |
+| Ingress | nginx gateway on :8080; Traefik on OrbStack Kubernetes | ALB via AWS Load Balancer Controller | Same path rules in Ingress (`/api/v1/*` to the services, everything else to `ui`) |
 | UI | `ui` container (nginx serving static files) behind the gateway | EKS Deployment behind the ALB's default rule, image from ECR | Helm values only |
 | Relational | PostgreSQL 17 container | RDS for PostgreSQL 17 (dev Single-AZ, prod Multi-AZ) | `DB_HOST`, secret source |
 | Key-value | LocalStack DynamoDB | DynamoDB on-demand | `AWS_ENDPOINT_URL` unset |
@@ -202,7 +203,7 @@ Rules:
 
 ## 5. Data model
 
-Two PostgreSQL 17 databases (plain PostgreSQL features only, so RDS for PostgreSQL runs them unchanged), three DynamoDB tables, one cache namespace per service. Migrations use Alembic; every migration must be backward compatible with the previous app version (expand → migrate → contract), because Phase 3 rollbacks roll back code, not schema.
+Two PostgreSQL 17 databases (plain PostgreSQL features only, so RDS for PostgreSQL runs them unchanged), three DynamoDB tables, one cache namespace per service. Migrations use Alembic; every migration must be backward compatible with the previous app version (expand → migrate → contract), because a rollback rolls back code, not schema.
 
 Each database has two roles: `<svc>_owner` owns the schema and runs migrations; `<svc>_app` gets `SELECT, INSERT, UPDATE, DELETE` through `ALTER DEFAULT PRIVILEGES`, so the running service cannot alter its own schema. Tables live in the `public` schema of each database.
 
@@ -232,6 +233,8 @@ CREATE INDEX ix_products_category_active ON products (category_id) WHERE active;
 ```
 
 ### order_db (PostgreSQL)
+
+The marketplace adds `listings`, `bids` and `order_items.seller` to this database: section 16.5.
 
 ```sql
 CREATE TABLE orders (
@@ -387,6 +390,10 @@ Queue settings (all three):
 
 Python 3.13 function triggered directly by EventBridge (not SQS) to show a second integration pattern. For each item with `remaining < LOW_STOCK_THRESHOLD` (default 5), log a structured `low_stock` record and put a `LowStockDetected` CloudWatch metric (EMF log format, so no extra API call). Idempotency is not required: the effect is a log and a metric.
 
+### Lambda: market-activity-email
+
+Python 3.13 function triggered by the `to-market-activity-email` rule for every `MarketActivity` event on a CloudPunk. It sends one email through SES (section 16.11).
+
 ## 7. Order saga and state machine
 
 An order is accepted in one PostgreSQL transaction and reaches a terminal status only through events; local target is p50 under 2 s from `202` to `CONFIRMED`, SLO 99% within 30 s.
@@ -432,7 +439,7 @@ Implementation rule: the transition is `UPDATE orders SET status = :new, version
 
 ## 8. Cross-cutting concerns
 
-Every service implements the same config, health, logging, metrics and resilience contract via `libs/common`, so Kubernetes manifests in Phase 2 are one template.
+Every service implements the same config, health, logging, metrics and resilience contract via `libs/common`, so the Kubernetes manifests are one template.
 
 ### Configuration (12-factor, Pydantic Settings)
 
@@ -445,7 +452,7 @@ Every service implements the same config, health, logging, metrics and resilienc
 | `AWS_ENDPOINT_URL` | `http://localstack:4566` | **Unset** in cloud |
 | `DB_HOST` / `DB_PORT` / `DB_NAME` | `postgres` / `5432` / `order_db` | ConfigMap (RDS instance endpoint, or RDS Proxy if kept) |
 | `DB_USER` / `DB_PASSWORD` | from `.env` (`order_app`; migrate job uses `order_owner`) | Secrets Manager → Kubernetes Secret (External Secrets Operator) |
-| `DB_SSLMODE` | `disable` | `require` in dev for now (RDS enforces TLS; `require` encrypts but does not check the certificate). `verify-full` needs the RDS CA bundle in the images: **open**, verify in Phase 2 |
+| `DB_SSLMODE` | `disable` | `require` in dev (RDS enforces TLS; `require` encrypts but does not check the certificate). `verify-full` needs the RDS CA bundle in the images: an open gap (section 14) |
 | `CACHE_URL` | `redis://valkey:6379/0` | ConfigMap (`rediss://` with TLS) |
 | `EVENT_BUS_NAME` | `retail-events` | ConfigMap |
 | `QUEUE_NAME` | `inventory-order-events` | ConfigMap. Consumers call `GetQueueUrl` at startup, so no LocalStack-specific URL format leaks into config |
@@ -491,7 +498,7 @@ Use the `route` template (`/api/v1/orders/{order_id}`), never the raw path — r
 - Outbound HTTP: `httpx2` with connect 1 s / read 2 s timeouts; retry only GETs plus the read-only `POST /inventory/availability` (the single allowed POST retry), max 2 retries, exponential backoff with jitter (`tenacity`). Never retry any other POST.
 - DB pool: SQLAlchemy with psycopg 3, `pool_size=5, max_overflow=5, pool_pre_ping=True, pool_recycle=1800`. Each PostgreSQL connection is a backend process, so keep `replicas × (pool_size + max_overflow)` well under the instance `max_connections`; in cloud put RDS Proxy in front so HPA scale-out cannot exhaust connections.
 - Set `statement_timeout = 5s` and `idle_in_transaction_session_timeout = 30s` on the `<svc>_app` roles. A stuck transaction holding the outbox lock is the failure you want killed, not waited on.
-- Stuck-order sweeper (order-service, runs in the relay process every 60 s): orders `PENDING` longer than 5 min are logged and counted in `orders_stuck` gauge (`SWEEP_INTERVAL_S`, default 60). No auto-reject this week; this is the alarm source for the stuck-queue runbook.
+- Stuck-order sweeper (order-service, runs in the relay process every 60 s): orders `PENDING` longer than 5 min are logged and counted in `orders_stuck` gauge (`SWEEP_INTERVAL_S`, default 60). No auto-reject; this is the alarm source for the stuck-queue runbook.
 - Graceful shutdown: on SIGTERM, stop accepting HTTP, finish in-flight requests, consumers stop polling and finish the current batch within 25 s (Kubernetes `terminationGracePeriodSeconds: 30`).
 
 ## 9. Repository layout and tech stack
@@ -500,12 +507,12 @@ One monorepo, `uv` workspaces, one Dockerfile per service built from the repo ro
 
 ```text
 retail-platform/
-├── CLAUDE.md                     # working rules (section 14); git-ignored, kept locally
+├── CLAUDE.md                     # working rules for the coding agent; git-ignored, kept locally
 ├── docs/
 │   ├── DESIGN.md                 # this document
 │   ├── adr/                      # change history, as-built notes, decisions (README.md)
 │   ├── openapi/                  # generated OpenAPI snapshots (make openapi)
-│   └── runbooks/                 # five runbooks and an index of every alarm and alert
+│   └── runbooks/                 # runbooks and an index of every alarm and alert
 ├── libs/common/                  # installable package: retail_common
 │   └── retail_common/
 │       ├── config.py             # BaseServiceSettings, AwsSettings
@@ -530,7 +537,7 @@ retail-platform/
 │   ├── inventory-service/        # app/ + consumer entrypoint
 │   ├── order-service/            # app/ + relay entrypoint + migrations/
 │   └── notification-service/     # consumer + small read API
-├── functions/low-stock-alert/    # Lambda handler + tests
+├── functions/                    # low-stock-alert, market-activity-email: Lambda handlers + tests
 ├── nft-collection/               # the 100 CloudPunk SVGs, generated by scripts/cloudpunks (section 16.3)
 ├── ui/                           # React SPA, the marketplace; an npm project outside the uv workspace (sections 15, 16.6)
 ├── gateway/nginx.conf            # path routing, mirrors ALB Ingress rules (/ goes to ui)
@@ -574,7 +581,7 @@ Every service's top-level package is named `app`, so two services cannot share o
 
 `httpx2` is the Pydantic team's successor to `httpx` (same API for what we use). Starlette's `TestClient` requires it and deprecates `httpx`, so using it for both our outbound client and the tests avoids shipping two HTTP libraries.
 
-The Dockerfile is production-shaped from day one: multi-stage, `uv sync --frozen --no-dev`, non-root UID 10001, no shell tools in the final stage beyond what the base provides, `HEALTHCHECK` omitted (Kubernetes probes own that).
+The Dockerfile is production-shaped: multi-stage, `uv sync --frozen --no-dev`, non-root UID 10001, no shell tools in the final stage beyond what the base provides, `HEALTHCHECK` omitted (Kubernetes probes own that).
 
 ## 10. Local environment
 
@@ -599,17 +606,17 @@ The Dockerfile is production-shaped from day one: multi-stage, `uv sync --frozen
 | notification-consumer | notification | `consumer` | 9000 | Deployment |
 | ui | `ui` (nginx-unprivileged, static files) | — | 8005 | Deployment (2 replicas, PDB) |
 | gateway | `nginx:1.27-alpine` | — | 8080 | ALB via AWS Load Balancer Controller Ingress |
-| prometheus / grafana | official images | profile `observability` | 9090 / 3000 | the `monitoring` chart: Prometheus, Alertmanager and a view-only Grafana (section 13, Phase 4) |
+| prometheus / grafana | official images | profile `observability` | 9090 / 3000 | the `monitoring` chart: Prometheus, Alertmanager and a view-only Grafana (section 13) |
 
 Container ports 9000 on consumers are internal only (health + metrics).
 
 ### LocalStack bootstrap (`local/localstack/init/ready.d/10-bootstrap.sh`)
 
-Creates exactly the resources Terraform will create in Phase 2, with the same names. Keep the two in sync; a stretch goal is to replace this script with the Phase 2 Terraform module applied via `tflocal`.
+Creates the resources Terraform creates in the cloud, with the same names, plus SES for the activity emails (LocalStack keeps the mail instead of sending it: `curl localhost:4566/_aws/ses`). Keep the two in sync.
 
 LocalStack state is in memory: the script runs on every start, and DynamoDB data (seeded stock) does not survive a restart while PostgreSQL data does. Run `make seed` after `make up`.
 
-**LocalStack needs an auth token (verified).** Since release 2026.03.0, `localstack/localstack` is a single image that will not start without `LOCALSTACK_AUTH_TOKEN`, and tags use calendar versioning. The free Hobby plan covers the services used here but is for non-commercial use; for employer work, use a paid or CI token. Put the token in `.env` (git-ignored) and pin a CalVer tag in `LOCALSTACK_TAG`. If a token is not an option, fall back to `amazon/dynamodb-local` + ElasticMQ for SQS + an in-process `LocalEventBus` adapter that applies the routing table above; the publisher port in `retail_common.events` makes that a config switch, not a rewrite.
+**LocalStack needs an auth token.** Since release 2026.03.0, `localstack/localstack` is a single image that will not start without `LOCALSTACK_AUTH_TOKEN`, and tags use calendar versioning. The free Hobby plan covers the services used here but is for non-commercial use; for employer work, use a paid or CI token. Put the token in `.env` (git-ignored) and pin a CalVer tag in `LOCALSTACK_TAG`. If a token is not an option, fall back to `amazon/dynamodb-local` + ElasticMQ for SQS + an in-process `LocalEventBus` adapter that applies the routing table above; the publisher port in `retail_common.events` makes that a config switch, not a rewrite.
 
 LocalStack does not enforce IAM, SQS queue policies or Lambda invoke permissions. Terraform must still create `aws_lambda_permission` for EventBridge and the queue policies from section 6, or the cloud flow fails silently where the local one worked.
 
@@ -621,23 +628,23 @@ LocalStack does not enforce IAM, SQS queue policies or Lambda invoke permissions
 
 ### OrbStack and local Kubernetes
 
-OrbStack is the local runtime for both local stages: its Docker engine runs Compose (M0–M9), and its built-in single-node Kubernetes cluster runs the Helm chart (M10) before anything touches EKS. That makes Helm, probes, HPA and rollback free to rehearse, which is where most first EKS deployments fail.
+OrbStack is the local runtime for both local stages: its Docker engine runs Compose, and its built-in single-node Kubernetes cluster runs the Helm chart before anything touches EKS. That makes Helm, probes, HPA and rollback free to rehearse, which is where most first EKS deployments fail.
 
 | Stage | Apps run in | Backing services run in | Ingress | Purpose |
 | --- | --- | --- | --- | --- |
-| Compose (M0–M9) | Compose containers | Compose | nginx gateway :8080 | Fast inner loop |
-| Local Kubernetes (M10) | OrbStack Kubernetes, namespace `retail` | Compose, outside the cluster | Traefik | Rehearse Helm, probes, HPA, rollback |
-| EKS (Phase 2) | EKS, namespace `retail` | RDS, ElastiCache, DynamoDB, EventBridge/SQS | ALB | Production shape |
+| Compose | Compose containers | Compose | nginx gateway :8080 | Fast inner loop |
+| Local Kubernetes | OrbStack Kubernetes, namespace `retail` | Compose, outside the cluster | Traefik | Rehearse Helm, probes, HPA, rollback |
+| EKS | EKS, namespace `retail` | RDS, ElastiCache, DynamoDB, EventBridge/SQS | ALB | Production shape |
 
-PostgreSQL, Valkey and LocalStack stay outside the cluster in M10 on purpose. That matches EKS, where data lives in managed services, and keeps stateful workloads out of Kubernetes.
+PostgreSQL, Valkey and LocalStack stay outside the cluster on purpose. That matches EKS, where data lives in managed services, and keeps stateful workloads out of Kubernetes.
 
-Pre-research for M10 (host access from pods, ingress, architecture, resources, context safety): `docs/adr/README.md`. Every `k8s-*` Make target passes `--context orbstack` explicitly.
+Notes on host access from pods, ingress, architecture and resources: `docs/adr/README.md`. Every `k8s-*` Make target passes `--context orbstack` explicitly.
 
-Additional Make targets: `k8s-lint`, `k8s-build`, `k8s-build-multiarch`, `k8s-secrets`, `k8s-ingress` (Traefik, metrics-server), `k8s-deploy` (`helm upgrade --install --rollback-on-failure` with local values), `k8s-e2e` (acceptance steps and UI journeys through the local ingress), `k8s-resilience` (delete each workload's pod under load), `k8s-rollback`, `k8s-down`; from Phase 4, `k8s-monitoring` and `k8s-monitoring-open` (the monitoring chart on the local cluster) and `rules-test` (promtool unit tests of the alert rules, part of `lint`). How it was built and what differs from this sketch: `docs/adr/README.md`.
+Additional Make targets: `k8s-lint`, `k8s-build`, `k8s-build-multiarch`, `k8s-secrets`, `k8s-ingress` (Traefik, metrics-server), `k8s-deploy` (`helm upgrade --install --rollback-on-failure` with local values), `k8s-e2e` (acceptance steps and UI journeys through the local ingress), `k8s-resilience` (delete each workload's pod under load), `k8s-rollback`, `k8s-down`; `k8s-monitoring` and `k8s-monitoring-open` (the monitoring chart on the local cluster) and `rules-test` (promtool unit tests of the alert rules, part of `lint`). How it was built: `docs/adr/README.md`. Procedures for the clean start, the drills and the local cluster: `docs/runbooks/local-environment.md`.
 
 ## 11. Testing strategy
 
-Three layers, each runnable alone; `pr.yml` runs the unit layer on every pull request. Integration, the drills and the browser journeys need LocalStack and its token, so they stay local; the end-to-end layer runs against real AWS in `app-deploy.yml` after a deploy.
+Four layers, each runnable alone; `pr.yml` runs the unit layer on every pull request. Integration, the drills and the browser journeys need LocalStack and its token, so they stay local; the end-to-end layer runs against real AWS in `app-deploy.yml` after a deploy.
 
 | Layer | Scope | Tools | Target runtime | Gate |
 | --- | --- | --- | --- | --- |
@@ -677,7 +684,7 @@ The market steps (section 16.8) run in the same suite on the one-of-a-kind fixtu
 
 ### Failure drills
 
-Run locally by `make e2e` and the `make drill-*` targets. On EKS they were designed in Phase 4 but not run (section 13).
+Run locally by `make e2e` and the `make drill-*` targets. On EKS `drills.yml` has `consumer-down` and `bus-down`; neither has been run, and the other four are not built (section 14).
 
 | Drill | How | Expected detection | Expected recovery |
 | --- | --- | --- | --- |
@@ -690,54 +697,71 @@ Run locally by `make e2e` and the `make drill-*` targets. On EKS they were desig
 
 The "Bus unavailable" drill is the one that proves ADR-04. If it fails, the outbox is not actually transactional.
 
-## 12. Phase 1 milestones (Claude Code work plan)
+## 12. Build order
 
-Eleven milestones (M0 to M10), each a separate PR-sized unit that leaves `make up` working. Claude Code finishes one, runs its checks, and stops for review before the next.
+The platform was built in eleven local milestones (M0 to M10: scaffold, shared library, local infrastructure, the four services, the asynchronous flow, the UI, hardening, local Kubernetes), then the cloud, CI/CD and reliability work, then the CloudPunks milestones (N1 to N7). Each milestone left `make lint test` green and the stack runnable, and the next one started only after a review. The milestone list and what each one verified is in `docs/adr/README.md`.
 
-- [x] **M0 — Scaffold.** Repo tree from section 9, uv workspace, ruff/mypy/pytest config, Makefile, `.env.example`, `CLAUDE.md`, empty service apps returning `/health/live`. *Done when:* `make lint test` passes; `make up` starts four services with 200 on `/health/live`.
-- [x] **M1 — `libs/common`.** Settings, structlog + correlation middleware, metrics middleware, health router, error model, httpx2 client, envelope + v1 schemas, EventBridge publisher, SQS consumer loop. *Done when:* unit tests cover partial `PutEvents` failure, poison vs transient handling, correlation propagation.
-- [x] **M2 — Local infrastructure.** Compose with PostgreSQL, Valkey, LocalStack (auth token in .env), gateway; PostgreSQL init (two DBs; per service an owner role for migrations and an app role with DML only); LocalStack bootstrap (including DynamoDB TTL and a stub `functions/low-stock-alert/handler.py` that M7 replaces); seed script (5 categories, 20 products, stock 10–50 each; the catalog half needs the M3 migration and fails loudly if the schema is missing; stock seeds regardless). *Done when:* `awslocal events list-rules --event-bus-name retail-events` shows 4 rules; tables and queues exist; seed is idempotent.
-- [x] **M3 — Product Service.** Alembic migration, CRUD, cache-aside + invalidation, readiness on PostgreSQL. *Done when:* integration tests pass with Valkey up and down.
-- [x] **M4 — Inventory Service API.** Get stock, batch availability, admin set-stock. *Done when:* strongly consistent reads verified in integration test.
-- [x] **M5 — Order Service (sync path + outbox).** Migration (all four order tables, including `processed_events`, which M6 first uses), create order with price snapshot, idempotency key, pre-check, outbox write in the same transaction, relay process. *Done when:* `POST /orders` → row in `orders` + `outbox`; relay publishes; the "Bus unavailable" drill passes.
-- [x] **M6 — Async flow.** Inventory consumer (transactional reservation, duplicate re-emit), Order consumer (state machine, `processed_events`), outcome → `OrderStatusUpdated` via outbox. *Done when:* acceptance steps 1–5, 7 and 8 pass (`make e2e`); step 6 needs M7's notifications and is tested there.
-- [x] **M7 — Notification + Lambda.** Notification consumer + read API; low-stock Lambda with unit test and LocalStack invocation. *Done when:* acceptance steps 1–10 pass (step 6 first runs here); low-stock log visible in LocalStack logs.
-- [x] **M8 — UI (React).** `ui/` built to section 15: a Vite + TypeScript SPA with catalog (category filter, pagination, stock badges), product, basket, checkout, live order tracking (polls to `CONFIRMED`/`REJECTED`, shows notifications), my orders, and a demo-tools page behind a build flag; API types generated from committed OpenAPI snapshots; `ui` nginx image; gateway `/` route; `make ui-*` targets. Depends on M7 (order status transitions and notifications must exist). *Done when:* `make lint test` runs and passes the UI checks (eslint, `tsc`, vitest, production build within the bundle budget); after `make reset && make up && make seed` the UI is served at `http://localhost:8080/`; `make ui-e2e` passes every journey in section 15.6 including the async `REJECTED` order and the double-submit idempotency case; its Helm values (`values-ui-local.yaml`) and Traefik route arrive with M10.
-- [x] **M9 — Hardening.** All failure drills scripted as Make targets and pytest e2e cases; stuck-order sweeper; Prometheus + Grafana profile with one dashboard (RED per service, queue depth, outbox lag); README with run instructions. *Done when:* `make e2e` runs acceptance + all drills green from a clean `make reset && make up`, and `make ui-e2e` passes on the same clean start.
-- [x] **M10 — Local Kubernetes on OrbStack.** Helm library chart `deploy/helm/retail-service` built to the section 13 spec, `values-<svc>-local.yaml` (including `values-ui-local.yaml`), Traefik ingress mirroring the gateway paths, migration Jobs as `pre-install,pre-upgrade` hooks, HPA on the API services, PDBs, multi-arch `docker buildx` build. *Done when:* `make k8s-deploy k8s-e2e` passes (API acceptance and the UI journeys); `kubectl delete pod` on any service recovers with no failed orders; a deliberately broken release (bad readiness path) fails `--atomic`, and `helm rollback` restores a passing e2e.
+## 13. Cloud, CI/CD and reliability
 
-M8 deliberately sits right after M7, which it needs (order status transitions and notifications), and before hardening and Kubernetes: it is the first real client of the APIs, and it touches the gateway, Compose, the clean-start e2e and the Helm chart, so building it first means M9 and M10 include it instead of reopening them.
+The repo deploys the dev environment only; `stage` and `prod` exist as branches and GitHub Environments with no cluster behind them. This section is the design of the stacks, the workflows and the chart. How to run them: `.github/workflows/README.md` and `infra/terraform/README.md`.
 
-Phase 1 is complete when M10 (local Kubernetes) is done. Only then start Phase 2 (Terraform, ECR, EKS).
+### Cloud (dev)
 
-## 13. Phases 2–4: cloud, CI/CD, reliability
+```mermaid
+flowchart TB
+  gh["GitHub Actions: OIDC roles, no stored AWS keys"] -->|"Terraform, ECR push"| cloud
+  gh -->|"deploy and e2e jobs"| runner
+  subgraph cloud["AWS dev, us-east-1"]
+    subgraph vpc["VPC, 3 AZs"]
+      alb["Internal ALB: the gateway"]
+      pub["Viewer ALB: one address, optional"]
+      runner["In-VPC runner"]
+      subgraph eks["EKS, two nodes"]
+        apps["UI, product, inventory, order, notification: APIs, consumers, relay"]
+        mon["Prometheus, Alertmanager, Grafana"]
+      end
+      rds[("RDS PostgreSQL 17")]
+      cache[("ElastiCache Valkey")]
+    end
+    ddb[("DynamoDB: inventory, reservations, notifications")]
+    bus{{"EventBridge bus and SQS queues with DLQs"}}
+    fn["Lambda: low-stock-alert, market-activity-email"]
+    ses["SES"]
+    sns["SNS alarm topic"]
+    cw["CloudWatch: alarms, Container Insights logs"]
+  end
+  runner -->|"helm, kubectl"| eks
+  alb --> apps
+  pub --> apps
+  apps --> rds
+  apps --> cache
+  apps --> ddb
+  apps -->|"outbox relay"| bus
+  bus -->|"SQS"| apps
+  bus --> fn
+  fn --> ses
+  cw --> sns
+  mon --> sns
+  sns --> mail["Owner's email"]
+  ses --> mail
+```
 
-These are contracts Phase 1 must not violate, not a full spec. Items marked **verify** depend on current AWS versions or pricing. Phases 2, 3 and 4 are built; the repo deploys the dev environment only. What each phase turned out to be, what differs from this section and what went wrong: `docs/adr/README.md`.
-
-### Phase 2 — Bootstrap, Terraform, ECR, EKS, Helm, all through CI (Day 3)
-
-**Status: built and running in dev.** The exit criterion is met. Four stacks are applied only from workflows: `bootstrap` (the CI roles), `dev/platform`, `dev/cluster-addons` and `dev/alb-alarms`. What exists, what changed against this section and what is still open: `docs/adr/README.md`, "Cloud (dev on AWS) as built".
+*Everything is reached through workflows. The viewer ALB and the activity emails are optional; the emails need the address in the `dev` secret `ALARM_EMAIL`.*
 
 **AWS access model (ADR-14, ADR-15).** No AWS credential exists outside GitHub Actions. Every workflow assumes a role by ARN through OIDC (`aws-actions/configure-aws-credentials`, pinned by SHA, `permissions: id-token: write, contents: read`). Role ARNs are GitHub Actions *variables* per Environment (an ARN is not a secret). Claude Code can therefore write and statically check the cloud code (`terraform fmt/validate` with `init -backend=false`, tflint, checkov, `helm lint`, kubeconform) but can never run `plan`, `apply`, `aws` or `kubectl` against AWS; those happen only in workflows, so workflows must print diagnostics on failure (`terraform show`, `helm status`, `kubectl describe`/events).
 
-Bring-up order:
-
-1. **Manual, once, by the owner (console or CloudShell):** create the IAM OIDC provider `token.actions.githubusercontent.com` (audience `sts.amazonaws.com`) and the role `cloudbatch818-loria-retail-bootstrap`. Trust: `aud = sts.amazonaws.com` and `sub = <sub prefix>:environment:bootstrap`, where the prefix is `repo:<owner>@<owner id>/<repo>@<repo id>` because this repo uses immutable OIDC subjects (check `gh api repos/<owner>/<repo>/actions/oidc/customization/sub`). Permissions: S3 on the state bucket, and IAM create/update on `role/cloudbatch818-loria-*` and `policy/cloudbatch818-loria-*`, with an explicit Deny on IAM actions against its own role (its name matches the prefix, so the Allow would otherwise cover it). Create the GitHub Environment `bootstrap` (required reviewer, deployment branch limited to `dev`) and set `AWS_ROLE_ARN_BOOTSTRAP` and `AWS_REGION`. Nothing else is created by hand. Because this role can mint roles it is effectively admin; the pinned `sub`, the reviewer gate, and `workflow_dispatch`-only trigger are its controls.
-2. **`bootstrap-state-bucket.yml` (`workflow_dispatch`, environment `bootstrap`):** idempotent AWS CLI calls (not Terraform; there is no state to start from) create `loria-retail-tfstate-<account-id>-<region>` with versioning, SSE, all public access blocked, a TLS-only bucket policy and noncurrent-version expiry. Then **`bootstrap-ci-roles.yml`** (also `workflow_dispatch`, environment `bootstrap`, independent of the first) runs `terraform apply` of `infra/terraform/bootstrap/` (state key `bootstrap/terraform.tfstate`), which uses the `github-oidc` module to create the roles in the table below.
-3. **`platform-create.yml` on GitHub-hosted runners** applies `envs/<env>/platform` (network, eks, data, events, ecr, runners). The EKS endpoint is private, but creating the cluster only needs the AWS API, so hosted runners suffice.
-4. **`addons-create.yml` on the in-VPC runners** applies `envs/<env>/cluster-addons` (AWS Load Balancer Controller, External Secrets Operator, namespace, `ExternalSecret`/ingress class). Terraform's `helm`/`kubernetes` providers need the private API, so this stack cannot run on hosted runners.
-5. `app-prepare.yml` tests, builds and pushes to ECR, and verifies; `app-deploy.yml` runs `helm upgrade --install --atomic` and e2e on the in-VPC runners.
+The OIDC provider and the `cloudbatch818-loria-retail-bootstrap` role are created by hand once (the setup is in `infra/terraform/README.md`); every other role is Terraform-managed. Because the bootstrap role can mint roles it is effectively admin: the pinned `sub`, the reviewer gate and a `workflow_dispatch`-only trigger are its controls.
 
 | Role | Trust `sub` | Permissions | Used by |
 | --- | --- | --- | --- |
 | `cloudbatch818-loria-retail-bootstrap` (manual) | `environment:bootstrap` | State bucket S3; IAM on `cloudbatch818-loria-*` | `bootstrap-state-bucket.yml`, `bootstrap-ci-roles.yml` |
-| `cloudbatch818-loria-retail-tf-<env>` | `environment:<env>` | One role for plan, apply and destroy. Broad service access (accepted least-privilege gap for this week, recorded here); IAM limited to `cloudbatch818-loria-retail-<env>-*` so it cannot edit the CI roles; state limited to `<env>/*`. There is no `pull_request` role: a PR run would use broad credentials without the environment's approval, so Terraform runs only in the `platform-*`, `addons-*` and `alarms-*` workflows, behind the reviewer | `platform-*`, `addons-*`, `alarms-*` workflows |
+| `cloudbatch818-loria-retail-tf-<env>` | `environment:<env>` | One role for plan, apply and destroy. Broad service access (an accepted least-privilege gap in dev); IAM limited to `cloudbatch818-loria-retail-<env>-*` so it cannot edit the CI roles; state limited to `<env>/*`. There is no `pull_request` role: a PR run would use broad credentials without the environment's approval, so Terraform runs only in the `platform-*`, `addons-*` and `alarms-*` workflows, behind the reviewer | `platform-*`, `addons-*`, `alarms-*` workflows |
 | `cloudbatch818-loria-retail-db-<env>` | `environment:<env>` | Read the RDS master secret (and decrypt it through Secrets Manager); create and read secrets under `loria-retail-<env>/*`; describe the one RDS instance. Nothing else | `app-database.yml` (runner) |
 | `cloudbatch818-loria-retail-deploy-<env>` | `environment:<env>` | ECR push/pull, `eks:DescribeCluster`; EKS access entry with `AmazonEKSEditPolicy` scoped to namespace `retail` | `app-deploy.yml`, `app-rollback.yml`, `promote.yml`, drills (runners) |
 
 Terraform references the OIDC provider with a `data` source (an account can hold one provider per URL) and never manages `cloudbatch818-loria-retail-bootstrap`. Tear-down is `platform-destroy.yml` (manual, environment-gated); `bootstrap` resources are never destroyed by it.
 
-**In-VPC runners (`modules/runners`).** Ephemeral EC2 runners (arm64, private-app subnets, one job each via `--ephemeral`), label `retail-vpc`, in a runner group limited to this repo. Their instance profile grants nothing beyond SSM; jobs get AWS access only through OIDC, never the instance role. The runner registration credential is a GitHub App key or fine-grained token held in Secrets Manager (a GitHub credential, not an AWS one). Mechanism (decided 2 Oct 2026): one arm64 EC2 instance in an Auto Scaling group of one. A systemd loop registers it with `--ephemeral`, runs one job, deregisters and repeats. The registration credential is a fine-grained PAT (Administration: read and write on this repository) that the loop reads from Secrets Manager as root; job processes run as another user, and iptables blocks that user's traffic to the instance metadata service, so jobs cannot borrow the instance role. Scale-to-zero (webhook-launched instances) and actions-runner-controller were rejected for now: the first adds API Gateway, Lambda and SQS, and ARC needs a first runner to install through the private API. **The repo is public, so:** self-hosted jobs run only for `push` to `dev` (the default branch), `workflow_dispatch`, tags, and approved environments — never `pull_request`; enable "Require approval for all outside collaborators"; fork PRs never reach these runners.
+**In-VPC runners (`modules/runners`).** One ephemeral arm64 EC2 runner (label `retail-vpc`) in an Auto Scaling group of one, in a private-app subnet. A systemd loop registers it with `--ephemeral`, runs one job, deregisters and repeats. The registration credential is a fine-grained PAT held in Secrets Manager and read only by the loop, as root; job processes run as another user, and iptables blocks that user's traffic to the instance metadata service, so jobs cannot borrow the instance role. The instance profile grants nothing beyond SSM; jobs get AWS access only through OIDC. **The repo is public, so** self-hosted jobs run only for `workflow_dispatch`, `push` to `dev`, tags and approved environments, never `pull_request`; fork PRs never reach these runners.
 
 **Terraform layout:** `infra/terraform/{bootstrap,modules/{network,eks,data,events,ecr,github-oidc,runners,monitoring,pod-identity-role},envs/dev/{platform,cluster-addons,alb-alarms}}`; there is no `prod` environment yet. Remote state in the bootstrap bucket with native locking (`use_lockfile = true`, Terraform ≥ 1.11, where S3 locking is GA); DynamoDB state locking is deprecated. Pin provider versions; one state per env and stack.
 
@@ -745,21 +769,21 @@ Terraform references the OIDC provider with a `data` source (an account can hold
 | --- | --- | --- |
 | Network | VPC across 3 AZs: public (ALB, NAT), private-app (nodes), private-data (RDS, ElastiCache; an RDS subnet group needs two AZs even for a Single-AZ instance) | Single NAT in dev, one per AZ in prod. Add VPC endpoints (S3 + DynamoDB gateway; ECR api/dkr, SQS, STS, Secrets Manager, EventBridge, Logs interface) — NAT data processing is the #1 surprise bill on EKS |
 | EKS | Managed node group, AL2023 AMIs, **two nodes**: 2 × m7g.large Graviton/arm64 (2 vCPU, 8 GiB; about 29 pods each), matching Apple Silicon builds and cheaper per vCPU, access entries instead of `aws-auth` ConfigMap | Two nodes give node-level availability, so zone spread, PDBs and HPA maxima (about 4) have room to work. Kubernetes 1.36; pin it in Terraform. AL2023 or Bottlerocket only (no Amazon Linux 2 AMIs after 1.32). Why two and not one, and the alternatives: `docs/adr/README.md`, "Cluster sizing notes" |
-| Add-ons | vpc-cni, coredns, kube-proxy, eks-pod-identity-agent, metrics-server; Helm: AWS Load Balancer Controller, External Secrets Operator | Install add-ons via Terraform `aws_eks_addon` / `helm_release`, versions pinned |
+| Add-ons | vpc-cni, coredns, kube-proxy, eks-pod-identity-agent, metrics-server; Helm: AWS Load Balancer Controller, External Secrets Operator | Installed with Terraform `aws_eks_addon` / `helm_release`; the Helm charts are pinned, the EKS add-ons take EKS's default version (section 14) |
 | Workload IAM | EKS Pod Identity, one IAM role per ServiceAccount | Least privilege per process: relay = `events:PutEvents` on the bus only; each consumer = receive/delete on its own queue only |
-| RDS | RDS for PostgreSQL 17 (latest 17.x minor, pinned in Terraform; 18 is available but 17 matches local PostgreSQL 17, revisit after the week — **verify** current minors), dev a single `db.t4g` instance, Single-AZ; prod Multi-AZ; KMS CMK; 7-day backups; deletion protection; RDS-managed master secret. RDS Proxy is optional: with one node and about 15 pods at `pool_size 5 + max_overflow 5` the instance's `max_connections` is not at risk, so the default is to leave it out and add it with a second node group or HPA headroom | The application databases and roles are created by `scripts/db_init.py` (workflow `app-database.yml`, on the runner, as a dedicated `db` role); each password is generated there and stored in Secrets Manager, never in Terraform state or outputs |
-| ElastiCache | Valkey 9.0, TLS in transit, AUTH, prod 1 replica Multi-AZ | ElastiCache Serverless is simpler but has a minimum hourly cost — **verify** pricing |
+| RDS | RDS for PostgreSQL 17 (major 17 to match local PostgreSQL 17, the minor is AWS's choice), dev a single `db.t4g` instance, Single-AZ; prod Multi-AZ; KMS CMK; 7-day backups; deletion protection in prod (off in dev so it can be destroyed); RDS-managed master secret. RDS Proxy is optional: with one node and about 15 pods at `pool_size 5 + max_overflow 5` the instance's `max_connections` is not at risk, so the default is to leave it out and add it with a second node group or HPA headroom | The application databases and roles are created by `scripts/db_init.py` (workflow `app-database.yml`, on the runner, as a dedicated `db` role); each password is generated there and stored in Secrets Manager, never in Terraform state or outputs |
+| ElastiCache | Valkey 9.0, TLS in transit and a security-group limit (no AUTH token, section 14), prod 1 replica Multi-AZ | ElastiCache Serverless is simpler but has a minimum hourly cost |
 | DynamoDB | On-demand, PITR on, SSE with KMS, TTL on `ttl` | — |
 | Events | Same names as bootstrap script, prefixed `loria-` in cloud (bus, queues, rules, Lambda; the table names come from config); SQS SSE; queue policies scoped by `aws:SourceArn`; EventBridge archive | — |
-| ECR | One repo per service (including `ui`), tag immutability, scan on push (Inspector enhanced), lifecycle keep 30 | Tags `sha-<git sha>`; deploy by digest in prod |
+| ECR | One repo per service (including `ui`), tag immutability, scan on push (basic scan; Inspector enhanced is a gap, section 14), lifecycle keep 30 | Tags `sha-<git sha>`; deploy by digest in prod |
 
-**Helm:** the M10 library chart, reused unchanged with new values files, `deploy/helm/retail-service` + `values-<service>-<env>.yaml`. The chart renders, per process: Deployment (rolling, `maxUnavailable: 0`, `maxSurge: 25%`), ServiceAccount, Service (APIs only), PodDisruptionBudget (`minAvailable: 1`), HPA (APIs: CPU 70%, min 2, max 4; the cluster has had two nodes since Phase 4, so a scale-up has room), zone `topologySpreadConstraints`, probes on `/health/live` and `/health/ready`, `securityContext` (`runAsNonRoot`, `readOnlyRootFilesystem`, drop ALL, plus an `emptyDir` mounted at `/tmp`), ExternalSecret, and the migration Job as a `pre-install,pre-upgrade` hook. The UI is one more release of the same chart (`values-ui-<env>.yaml`: port 8005, probes on `/healthz`, a writable `emptyDir` for nginx's temp and cache paths). One shared Ingress (ALB, `scheme: internal` so e2e runs from the in-VPC runners, HTTPS via ACM, `group.name: retail`) mirrors `gateway/nginx.conf` paths, with `/` as the default rule to `ui`. There is no domain yet, so dev serves HTTP on the internal ALB; HTTPS via ACM needs a domain you control plus a Route 53 private zone and is deferred. Because no laptop has AWS access (ADR-14), a person who wants a browser view of dev runs `app-expose.yml`, which adds a second, internet-facing ALB (release `gateway-public`) allowed from one address held in the `DEV_VIEWER_CIDR` environment secret; the internal ALB and the e2e test are unchanged. Once it exists, `app-deploy` refreshes its routes on every deploy (keeping its stored address), so both ALBs carry the same paths. Dev only.
+**Helm:** one chart installed once per process, the same for every environment with a values file each, `deploy/helm/retail-service` + `values-<service>-<env>.yaml`. The chart renders, per process: Deployment (rolling, `maxUnavailable: 0`, `maxSurge: 25%`), ServiceAccount, Service (APIs only), PodDisruptionBudget (`minAvailable: 1`), HPA (APIs: CPU 70%, min 2, max 4; the cluster has two nodes, so a scale-up has room), zone `topologySpreadConstraints`, probes on `/health/live` and `/health/ready`, `securityContext` (`runAsNonRoot`, `readOnlyRootFilesystem`, drop ALL, plus an `emptyDir` mounted at `/tmp`), ExternalSecret, and the migration Job as a `pre-install,pre-upgrade` hook. The UI is one more release of the same chart (`values-ui-<env>.yaml`: port 8005, probes on `/healthz`, a writable `emptyDir` for nginx's temp and cache paths). One shared Ingress (ALB, `scheme: internal` so e2e runs from the in-VPC runners, HTTPS via ACM, `group.name: retail`) mirrors `gateway/nginx.conf` paths, with `/` as the default rule to `ui`. There is no domain yet, so dev serves HTTP on the internal ALB; HTTPS via ACM needs a domain you control plus a Route 53 private zone and is deferred. Because no laptop has AWS access (ADR-14), a person who wants a browser view of dev runs `app-expose.yml`, which adds a second, internet-facing ALB (release `gateway-public`) allowed from one address held in the `DEV_VIEWER_CIDR` environment secret; the internal ALB and the e2e test are unchanged. Once it exists, `app-deploy` refreshes its routes on every deploy (keeping its stored address), so both ALBs carry the same paths. Dev only.
 
-### Phase 3 — GitHub Actions (Day 4)
+### CI/CD (GitHub Actions)
 
 | Workflow | Trigger | Steps |
 | --- | --- | --- |
-| `bootstrap-state-bucket.yml`, `bootstrap-ci-roles.yml` | `workflow_dispatch`, environment `bootstrap` (two independent workflows, run in that order) | Phase 2 step 2: the state bucket (AWS CLI), then the `bootstrap/` Terraform stack that creates the `cloudbatch818-loria-*` roles. Hosted runner, `cloudbatch818-loria-retail-bootstrap` |
+| `bootstrap-state-bucket.yml`, `bootstrap-ci-roles.yml` | `workflow_dispatch`, environment `bootstrap` (two independent workflows, run in that order) | The state bucket (AWS CLI), then the `bootstrap/` Terraform stack that creates the `cloudbatch818-loria-*` roles. Hosted runner, `cloudbatch818-loria-retail-bootstrap` |
 | `pr.yml` | Pull request into `dev`, `stage` or `prod` (hosted runners, read-only token, no secrets, no AWS) | `detect` picks checks from the changed files; `code` (`make lint test`: ruff, mypy, unit tests, OpenAPI and UI checks, `helm lint` + kubeconform); `images` (builds the five images, Trivy fails on fixable HIGH/CRITICAL); `terraform` (`fmt -check`, `validate`, tflint, Checkov with inline reasoned skips); `config-scan` (Trivy over Dockerfiles, Helm, Terraform); `workflows` (actionlint); `ci`, the one required check, which fails if any job failed or was cancelled. No `terraform plan` on PRs (it runs in `platform-create.yml` behind the `dev` approval) and no LocalStack in CI |
 | `app-prepare.yml`, `app-deploy.yml` | `workflow_dispatch` only (decided: no push trigger) | Build once (hosted arm64) → push `sha-<sha>` to ECR → on `retail-vpc` runners: OIDC assume `cloudbatch818-loria-retail-deploy-dev` → `helm upgrade --install --rollback-on-failure --wait --timeout 10m` → e2e acceptance against dev |
 | `promote.yml` | `workflow_dispatch` from the `stage` or `prod` branch | The branch names the Environment. `check` (hosted): the image's commit is in the branch's history, the Environment has a deploy role and its Helm values; then the **same image digest** (never a rebuild) is deployed by `image.digest` on a `retail-vpc` runner → smoke test. **Built, not run:** stage and prod are not deployed |
@@ -767,14 +791,12 @@ Terraform references the OIDC provider with a `data` source (an account can hold
 | `platform-create.yml` | `workflow_dispatch` (action `plan` or `apply`; no PR plan) | Plan, then apply after a second approval: the `platform` stack on hosted runners |
 | `addons-create.yml` | `workflow_dispatch` (action `plan` or `apply`) | The same two approvals for the `cluster-addons` stack, on the `retail-vpc` runner (the cluster API is private) |
 | `addons-destroy.yml`, `platform-destroy.yml` | `workflow_dispatch`, environment-gated | Destroy an env in two steps, addons first (on the runner), then platform, which refuses to start while the addons state still has resources. Never touch `bootstrap`. Support the idle-cost rule in §14. Each is a saved `plan -destroy`, then a second approval to apply it |
-| `alarms-create.yml`, `alarms-destroy.yml` | `workflow_dispatch` (create: action `plan` or `apply`), hosted runner | The `dev/alb-alarms` stack: the ALB's 5xx-rate and p95 alarms (Phase 4, P4.1). Run after `app-deploy`, because the ALB is created by the load balancer controller; the same two approvals as the other stacks. Destroy first: `platform-destroy` refuses while the stack has resources |
+| `alarms-create.yml`, `alarms-destroy.yml` | `workflow_dispatch` (create: action `plan` or `apply`), hosted runner | The `dev/alb-alarms` stack: the ALB's 5xx-rate and p95 alarms. Run after `app-deploy`, because the ALB is created by the load balancer controller; the same two approvals as the other stacks. Destroy first: `platform-destroy` refuses while the stack has resources |
 | `cluster-capacity.yml`, `drills.yml`, `app-prepare.yml` (test, build, verify), `app-database.yml`, `app-seed.yml`, `app-reset.yml`, `app-expose.yml`, `app-destroy.yml` | `workflow_dispatch`, runner or hosted, `dev` approval | Operational workflows: what each does, its role and its place in the run order are in `.github/workflows/README.md`. `app-prepare` runs every `pr.yml` check, then pushes `sha-<sha>` to ECR and checks that what runs is what ECR holds, before `app-deploy` |
 
 Non-negotiables: each OIDC trust policy is pinned to an exact `sub` (`environment:<env>`; never a wildcard or `ref:*`); third-party actions pinned by commit SHA; branch protection: `stage` and `prod` accept only a pull request with one approving review (stale approvals dismissed, the last pusher cannot approve) and a passing, up-to-date `ci`, for admins too, with no force push or deletion; `dev` blocks force pushes and deletion only, so the owner pushes to it directly and the `dev` Environment gate is the control on what reaches AWS (the `stage` and `prod` Environments accept only their own branch and need a reviewer); no long-lived AWS keys in GitHub; self-hosted runners never serve `pull_request` or fork code (public repo). Rollback = `app-rollback.yml` (`helm rollback <release> <revision>`) or redeploy the previous digest; works only because migrations are expand/contract (section 5).
 
-### Phase 4 — Observability and reliability (Day 5)
-
-**Status: built and applied in dev (release v0.1.5), with one exit criterion not met.** The failure drills were skipped, so nothing has fired in dev: the path from a failure to an email (Alertmanager or a CloudWatch alarm, then SNS, then the inbox) is configured and confirmed subscribed but has never carried an alert, and the runbooks are written from the design and the code, not from a drill. What exists, what was proved and what was learned: `docs/adr/README.md`, "Observability and reliability as built (Phase 4)".
+### Reliability
 
 | SLI | SLO (28-day) | Source |
 | --- | --- | --- |
@@ -783,7 +805,7 @@ Non-negotiables: each OIDC trust policy is pinned to an exact `sub` (`environmen
 | Create-order latency p95 | < 500 ms | same |
 | Order processing: orders reaching a terminal state within 30 s | 99% | `order_time_to_terminal_seconds` |
 
-Alarms (page vs ticket decided in the Phase 4 pass): SQS `ApproximateAgeOfOldestMessage` > 120 s; any DLQ `ApproximateNumberOfMessagesVisible` > 0; `outbox_oldest_unpublished_age_seconds` > 60; ALB 5xx rate and p95 `TargetResponseTime`; RDS CPU, `DatabaseConnections`, `FreeableMemory`, `FreeStorageSpace`; MaximumUsedTransactionIDs > 1 billion (wraparound risk); replica lag if a replica exists; pod restarts > 3 in 10 min; EventBridge rule `FailedInvocations` > 0. Logs via Fluent Bit (Container Insights) to CloudWatch with 7-day retention; application metrics through the in-cluster Prometheus below.
+Alarms: SQS `ApproximateAgeOfOldestMessage` > 120 s; any DLQ `ApproximateNumberOfMessagesVisible` > 0; `outbox_oldest_unpublished_age_seconds` > 60; ALB 5xx rate and p95 `TargetResponseTime`; RDS CPU, `DatabaseConnections`, `FreeableMemory`, `FreeStorageSpace`; MaximumUsedTransactionIDs > 1 billion (wraparound risk); replica lag if a replica exists; pod restarts > 3 in 10 min; EventBridge rule `FailedInvocations` > 0. Logs via Fluent Bit (Container Insights) to CloudWatch with 7-day retention; application metrics through the in-cluster Prometheus below.
 
 The failure drills in section 11 are designed to run on EKS as `workflow_dispatch` jobs on the `retail-vpc` runners using `cloudbatch818-loria-retail-deploy-<env>` (for example `kubectl scale deploy/inventory-consumer --replicas=0`); there is no laptop access to the cluster.
 
@@ -797,99 +819,32 @@ Decisions:
 - **Drills change configuration, never AWS resources.** Consumer down scales the consumer to 0; bus down, cache down and DB down point the process at a dead bus, host or address with `helm --set`, and `helm rollback` undoes them; poison and duplicate publish to the real bus. They use real timings and assert through Prometheus, because the deploy role cannot read alarms or queues. `drills.yml` has `consumer-down` and `bus-down`; the other four are not built.
 - **Capacity.** Dev has two nodes (about $360 a month 24/7, over the $350 alert), so destroying dev when idle is the saving.
 - **SLOs are defined and their current values shown;** a 28-day result is not claimed.
-- **Out of scope:** HTTPS and a domain, a Valkey AUTH token, `verify-full` database TLS, Inspector enhanced scanning, and a first run of the teardown workflows, `app-rollback` and a promotion (still open from earlier phases).
+- **Out of scope:** HTTPS and a domain, a Valkey AUTH token, `verify-full` database TLS, Inspector enhanced scanning, and a first run of the teardown workflows, `app-rollback` and a promotion.
 
-The seven milestones (P4.1 to P4.7), the as-built notes for each and the drill plan for the four unbuilt drills: `docs/adr/README.md`, "Phase 4 scope and decisions".
+What was built, what it proved and what it did not: `docs/adr/README.md`, "Observability and reliability as built".
 
-## 14. Guardrails for Claude Code, open questions, risks
+## 14. Working rules and known gaps
 
-### Working rules (copy into `CLAUDE.md`)
+The working rules for the coding agent are in `CLAUDE.md` (kept locally, not committed); a copy as it stood is in `docs/adr/README.md`. The rules the design depends on are stated where they apply: domain code has no I/O, consumers are idempotent on `event_id`, order events go through the outbox, money is a `Decimal` string, AWS is reached only through OIDC roles, and the UI rules are in section 15.
 
-```markdown
-# CLAUDE.md
-Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not silently diverge.
+**Never run**
 
-## Workflow
-- Work one milestone (M0–M10) at a time. Finish with: make lint test (and itest/e2e when the milestone says so).
-- Stop after each milestone with a summary of what changed, what was verified, and any deviation from DESIGN.md.
-- Ask before adding a dependency, a service, a table, an event type, or changing an API contract.
-- `dev` is the default branch and the only one developed on (no `main`). `stage` and `prod` exist for promotion and take changes only by a reviewed pull request, never a direct push; `dev` blocks force pushes and deletion but needs no pull request. Develop and push on `dev`; PRs only when asked. Commit, push and open PRs only when asked. No AI attribution in commits or PRs.
-- Record a changed API contract in the same change (`make openapi` for the generated spec; baseline in DESIGN.md).
-- Run lint, test, up, down, seed, logs and the local cluster (`k8s-*`) through `make` (Compose needs its `IMAGE_TAG` and `--env-file .env`).
-- Unit tests are hermetic (no AWS, no LocalStack). Integration tests touch only their own data and never the shared queues or the real `retail-events` bus.
-- A test that guards critical behavior must be shown able to fail: break the code once, see it fail, restore it.
-- Every service's package is named `app`: run mypy and pytest once per service, never over several.
-- Node work goes through `make ui-*`; `npm ci`, never `npm install`; ask before adding an npm dependency outside DESIGN.md section 15.2.
-- Operating notes and lessons from earlier milestones: docs/adr/README.md.
+- The failure drills on EKS. `drills.yml` has `consumer-down` and `bus-down`; poison, duplicate, cache-down and DB-down are not built. No alarm or alert has fired in dev, so the path from a failure to an email (CloudWatch alarm or Alertmanager, then SNS, then the inbox) is configured and subscribed but unproven, and the runbooks are written from the design and the code, not from a drill.
+- `app-destroy`, `addons-destroy`, `platform-destroy`, `alarms-destroy`, the viewer's `remove`, `app-rollback` and `promote`. A first promotion also needs a second reviewer, because the owner cannot approve their own pull request into `stage` or `prod`.
 
-## Must
-- Domain code has no I/O imports (boto3, sqlalchemy, httpx2, redis).
-- Every consumer is idempotent on event_id; dedupe happens in the same transaction as the business write.
-- Order events go through the outbox. Never call PutEvents from a request handler.
-- Money: Decimal, strings in JSON (NUMERIC(10,2) prices, NUMERIC(12,2) totals; JSON numbers rejected). IDs: ULID.
-- AWS clients are built from env only; no endpoint URLs or credentials in code.
-- Liveness checks nothing external. Readiness checks required stores only.
-- Structured JSON logs with correlation_id; metric labels use route templates.
-- Migrations: Alembic, backward compatible, forward-only, run via the migrate command only, as the schema owner role.
-- Stock reads use `ConsistentRead=True`; inventory responses are `Cache-Control: no-store`.
-- Make downstream calls (HTTP, bus) before opening the write transaction, never while holding a database connection (the outbox relay is the one exception).
-- A store that cannot serve a request is a 503 with Retry-After and a generic message, never a 500. A cache failure is a miss, never an error.
-- Cloud AWS access only through GitHub Actions OIDC roles; jobs that touch EKS run on the in-VPC ephemeral runners.
-- UI (`ui/`, DESIGN.md section 15) is a pure client of the public `/api/v1` API, same-origin through the gateway: relative URLs, no secrets, no AWS or database access. A need the API cannot meet is a question for the owner, never a new endpoint.
-- UI money is integer minor units (`BigInt`) formatted by string; browser totals are labelled estimates. Every order submit sends an `Idempotency-Key` (same basket, same key); every request sends `X-Correlation-ID`; error panels show the `correlation_id`.
-- UI: TypeScript `strict`; wrap every `localStorage` access in try/catch; UI image built from `ui/` only, multi-stage, non-root; `VITE_DEMO_TOOLS` off outside local.
+**Not built**
 
-## Must not
-- Commit secrets or .env (use .env.example), or read, print or log values from .env.
-- Cache inventory/stock data.
-- Cache stock in the UI either (`staleTime: 0`, `gcTime: 0`, never persisted).
-- In the UI: use a JS `number` or `parseFloat` for money, `any`, `dangerouslySetInnerHTML`, inline scripts or styles, or external requests.
-- Use :latest image tags anywhere, KEYS * in Valkey, floats for money, or bare except.
-- Add Kafka, a service mesh, auth, payments, or GitOps tooling (login, payments and server-side carts stay out even with the UI).
-- Write Terraform or GitHub Actions before M10 is done.
-- Run kubectl or helm without an explicit --context (local work targets `orbstack`).
-- Use, request, create or store AWS credentials, or run terraform plan/apply, aws, kubectl or helm against AWS/EKS from the laptop (locally only: terraform fmt/validate, tflint, checkov, helm lint, kubeconform).
-- Manage the OIDC provider or the `cloudbatch818-loria-retail-bootstrap` role in Terraform, or run self-hosted runners for fork PRs.
+- HTTPS and a domain (ACM, Route 53): dev is plain HTTP.
+- Database `verify-full` TLS (needs the RDS CA bundle in the images), a Valkey AUTH token, pinned EKS add-on and PostgreSQL minor versions, Inspector enhanced scanning (ECR uses basic scan on push).
+- Releasing or committing `reserved` stock: this design never releases it, because there are no cancellations. It is needed before adding them.
+- Serving the static UI from S3 and CloudFront instead of a container.
+- Node is pinned to 24 LTS; revisit when Node 26 is LTS.
 
-```
-
-### Open questions
-
-- [ ] Node: pinned to 24 LTS (Active LTS today); Node 26 becomes LTS on 28 Oct 2026, so revisit then.
-- [ ] Later hosting: serve the static UI files from S3 + CloudFront instead of a container? Not before the cloud strategy pass.
-- [ ] Should `reserved` stock ever be released or committed? This design never releases (no cancellation). Needed before adding cancellations in a later week.
-- [ ] Database TLS: dev uses `DB_SSLMODE=require`. `verify-full` needs the RDS CA bundle in the images.
-- [ ] A Valkey AUTH token (it has TLS and a security-group limit now), pinned EKS add-on versions and a pinned PostgreSQL minor.
-- [ ] HTTPS and a domain (ACM certificate, Route 53). Until then dev is plain HTTP.
-- [ ] The failure drills on EKS (section 11): skipped on 3 Oct 2026. `drills.yml` has `consumer-down` and `bus-down`; poison, duplicate, cache-down and DB-down are not built. No alarm has been seen to fire in dev.
-- [ ] Teardown, rollback and promotion: `app-destroy`, `addons-destroy`, `platform-destroy`, `alarms-destroy`, the viewer's `remove`, `app-rollback` and `promote` have never run. A first promotion also needs a second reviewer, because the owner cannot approve their own pull request into `stage` or `prod`.
-
-Closed questions and their reasons (UI scope and sequencing, Python and LocalStack, environments, bootstrap, runners, names, roles, the budget, Phase 3 and Phase 4 decisions) are recorded in `docs/adr/README.md`, "Decided questions" and "Open questions that were closed".
-
-### Risks
-
-| Risk | Impact | Mitigation |
-| --- | --- | --- |
-| LocalStack behaviour differs from AWS (IAM not enforced, queue policies ignored) | Works locally, fails silently in cloud | The acceptance suite runs against dev after every deploy; alarm on `FailedInvocations`. The failure drills have not been run against dev |
-| Outbox relay implemented as "publish then mark" outside a lock | Duplicate or skipped events | Unit test for partial failure; `SKIP LOCKED`; idempotent consumers absorb duplicates |
-| Reservation logic conflates duplicate vs out-of-stock cancellations | Oversell or false rejects | Explicit `CancellationReasons` handling + unit tests (section 5) |
-| Scope creep from Day 1–2 into Day 3+ | No cloud deployment by Day 5 | Milestone gates; M10 is the hard stop for Phase 1 |
-| UI scope creep (login, payments, carts, pixel polish) | Delays the cloud phase | The non-goals are fixed in section 15; the UI holds no backend logic; M8 has a done-when gate |
-| npm supply-chain compromise | Malicious code in the build or the shipped bundle | Exact versions in the lockfile, `npm ci` only, a short approved dependency list, `npm audit` and Trivy in CI, no secrets anywhere near the build |
-| Playwright and Chromium on top of the stack on an 8 GB Mac | Memory pressure and Docker engine restarts (seen in M5) | Headless Chromium, one worker, run on a freshly started stack with other apps closed; CI runs it on hosted runners |
-| Wrong money or stale stock shown in the UI | Customers see wrong totals or buy what is not there | Integer minor-unit arithmetic with server totals authoritative; stock never cached (`staleTime: 0`, `gcTime: 0`); both covered by tests |
-| Idle AWS resources over nights/weekend | Unexpected bill | Tag everything `Project=retail-platform` (default tags in each stack), the $350 AWS Budgets alert, destroy dev (`alarms-destroy`, `app-destroy`, `addons-destroy`, then `platform-destroy`) when idle |
-| Self-hosted runner on a public repo executes untrusted fork code | Code execution inside the VPC next to the cluster | Runners serve only push-to-`dev`/dispatch/tag/environment jobs, never `pull_request`; approval required for outside collaborators; ephemeral single-job runners; instance profile grants SSM only |
-| `cloudbatch818-loria-retail-bootstrap` can create IAM roles | Effectively admin if the trust is widened or the workflow is edited | Exact `sub` pin to `environment:bootstrap`, required reviewer, `workflow_dispatch` only, the `bootstrap` environment accepts only the `dev` branch (branch protection on `.github/` is not set up yet) |
-| No local way to run plan/apply/kubectl | Slow feedback; cloud errors surface only in CI | Static checks locally; workflows dump diagnostics on failure; small, frequent infra PRs |
-| Public viewer ALB (`app-expose.yml`) | Anyone at the allowed address reaches an app with no login and unauthenticated admin endpoints, over plain HTTP | Dev only; one address from an environment secret (masked, never in the repo); `scripts/viewer_cidr.py` refuses anything wider than a /24, private addresses and `0.0.0.0/0`; `remove` deletes it |
-| The alarm and alert path is untested | An outage could pass without an email: a wrong rule, a muted subscription or a broken Alertmanager role would not show until a real failure | Rules are unit-tested (`make rules-test`), the subscription is confirmed, a cloud test checks the rules are loaded and Alertmanager is ready, and the runbook index is tested against the alarms. Not covered: a failure that actually fires one. Run `drills.yml` (`bus-down`, then `consumer-down`) to close this |
-| The nodes' pod limit and CPU | Pods stay `Pending` if the pod limit (about 29 per node) or CPU is reached, for example when an HPA scales up or another stack is added | Dev has two nodes (about 58 pods; the measurement that led to the second is in the ADR notes). Run `cluster-capacity.yml` after a change that adds pods |
-| Teardown workflows never run | `app-destroy`, `addons-destroy` and `platform-destroy` are untested end to end; a destroy could hang on an ALB or a security group | Order is fixed (app, addons, platform); `platform-destroy` refuses while the addons state has resources; run them once in dev before relying on them |
+Closed questions and the original risk list: `docs/adr/README.md`.
 
 ## 15. Frontend UI (React)
 
-Added in v1.6 (1 Oct 2026). Binding decisions are ADR-16 and ADR-17 in section 2. The UI was milestone M8 (section 12) and was rebuilt as the CloudPunks marketplace in N5 (section 16.6, which lists the screens). The stack, rules, build and tests below still hold; where this section described the retail shop, it now describes the marketplace.
+Binding decisions are ADR-16 and ADR-17 in section 2. The screens are in section 16.6; this section holds the stack, the rules, the build and the tests.
 
 ### 15.1 Scope
 
@@ -899,12 +854,12 @@ Still out of scope, even with a UI: login or any notion of identity beyond a dem
 
 ### 15.2 Stack
 
-Versions below were checked on 1 Oct 2026 and are pinned exactly in `package-lock.json` at build time (**verify** the current majors when M8 starts).
+Versions are pinned exactly in `package-lock.json`.
 
 | Concern | Choice |
 | --- | --- |
-| Language / UI | TypeScript (`strict`), React 19.x (19.3 at the time of writing) |
-| Build / dev server | Vite 8 (needs Node 20.19+ or 22.12+); built with Node 24 LTS (Node 26 becomes LTS on 28 Oct 2026, revisit) pinned in `.nvmrc` and the Dockerfile |
+| Language / UI | TypeScript (`strict`), React 19.x |
+| Build / dev server | Vite 8 (needs Node 20.19+ or 22.12+); built with Node 24 LTS (revisit when Node 26 is LTS) pinned in `.nvmrc` and the Dockerfile |
 | Packages | npm with `package-lock.json`; scripts and CI use `npm ci`, never `npm install` |
 | Routing | React Router, declarative routes |
 | Server state | TanStack Query (fetching, polling, retries); no Redux or other global store |
@@ -917,7 +872,7 @@ This list is the approved set. Anything else is a "new dependency" and needs ask
 
 ### 15.3 Screens and the API behind them
 
-The screens are listed in section 16.6: the collection (Items and Activity tabs), a CloudPunk's page, My CloudPunks, the order page and, in local builds only, the demo page that switches the customer id (the header's customer menu does the same in every build). The retail screens (catalog, product, basket, checkout, my orders, the stock-and-price demo tools) were removed in N5.
+The screens are listed in section 16.6: the collection (Items and Activity tabs), a CloudPunk's page, My CloudPunks, the order page and, in local builds only, the demo page that switches the customer id (the header's customer menu does the same in every build).
 
 ### 15.4 Behavior rules
 
@@ -936,9 +891,9 @@ The screens are listed in section 16.6: the collection (Items and Activity tabs)
 
 - **Image.** `ui/Dockerfile`, built from `ui/` only (it needs nothing from `libs/`): a Node 24 stage runs `npm ci` and `npm run build`; the final stage is `nginxinc/nginx-unprivileged` at a pinned tag, non-root, listening on 8005, compatible with a read-only root filesystem (writable `emptyDir` for nginx's temp and cache paths in Kubernetes). No `:latest`, tags `dev-<git sha>`. There are no runtime environment variables: the UI is same-origin and calls relative `/api/v1`. The only build-time switch is `VITE_DEMO_TOOLS`.
 - **nginx in the image.** Hashed assets under `/assets/` get `Cache-Control: public, max-age=31536000, immutable`; `index.html` is `no-cache`. Extension-less paths fall back to `index.html` (client-side routing); a missing file with an extension is a real 404. `/healthz` returns 200 and checks nothing external (liveness and readiness are the same: it is static files). Headers: `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`. The UI exposes no `/metrics`: it is the one process without the Prometheus contract, and the gateway's access log is its request telemetry.
-- **Gateway.** `gateway/nginx.conf` keeps every `/api/v1/...` rule and gains `location / { proxy_pass ui:8005 }` resolved per request like the others; an unknown `/api/...` path stays the gateway's JSON 404. Consequence for the M2 gateway check: `/health/live` and `/metrics` no longer 404 at the gateway, they return the SPA's `index.html` (never a service's health or metrics); `/openapi.json` has an extension and still 404s.
+- **Gateway.** `gateway/nginx.conf` keeps every `/api/v1/...` rule and gains `location / { proxy_pass ui:8005 }` resolved per request like the others; an unknown `/api/...` path stays the gateway's JSON 404. At the gateway, `/health/live` and `/metrics` return the SPA's `index.html` (never a service's health or metrics); `/openapi.json` has an extension and still 404s.
 - **Local development.** `make ui-dev` runs Vite on `:5173` with `/api` proxied to `http://localhost:8080`, so the SPA talks to the Compose stack with hot reload.
-- **Compose and Kubernetes.** `ui` is one more service in `local/docker-compose.yml`; the gateway depends on it. In M10 it is one more instance of the generic chart; on EKS the ALB's default rule sends `/` to it (section 13).
+- **Compose and Kubernetes.** `ui` is one more service in `local/docker-compose.yml`; the gateway depends on it. On Kubernetes it is one more release of the generic chart; on EKS the ALB's default rule sends `/` to it (section 13).
 - **Budgets.** Initial JavaScript at most 200 kB gzipped; the production build fails above it.
 
 ### 15.6 Testing
@@ -949,11 +904,11 @@ The screens are listed in section 16.6: the collection (Items and Activity tabs)
 | Component | Each screen against an in-memory market behind MSW (`src/test/market.ts`): colours, filters, buy, bid, accept, withdraw, put up and take off, what is sent (keys, correlation ids, amounts as strings), error panels with the reference, and stock re-read on every visit | green |
 | Journeys | Playwright (headless Chromium, one worker) against the Compose stack after `make reset && make up && make seed` | green, axe reports no serious or critical violations on any screen |
 
-Journeys (`make ui-e2e`, also run by `make k8s-e2e`): browse the 100 by colour and filter; the header search jumps to a CloudPunk; buying one confirms and turns its tile blue; a full resale (put up for bid, create a second customer in the header menu, bid, switch back, accept, ownership moves); double-clicking "Confirm purchase" creates one order; losing a race to another buyer shows the error with a reference; My CloudPunks; stopping product-service shows a retryable error with a correlation id and recovers; an unreachable gateway shows a network error, not an API error; no horizontal scroll at 360 px; the tab is titled CloudPunks with its icon; the customer menu opens inside the window at widths from 360 to 1280 px; an API path answered with HTML reads as an error with nothing under the header; the banner shows whole CloudPunks at every width. The journeys use CloudPunks #0091 to #0096 and hand them back to the platform afterwards.
+Journeys (`make ui-e2e`, also run by `make k8s-e2e`): browse and filter the 100; search jumps to a CloudPunk; buy one and its tile turns blue; a full resale between two customers through the header menu; a double-click creates one order; losing a race shows the error with a reference; My CloudPunks; a stopped service shows a retryable error with a correlation id and recovers; an unreachable gateway and an API path answered with HTML read as errors; no horizontal scroll at 360 px; the tab title and icon; the customer menu and the banner fit at every width from 360 to 1280 px. The journeys use CloudPunks #0091 to #0096 and hand them back to the platform afterwards.
 
 ### 15.7 Make targets
 
-`ui-install` (`npm ci`), `ui-dev`, `ui-types`, `ui-lint`, `ui-typecheck`, `ui-test`, `ui-build`, `ui-e2e`, `ui-fmt` (Prettier), `ui-art` and `ui-art-check` (the CloudPunk art), plus `openapi` (writes `docs/openapi/<service>.json` from each app) and `openapi-check` / `ui-types-check` (fail on a stale snapshot, run by `make lint`). Once `ui/` exists, `make lint` and `make test` also run the UI's lint, type check, unit and component tests and the production build, so one command still gates everything. Node is a prerequisite from M8 on.
+`ui-install` (`npm ci`), `ui-dev`, `ui-types`, `ui-lint`, `ui-typecheck`, `ui-test`, `ui-build`, `ui-e2e`, `ui-fmt` (Prettier), `ui-art` and `ui-art-check` (the CloudPunk art), plus `openapi` (writes `docs/openapi/<service>.json` from each app) and `openapi-check` / `ui-types-check` (fail on a stale snapshot, run by `make lint`). Once `ui/` exists, `make lint` and `make test` also run the UI's lint, type check, unit and component tests and the production build, so one command still gates everything. Node is a prerequisite.
 
 ### 15.8 Layout
 
@@ -977,13 +932,11 @@ ui/
 
 OpenAPI snapshots live in `docs/openapi/<service>.json`, produced by `make openapi` (each app's spec is generated from the code, so it cannot be hand-edited out of sync).
 
-## 16. CloudPunks: the NFT marketplace redesign
+## 16. The CloudPunks marketplace
 
-**Status: approved by the owner (3 Oct 2026), being built milestone by milestone (16.9).** ADR-18 to ADR-21 are in section 2; section 15 is updated to match 16.6 in N5.
+The platform is a marketplace for one collection, **CloudPunks**: 100 one-of-a-kind 24×24 pixel-art characters in the style of the owner's references, bought from the platform and then resold between customers through bids, in **ETH**. It is a proof of concept on the UI and the existing API shape. There is no blockchain, wallet, token or real payment: a sale is an order, the money mechanics stay exactly as in sections 4 and 5 (two-decimal strings, `Decimal`, `NUMERIC`), and the demo customer id plays the part of a wallet address.
 
-The platform becomes a marketplace for one collection, **CloudPunks**: 100 one-of-a-kind 24×24 pixel-art characters in the style of the owner's references, bought from the platform and then resold between customers through bids, in **ETH**. It is a proof of concept on the UI and the existing API shape. There is no blockchain, wallet, token or real payment: a sale is an order, the money mechanics stay exactly as in sections 4 and 5 (two-decimal strings, `Decimal`, `NUMERIC`), and the demo customer id plays the part of a wallet address.
-
-**What stays:** the four services and their stores, the gateway, the event bus and the four event types (a fifth, `MarketActivity`, came later for the activity emails: ADR-22, section 16.11), the outbox and its relay, idempotency keys, the saga and its state machine, the Helm chart, every workflow, and all AWS infrastructure (no Terraform change: DynamoDB is schemaless and the new PostgreSQL tables come from an Alembic migration). **What goes:** the 20-product catalog and its five categories, the 20 product SVGs and `productArt.ts`, the category palettes, the basket and checkout screens, and the current catalog and product screens. Non-goals are unchanged: no auth (the customer id is a label), no payments (a bid reserves no funds), no royalties, no server-side carts.
+**What it reuses:** the four services and their stores, the gateway, the event bus and the outbox and its relay, idempotency keys, the saga and its state machine, the Helm chart and every workflow. The marketplace needed no new AWS resource until the activity email (16.11): DynamoDB is schemaless and the new PostgreSQL tables come from an Alembic migration. Non-goals are unchanged: no auth (the customer id is a label), no payments (a bid reserves no funds), no royalties, no server-side carts.
 
 ### 16.1 How the market works
 
@@ -993,11 +946,23 @@ The platform becomes a marketplace for one collection, **CloudPunks**: 100 one-o
 | **Blue** `#6f8392` | Bought: a customer owns it and it is not on the market | Only the owner can act: **Put up for bid** turns it purple |
 | **Purple** `#8571ad` | Up for bid: the owner has put it on the market | Anyone but the owner can **Place a bid**, and withdraw their own. The owner can **Accept** any open bid: the bidder buys it at that amount and it turns blue for the new owner. The owner can **Take it off** the market: it turns blue and the open bids close |
 
+```mermaid
+stateDiagram-v2
+  [*] --> Red
+  Red: Red, unsold, held by the platform
+  Blue: Blue, owned by a customer
+  Purple: Purple, up for bid
+  Red --> Blue: anyone buys it now
+  Blue --> Purple: the owner puts it up for bid
+  Purple --> Blue: the owner takes it off
+  Purple --> Blue: the owner accepts a bid, new owner
+```
+
 There is no fixed resale price and no buy-now on purple: a resale happens only by the owner accepting a bid. The seed puts all 100 up as red, so a fresh collection is all red. While an accepted bid's order is being confirmed (a second or two) the tile stays purple.
 
 ### 16.2 Decisions
 
-ADR-18 to ADR-21 in section 2: ownership in inventory, with the reservation as the transfer; listings, bids and activity in order-service; generated, committed art; additive event fields only.
+ADR-18 to ADR-22 in section 2: ownership in inventory, with the reservation as the transfer; listings, bids and activity in order-service; generated, committed art; additive event fields only; market activity as an event.
 
 ### 16.3 Collection and art
 
@@ -1009,7 +974,7 @@ ADR-18 to ADR-21 in section 2: ownership in inventory, with the reservation as t
 
 ### 16.4 API contract changes
 
-All additive: no existing field, path or status changes meaning. Recorded in the OpenAPI snapshots with `make openapi` in the milestone that builds each. The gateway (`gateway/nginx.conf`) and the three Ingress values files route `/api/v1/listings`, `/api/v1/bids` and `/api/v1/activity` to order-service.
+All additive: no existing field, path or status changes meaning. Recorded in the OpenAPI snapshots (`make openapi`). The gateway (`gateway/nginx.conf`) and the three Ingress values files route `/api/v1/listings`, `/api/v1/bids` and `/api/v1/activity` to order-service.
 
 **Inventory**
 
@@ -1085,13 +1050,13 @@ CREATE INDEX ix_listings_sku_created ON listings (sku, created_at DESC);
 | Purchase from the platform (`seller` null) | `attribute_exists(sku) AND available >= :q` | `available - :q`, `reserved + :q`, `owner = :buyer` |
 | Resale (accepted bid, `seller` set) | `attribute_exists(sku) AND owner = :seller` | `reserved + :q`, `owner = :buyer` (`available` stays 0) |
 
-A sold CloudPunk has `available = 0`, so the stock condition alone decides a race between two buyers of a red one; the purchase needs no owner condition (the first draft had `attribute_not_exists(owner)`, which was redundant and would have broken counted stock, where `owner` is simply the latest buyer). `owner` is a DynamoDB reserved word and is aliased `#owner`. A failed condition is `InventoryFailed` with `reason: OUT_OF_STOCK` and `detail` = `SOLD` (a purchase from the platform of something a customer owns) or `OWNER_CHANGED` (a resale whose seller no longer owns it), from `ReturnValuesOnConditionCheckFailure: ALL_OLD`; an unknown SKU stays `UNKNOWN_SKU`, and a plain shortfall in counted stock has no detail. The reservation record also stores `buyer`, `seller` and `detail`, so a redelivery re-emits exactly the same outcome. The unknown-versus-insufficient and duplicate-versus-failure rules of section 5 are unchanged. Deploy inventory before order-service, so no `OrderCreated` with a `seller` meets a consumer that ignores it.
+A sold CloudPunk has `available = 0`, so the stock condition alone decides a race between two buyers of a red one; the purchase needs no owner condition (for counted stock, `owner` is simply the latest buyer). `owner` is a DynamoDB reserved word and is aliased `#owner`. A failed condition is `InventoryFailed` with `reason: OUT_OF_STOCK` and `detail` = `SOLD` (a purchase from the platform of something a customer owns) or `OWNER_CHANGED` (a resale whose seller no longer owns it), from `ReturnValuesOnConditionCheckFailure: ALL_OLD`; an unknown SKU stays `UNKNOWN_SKU`, and a plain shortfall in counted stock has no detail. The reservation record also stores `buyer`, `seller` and `detail`, so a redelivery re-emits exactly the same outcome. The unknown-versus-insufficient and duplicate-versus-failure rules of section 5 are unchanged. Deploy inventory before order-service, so no `OrderCreated` with a `seller` meets a consumer that ignores it.
 
 The low-stock Lambda is unchanged; every purchase from the platform leaves `remaining = 0`, so it logs one `low_stock` record per first sale ("sold out").
 
 ### 16.6 UI
 
-Same stack and rules as section 15 (TypeScript strict, BigInt money, an `Idempotency-Key` on every purchase and bid, `X-Correlation-ID` on every request, stock and market state never cached, CSS Modules only, no external requests, axe clean). The layout follows a marketplace collection page in the manner of OpenSea's CryptoPunks page (the owner's reference, 3 Oct 2026; it replaces the earlier cryptopunks.app reference): one dark theme, a collection header, tabs, a filter sidebar and a card grid, with CloudPunks' own name and mark (no marketplace branding). The pixel art is scaled with `image-rendering: pixelated` on a tile coloured by state (16.1). The UI is a pure client: trait filters and rarity come from each product's `description`, and nothing new was added to the API for it.
+Same stack and rules as section 15 (TypeScript strict, BigInt money, an `Idempotency-Key` on every purchase and bid, `X-Correlation-ID` on every request, stock and market state never cached, CSS Modules only, no external requests, axe clean). The layout follows a marketplace collection page in the manner of OpenSea's CryptoPunks page: one dark theme, a collection header, tabs, a filter sidebar and a card grid, with CloudPunks' own name and mark (no marketplace branding). The pixel art is scaled with `image-rendering: pixelated` on a tile coloured by state (16.1). The UI is a pure client: trait filters and rarity come from each product's `description`, and nothing new was added to the API for it.
 
 | Screen | Route | Calls | Notes |
 | --- | --- | --- | --- |
@@ -1100,7 +1065,7 @@ Same stack and rules as section 15 (TypeScript strict, BigInt money, an `Idempot
 | CloudPunk | `/cloudpunks/:id` | `GET /products/{sku}`; `GET /inventory/{sku}`; `GET /listings?sku=`; `GET /bids?sku=`; `GET /activity?sku=`; the catalog (for rarity) | Large art on the state colour, traits with "N% have this", owner and state. Price panel: unsold, the price and **Buy now** with a confirm step, then the order screen; up for bid, the top bid and **Make offer** (or **Take off the market** for the owner); owned, **Put up for bid** for the owner. Offers table with **Accept** (owner) and **Withdraw** (bidder). Item activity. Refreshes every 3 s |
 | My CloudPunks | `/account` | the collection calls; `GET /bids?customer_id=`; `GET /orders?customer_id=` | Tabs: Collected (cards), Bids (withdraw an open one), Orders |
 | Order | `/orders/:id` | `GET /orders/{id}` (polled); `GET /notifications?order_id=` | The CloudPunk, who bought it from whom, the status to `CONFIRMED` ("You now own …") or `REJECTED` with the reason in plain words |
-| Demo tools | `/demo` | none | Local builds only (`VITE_DEMO_TOOLS`): switch the customer id (presets and a new one). The header's customer menu now does this in every build |
+| Demo tools | `/demo` | none | Local builds only (`VITE_DEMO_TOOLS`): switch the customer id (presets and a new one). The header's customer menu does this in every build |
 
 The header holds the CloudPunks mark, a search box (a number opens that CloudPunk, anything else filters the collection), the navigation and the customer id as a wallet-style pill that opens the customer menu (My CloudPunks, switch, create, forget); the footer holds the colour legend. CloudPunk #0023 stands for the collection: the header mark, the collection avatar and the tab icon (on its unsold tile, `ui/src/assets/favicon.svg`); the tab is titled CloudPunks. The collection refreshes in the background without showing it: the result count changes only when the count does. Idempotency keys are kept per action: `buy:<sku>` (fingerprint: the customer) and `bid:<sku>` (the customer and the amount).
 
@@ -1111,28 +1076,20 @@ The header holds the CloudPunks mark, a search box (a number opens that CloudPun
 ### 16.8 Tests
 
 - **Unit:** both reservation modes and each failure `detail`; the listing and bid lifecycles, including settling after `CONFIRMED` and `REJECTED`; `OWN_ITEM`, `NOT_OWNER`, `NOT_LISTED`; the colour rules and BigInt ETH formatting in the UI; the generator is deterministic and keeps `0001.svg` byte-identical.
-- **Guards shown able to fail** (CLAUDE.md): dropping the `attribute_not_exists(owner)` condition lets two buyers both get a red CloudPunk; dropping the owner condition lets a resale go through after the owner changed; dropping the listing row lock (or the `OPEN` guard) accepts two bids on one listing (integration tests where they race).
-- **End-to-end:** the acceptance suite is rewritten around the market (buy from the platform and the owner changes; put up for bid, a second customer bids, the owner accepts and ownership moves; two buyers race for one red CloudPunk and one wins; withdraw a bid; take a listing off and its bids close), keeping steps 1, 6, 9 and 10 (cache hit, notifications, readiness and empty DLQs, one correlation id). It creates its own `E2E-…` products and inventory and deactivates them afterwards, so the 100 CloudPunks are never touched and the gallery shows only `CP-` SKUs. The failure drills keep their meaning on these fixtures. Browser journeys are rewritten for the new screens. The same suites run on Compose, the local cluster and dev in the cloud.
+- **Guards shown able to fail** (CLAUDE.md): dropping the stock condition lets two buyers both get a red CloudPunk; dropping the owner condition lets a resale go through after the owner changed; dropping the listing row lock (or the `OPEN` guard) accepts two bids on one listing (integration tests where they race).
+- **End-to-end:** the acceptance suite covers the market (buy from the platform and the owner changes; put up for bid, a second customer bids, the owner accepts and ownership moves; two buyers race for one red CloudPunk and one wins; withdraw a bid; take a listing off and its bids close), keeping steps 1, 6, 9 and 10 (cache hit, notifications, readiness and empty DLQs, one correlation id). It creates its own `E2E-…` products and inventory and deactivates them afterwards, so the 100 CloudPunks are never touched and the gallery shows only `CP-` SKUs. The failure drills keep their meaning on these fixtures. Browser journeys cover the screens. The same suites run on Compose, the local cluster and dev in the cloud.
 
-### 16.9 Milestones
+### 16.9 Build
 
-Same rules as section 12: one at a time, `make lint test` (and itest, e2e when stated), a summary and a stop after each.
+The marketplace was built in seven milestones (N1 to N7: the art, the catalog, ownership, listings and bids, the UI, the local cluster and cloud, the docs), each reviewed before the next. The list and what each verified is in `docs/adr/README.md`.
 
-- [x] **N1 — Art.** *(Built and approved 3 Oct 2026.)* The generator, 100 SVGs in `nft-collection/` (0001 as approved), the trait and price data for the seed, `make ui-art` and its lint check. *Done when:* a contact sheet of all 100 is reviewed by the owner.
-- [x] **N2 — Catalog.** *(Built and approved 3 Oct 2026.)* Seed the five types and 100 products in ETH, one of each; delete the old catalog, art and palettes; the e2e fixtures move to `E2E-` products. *Done when:* `make lint test itest e2e` pass on a clean `make reset && make up && make seed`.
-- [x] **N3 — Ownership (inventory).** *(Built and approved 3 Oct 2026.)* `owner`, the two reservation modes, the new response field, `reset_owner`, `InventoryFailed.detail`. *Done when:* unit and integration tests, including the two-buyer race, pass and the guards are shown able to fail.
-- [x] **N4 — Listings, bids and activity (order-service).** *(Built and approved 3 Oct 2026.)* Migration 0002, `seller` on items, the listing and bid endpoints, settling in the consumer, `/activity`, `OrderCreated.seller`. *Done when:* unit, integration and `make e2e` pass with the new acceptance steps.
-- [x] **N5 — UI.** *(Built and approved 3 Oct 2026.)* The screens in 16.6, the old screens removed, component tests and browser journeys rewritten. *Done when:* `make lint test ui-e2e` pass; axe clean.
-- [x] **N6 — Local cluster and cloud.** *(Local cluster verified and approved 3 Oct 2026; the cloud suite runs at the owner's next `app-deploy`.)* `make k8s-deploy k8s-e2e` pass; the cloud acceptance suite updated (it is run by `app-deploy` only when the owner chooses to deploy).
-- [x] **N7 — Docs.** *(Done 3 Oct 2026; awaiting review.)* README, DESIGN.md sections 1 to 15 brought in line, the ADR notes, the OpenAPI baseline.
-
-### 16.10 Settled with the owner (3 Oct 2026)
+### 16.10 Decisions settled with the owner
 
 1. Purple has no fixed price: a resale happens only when the owner accepts a bid (no buy-now on purple, no minimum bid).
 2. The e2e suite works on its own `E2E-` products, never on the 100.
 3. The seed never resets an existing CloudPunk; `make reset` is the clean start.
 
-### 16.11 Market activity emails (4 Oct 2026)
+### 16.11 Market activity emails
 
 The owner gets an email for every sale, bid and listing: the CloudPunk's picture, what happened, the price and who (ADR-22).
 
@@ -1142,4 +1099,3 @@ The owner gets an email for every sale, bid and listing: the CloudPunk's picture
 - **AWS.** `infra/terraform/modules/events/market_email.tf`, all conditional on the address: the SES email identity for `ALARM_EMAIL` (sender and recipient, so the SES sandbox is enough; AWS emails a verification link once, and nothing is delivered until it is clicked), the function, its log group, its DLQ, a role that may write its logs, send to its DLQ and `ses:SendRawEmail` as that identity only, the rule and the permission. The platform apply role gains `ses:*` (bootstrap). With no domain of our own the sender is the owner's address, so the first emails may land in spam.
 - **Local.** LocalStack runs SES and the same function and rule; it keeps the mail instead of delivering it (`curl localhost:4566/_aws/ses`). The function's `STOREFRONT_URL` adds a link to the CloudPunk's page (local: `http://localhost:8080`; in the cloud the viewer address is not known to Terraform, so there is no link).
 - **Tests.** Schema tests (libs/common), the event builder (unit), each change writing exactly one event and replays none, a resale and a purchase from CloudPunks writing their `SALE` and a rejection none (integration, against PostgreSQL), the picture, the message for each kind, escaping and the handler with a fake SES (`functions/market-activity-email/tests`), and the package (both zips, reproducible, the handler finding its art inside).
-

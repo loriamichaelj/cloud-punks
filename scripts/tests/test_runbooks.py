@@ -49,7 +49,7 @@ def test_every_cloudwatch_alarm_is_in_the_index() -> None:
 
 def test_every_runbook_is_linked_from_the_index() -> None:
     files = runbook_files()
-    assert len(files) == 5
+    assert len(files) >= 5
     assert [f.name for f in files if f"({f.name})" not in index()] == []
 
 
