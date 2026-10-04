@@ -58,6 +58,7 @@ jobs:
 
       - name: Open or close the storefront
         env:
+          DEV_DOMAIN: ${{ vars.DEV_DOMAIN }}
           ACTION: ${{ inputs.action }}
           VIEWER_CIDR: ${{ secrets.DEV_VIEWER_CIDR }}
         run: |
@@ -84,9 +85,19 @@ jobs:
           trap 'rm -f "$viewer_values"' EXIT
           printf 'ingress:\n  annotations:\n    alb.ingress.kubernetes.io/inbound-cidrs: "%s"\n' "$VIEWER_CIDR" > "$viewer_values"
 
+          # With a domain the ALB also listens on 443 with the ACM certificate for dev.<domain> (issued by
+          # dns-create.yml, which must have run first) and port 80 redirects to it. The address allow-list
+          # above is unchanged. scripts/dev_domain.py prints nothing when DEV_DOMAIN is unset.
+          public_host=$(python3 scripts/dev_domain.py public)
+          https_args=()
+          if [ -n "$public_host" ]; then
+            https_args=(-f "${HELM_VALUES}/values-ingress-public-https-dev.yaml" --set-string "ingress.tlsHosts[0]=${public_host}")
+          fi
+
           "${helm_cmd[@]}" upgrade --install --rollback-on-failure --wait --timeout 5m \
             "$RELEASE" "$HELM_CHART" \
-            -f "${HELM_VALUES}/values-ingress-public-dev.yaml" -f "$viewer_values"
+            -f "${HELM_VALUES}/values-ingress-public-dev.yaml" -f "$viewer_values" \
+            ${https_args[@]+"${https_args[@]}"}
 
           host=""
           for _ in $(seq 1 60); do
@@ -100,10 +111,22 @@ jobs:
             kubectl --context "$EKS_CLUSTER" --namespace "$NAMESPACE" describe ingress "$RELEASE" || true
             exit 1
           fi
-          {
-            echo "### Storefront"
-            echo
-            echo "Open **http://${host}** from the allowed address. The ALB needs a few minutes to"
-            echo "start answering after it first appears; refresh until the page loads."
-          } >> "$GITHUB_STEP_SUMMARY"
-          echo "http://${host}"
+          if [ -n "$public_host" ]; then
+            {
+              echo "### Storefront"
+              echo
+              echo "Open **https://${public_host}** from the allowed address. The name points at the ALB"
+              echo "(\`${host}\`) only after **ALB DNS: create** has run, which is needed on the first"
+              echo "expose and again whenever the ALB is recreated. Until then the ALB's own name answers"
+              echo "with a certificate warning. The ALB needs a few minutes to start answering."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "https://${public_host}"
+          else
+            {
+              echo "### Storefront"
+              echo
+              echo "Open **http://${host}** from the allowed address. The ALB needs a few minutes to"
+              echo "start answering after it first appears; refresh until the page loads."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "http://${host}"
+          fi

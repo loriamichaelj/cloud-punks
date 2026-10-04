@@ -76,6 +76,7 @@ ingress:
   className: ""
   annotations: {}
   host: ""
+  tlsHosts: []          # names the ALB's ACM certificate must cover, for example [dev.example.com]
   routes: []            # [{path: /api/v1/orders, service: order-service, port: 8003}]
   default: { service: ui, port: 8005 }
 

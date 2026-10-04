@@ -53,6 +53,7 @@ data "aws_iam_policy_document" "tf" {
       "lambda:*",
       "logs:*",
       "rds:*",
+      "route53:*", # the dev domain: ACM validation records, the internal private zone and the ALB aliases (DESIGN.md section 13)
       "secretsmanager:*",
       "ses:*", # the market activity email's identity (DESIGN.md section 16.11)
       "sns:*",

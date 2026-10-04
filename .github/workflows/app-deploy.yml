@@ -98,6 +98,8 @@ jobs:
           exit "$missing"
 
       - name: Deploy the releases
+        env:
+          DEV_DOMAIN: ${{ vars.DEV_DOMAIN }}
         run: |
           set -euo pipefail
           # Always name the context explicitly.
@@ -142,9 +144,22 @@ jobs:
             ui "$HELM_CHART" -f "${HELM_VALUES}/values-ui-dev.yaml" \
             --set "image.repository=${registry}/loria-retail/ui" --set "image.tag=${TAG}"
 
+          # With a domain, each ALB also listens on 443 with the ACM certificate the dns stack issued for
+          # its name (dns-create.yml). Without one, or before that certificate is issued, only HTTP is served.
+          # scripts/dev_domain.py checks DEV_DOMAIN and prints nothing when it is unset.
+          internal_host=$(python3 scripts/dev_domain.py internal)
+          public_host=$(python3 scripts/dev_domain.py public)
+          internal_https=()
+          public_https=()
+          if [ -n "$internal_host" ]; then
+            internal_https=(-f "${HELM_VALUES}/values-ingress-https-dev.yaml" --set-string "ingress.tlsHosts[0]=${internal_host}")
+            public_https=(-f "${HELM_VALUES}/values-ingress-public-https-dev.yaml" --set-string "ingress.tlsHosts[0]=${public_host}")
+          fi
+
           echo "== gateway (the shared Ingress)"
           "${helm_cmd[@]}" upgrade --install --rollback-on-failure --wait --timeout 5m \
-            gateway "$HELM_CHART" -f "${HELM_VALUES}/values-ingress-dev.yaml"
+            gateway "$HELM_CHART" -f "${HELM_VALUES}/values-ingress-dev.yaml" \
+            ${internal_https[@]+"${internal_https[@]}"}
 
           # The viewer ALB (app-expose) must carry the same routes as the internal one, or a new API
           # path falls through to the UI there and answers HTML. If it is installed, refresh its
@@ -153,7 +168,8 @@ jobs:
           if "${helm_cmd[@]}" status gateway-public >/dev/null 2>&1; then
             echo "== gateway-public (the viewer ALB: refresh its routes, keep its address)"
             "${helm_cmd[@]}" upgrade --reuse-values --rollback-on-failure --wait --timeout 5m \
-              gateway-public "$HELM_CHART" -f "${HELM_VALUES}/values-ingress-public-dev.yaml"
+              gateway-public "$HELM_CHART" -f "${HELM_VALUES}/values-ingress-public-dev.yaml" \
+              ${public_https[@]+"${public_https[@]}"}
           fi
 
           # Prometheus and Grafana. Last, so a problem here never blocks the application. The Role
@@ -170,6 +186,8 @@ jobs:
 
       # The internal ALB takes a few minutes to get an address and healthy targets.
       - name: Find the ALB and wait for it to answer
+        env:
+          DEV_DOMAIN: ${{ vars.DEV_DOMAIN }}
         run: |
           set -euo pipefail
           host=""
@@ -200,9 +218,42 @@ jobs:
           public=$(kubectl --context "$EKS_CLUSTER" --namespace "$NAMESPACE" get ingress gateway-public \
             -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
           if [ -n "$public" ]; then
-            echo "- Public storefront: \`http://${public}\` (open from the DEV_VIEWER_CIDR address)" >> "$GITHUB_STEP_SUMMARY"
+            public_host=$(python3 scripts/dev_domain.py public)
+            if [ -n "$public_host" ]; then
+              echo "- Public storefront: \`https://${public_host}\` (open from the DEV_VIEWER_CIDR address; alb-dns-create.yml points the name at the ALB)" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "- Public storefront: \`http://${public}\` (open from the DEV_VIEWER_CIDR address)" >> "$GITHUB_STEP_SUMMARY"
+            fi
           else
             echo "- Public storefront: not installed (run App: expose to open it in a browser)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # HTTPS on the internal ALB, through its name, with the certificate checked. This is the proof that
+      # the name, the private zone, the certificate and the 443 listener work together. It reports and never
+      # fails the deploy: the name resolves only after alb-dns-create.yml, which needs this ALB to exist, so
+      # on a first deploy it is expected to say "not yet". The acceptance suite below still uses the ALB's
+      # own name over HTTP.
+      - name: Check HTTPS on the internal name
+        env:
+          DEV_DOMAIN: ${{ vars.DEV_DOMAIN }}
+        run: |
+          set -uo pipefail
+          internal_host=$(python3 scripts/dev_domain.py internal)
+          if [ -z "$internal_host" ]; then
+            echo "- HTTPS: not configured (the dev environment variable DEV_DOMAIN is not set)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          code=""
+          for _ in $(seq 1 30); do
+            code=$(curl -s -m 5 -o /dev/null -w '%{http_code}' "https://${internal_host}/" || true)
+            [ "$code" = "200" ] && break
+            sleep 10
+          done
+          if [ "$code" = "200" ]; then
+            echo "- HTTPS: \`https://${internal_host}/\` answered 200 with a valid certificate" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::https://${internal_host}/ answered ${code:-nothing}. Run dns-create.yml (the certificate must be issued before this deploy), then alb-dns-create.yml, then deploy again."
+            echo "- HTTPS: \`https://${internal_host}/\` answered ${code:-nothing} (not ready: dns-create, then alb-dns-create)" >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Show cluster state on failure

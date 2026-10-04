@@ -137,13 +137,21 @@ k8s-lint:
 	@for env in local dev; do \
 		for f in $(HV)/values-*-$$env.yaml; do \
 			r=$$(basename $$f -$$env.yaml); r=$${r#values-}; [ "$$r" = common ] && continue; \
-			extra=""; case $$r in ui|backing|ingress|ingress-public|secrets) ;; *) extra="-f $(HV)/values-common-$$env.yaml";; esac; \
+			extra=""; case $$r in ui|backing|ingress|ingress-public|ingress-https|ingress-public-https|secrets) ;; *) extra="-f $(HV)/values-common-$$env.yaml";; esac; \
 			helm lint $(CHART) $$extra -f $$f --set image.tag=dev-lint >/dev/null || { echo "helm lint failed: $$env $$r"; exit 1; }; \
 			helm template $$r $(CHART) $$extra -f $$f --set image.tag=dev-lint > /tmp/k8s-lint-$$env-$$r.yaml || exit 1; \
 			if command -v kubeconform >/dev/null; then kubeconform -strict -summary -ignore-missing-schemas /tmp/k8s-lint-$$env-$$r.yaml || exit 1; fi; \
 		done; \
 	done
 	@helm template d $(CHART) -f $(HV)/values-ui-dev.yaml --set image.repository=r/ui --set image.digest=sha256:abc | grep -q 'image: "r/ui@sha256:abc"' || { echo "image.digest is not rendered as repository@digest"; exit 1; }
+	@# The HTTPS overlays only mean something over their base file: the certificate hostname, both listeners, and
+	@# a redirect on the viewer ALB only (the internal ALB keeps port 80 for the in-VPC checks).
+	@helm template g $(CHART) -f $(HV)/values-ingress-dev.yaml -f $(HV)/values-ingress-https-dev.yaml --set-string 'ingress.tlsHosts[0]=internal.dev.example.com' > /tmp/k8s-lint-https-internal.yaml || exit 1
+	@helm template p $(CHART) -f $(HV)/values-ingress-public-dev.yaml -f $(HV)/values-ingress-public-https-dev.yaml --set-string 'ingress.tlsHosts[0]=dev.example.com' > /tmp/k8s-lint-https-public.yaml || exit 1
+	@grep -q -- '- internal.dev.example.com' /tmp/k8s-lint-https-internal.yaml && grep -q '"HTTPS": 443' /tmp/k8s-lint-https-internal.yaml && ! grep -q 'ssl-redirect' /tmp/k8s-lint-https-internal.yaml || { echo "internal HTTPS overlay: want the tls host and both listeners, and no redirect"; exit 1; }
+	@grep -q -- '- dev.example.com' /tmp/k8s-lint-https-public.yaml && grep -q '"HTTPS": 443' /tmp/k8s-lint-https-public.yaml && grep -q 'ssl-redirect: "443"' /tmp/k8s-lint-https-public.yaml || { echo "public HTTPS overlay: want the tls host, both listeners and the redirect"; exit 1; }
+	@! helm template g $(CHART) -f $(HV)/values-ingress-dev.yaml | grep -q 'tls:' || { echo "the Ingress renders a tls block without ingress.tlsHosts"; exit 1; }
+	@if command -v kubeconform >/dev/null; then kubeconform -strict -summary -ignore-missing-schemas /tmp/k8s-lint-https-internal.yaml /tmp/k8s-lint-https-public.yaml || exit 1; fi
 	@for rbac in false true; do \
 		helm lint deploy/helm/monitoring --set rbac.create=$$rbac >/dev/null || { echo "helm lint failed: monitoring rbac=$$rbac"; exit 1; }; \
 		helm template monitoring deploy/helm/monitoring -n retail --set rbac.create=$$rbac > /tmp/k8s-lint-monitoring-$$rbac.yaml || exit 1; \

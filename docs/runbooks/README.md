@@ -37,6 +37,7 @@ Everything arrives by email through one SNS topic (`loria-retail-dev-alarms`):
 Not tied to an alarm:
 
 - [local-environment](local-environment.md): the clean start, restarting LocalStack, the failure drills and the local Kubernetes cluster.
+- [https-and-domain](https-and-domain.md): registering the dev domain, the order of the DNS workflows, and what to check when HTTPS does not answer.
 - Dev environment (bring-up, teardown, resetting the market, opening it in a browser): `.github/workflows/README.md`.
 
 ## What a person can use

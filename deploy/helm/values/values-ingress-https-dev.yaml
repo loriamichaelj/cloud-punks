@@ -1,0 +1,13 @@
+# HTTPS on the internal ALB, laid over values-ingress-dev.yaml when the dev environment variable
+# DEV_DOMAIN is set. The workflow adds `ingress.tlsHosts` (internal.dev.<domain>), and the AWS Load
+# Balancer Controller attaches the ACM certificate the dns stack issued for that name.
+#
+# Port 80 stays and does not redirect: the deploy's readiness check and the acceptance suite reach
+# this ALB by its own name, which the certificate does not cover. Only the in-VPC runner can connect
+# to either port (inbound-cidrs). Port 443 is reached by the name, through the private hosted zone.
+workload:
+  enabled: false
+ingress:
+  annotations:
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06

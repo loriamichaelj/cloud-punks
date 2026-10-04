@@ -14,7 +14,8 @@ Procedures (clean start, failure drills, the local cluster, and what to do when 
 
 - **Built:** the local stack, the local Kubernetes cluster, dev on AWS (release `v0.1.5`, with the CloudPunks market deployed), the PR checks and deploy workflows, alarms, dashboards and runbooks, and the market activity emails (live in dev).
 - **Never run:** the failure drills on EKS (so no alarm has fired and the path to an email is unproven), the teardown workflows, `app-rollback` and `promote` (stage and prod are not deployed).
-- **Not built:** HTTPS and a domain.
+- **Built, not applied:** HTTPS and a domain (Phase 5: the `dns` and `alb-dns` stacks, four workflows, the HTTPS values). Needs a registered domain, `DEV_DOMAIN` and `bootstrap-ci-roles` first.
+- **Not built:** egress allowlisting (the NAT is open).
 
 The full list is in DESIGN.md section 14.
 
@@ -513,6 +514,54 @@ The owner asked for an email for every sale, bid, listing and take-off, with the
 - **Found on the way:** the OrbStack cluster's releases from N6 were still running old images against Compose's LocalStack and PostgreSQL, so two order consumers and two relays shared the queues and the outbox: a purchase confirmed by the old consumer wrote no `SALE`. `make k8s-down` removed them (`make k8s-deploy` brings them back); local work is on Compose again. Earlier journey runs passed with both running, so this had gone unnoticed.
 - **Checked locally,** end to end on Compose: a purchase from CloudPunks, putting it up, a bid, a withdrawal, another bid, accepting it, putting it up again and taking it off each produced their email in LocalStack's SES store (`/_aws/ses`), with the right subject, a plain-text and an HTML part, and the PNG inline. Integration tests (order-service 77, three new), the Lambda's 20 tests and the packager's were each shown to fail with their guard removed where they guard behaviour (the sale write). terraform fmt and validate, tflint and checkov (CI's image) pass. **In the cloud:** applied and working in dev (confirmed by the owner, 4 Oct 2026).
 
+## HTTPS and a domain as built (Phase 5, 4 Oct 2026)
+
+Built from the plan the owner approved after the network review: a domain registered in Route 53, HTTPS on both ALBs, Terraform for the names. Asked first and answered: Route 53 registration by hand in the console (no AWS CLI or CloudShell exists), both ALBs, a new Terraform stack. The owner did not answer the name layout, the internal ALB's port 80 or the milestone name, so the recommended defaults were used (below). **Nothing has been applied.**
+
+**What was built.** `envs/dev/dns` (public certificate for `dev.<domain>` and `internal.dev.<domain>`, DNS validation in the existing public zone, a private zone for the internal name), `envs/dev/alb-dns` (alias records to the two ALBs), `dns-create/destroy` and `alb-dns-create/destroy` workflows copied from the alarms pair (plan, then apply of the saved plan after a second approval), `scripts/dev_domain.py` (validates `DEV_DOMAIN`, builds the two host names, prints nothing when unset), the chart's `ingress.tlsHosts`, two values overlays (`values-ingress-https-dev.yaml`, `values-ingress-public-https-dev.yaml`), the overlay wiring in `app-deploy` and `app-expose`, the new stacks in `platform-destroy`'s refusal list and in both Terraform validation loops, a runbook (`docs/runbooks/https-and-domain.md`).
+
+**Decisions that differ from the first proposal.**
+
+- **The Ingress lists the name under `spec.tls` instead of a host rule.** The load balancer controller finds the ACM certificate from either, but a host rule makes the ALB's own `...elb.amazonaws.com` name match nothing and answer 404, and every check that uses it (the deploy's readiness loop, the acceptance suite, `app-rollback`, the drills) would have to move to the new name, which does not exist until the alias records are applied, which need the ALB. With `tls` the old paths keep working and the first deploy is not blocked.
+- **The internal ALB keeps port 80 with no redirect;** the viewer ALB redirects. Same reason. HTTPS on the internal ALB is checked by `app-deploy` (a non-failing step that curls `https://internal.dev.<domain>/` with the certificate verified and says so in the run summary), because it can only pass after `alb-dns-create`, which needs that ALB to exist. Making it fail the deploy, or redirecting, is one line each once the order has been run.
+- **The alias records are a stack of their own, fed by the workflow,** not `data "aws_lb"`: a data source fails once the ALB is gone, so a destroy would break. This is the alarms stack's pattern. The cost is the same as there: apply again after an ALB is recreated.
+- **`DEV_DOMAIN` is read in the steps that use it,** not in a workflow-level `env:`: environment-scoped variables are only visible once a job has its environment.
+- **The domain is only read.** Registration creates the public zone and the domain's name servers point at it; a stack that created a second zone would need the name servers changed by hand and a destroy would delete them.
+
+**Checked.** `terraform fmt`, `init -backend=false` and `validate` on both stacks and the bootstrap stack; checkov (pinned image) 0 failed; actionlint on every workflow; `make k8s-lint` (renders both overlays on their base files, asserts the certificate host, both listeners, the redirect on the viewer ALB only and no redirect on the internal one, and no `tls` block without a host; kubeconform); `scripts/tests/test_dev_domain.py` (18 cases). Shown able to fail: removing the redirect from the viewer overlay made `make k8s-lint` fail, and loosening the label rule in `dev_domain.py` failed five tests (shell metacharacters and an over-long label); both restored. **Not run:** tflint (not installed here; CI runs it), `make lint test` as a whole, and anything against AWS.
+
+**Open and expected to need a run.**
+
+- **The Route 53 permission.** The `tf-dev` role had `acm:*` and `elasticloadbalancing:*` but no Route 53 action. `route53:*` is now in `infra/terraform/bootstrap/main.tf`, but it takes effect only when `bootstrap-ci-roles` has run, which comes before `dns-create`.
+- **First apply order,** and what the first `app-deploy` will say: the HTTPS check reports "not ready" until `alb-dns-create` has run (the runbook has the order).
+- **Grafana and the UI behind HTTPS.** TLS ends at the ALB, so the pods still see HTTP. The UI's nginx and Grafana's root URL may emit `http://` absolute redirects; the viewer ALB's redirect catches them, but the first browser visit should confirm Grafana at `/grafana` and the UI routes behave.
+- **A certificate is recreated with every `dns` apply after a destroy,** since the private zone belongs to a VPC that `platform-destroy` removes. ACM issues in minutes; the certificate and zone cost nothing while destroyed.
+- **Certificate Transparency logs publish the two host names.**
+
+## Network isolation: the extent (4 Oct 2026)
+
+Asked by the owner: is the architecture air-gapped, and how far could it go with no AWS CLI and no CloudShell? It is not air-gapped. This records what is private, what is not, the options, and where the limit sits. The result is ADR-23 in DESIGN.md.
+
+**What is private.** Pods and nodes (private-app subnets), RDS and ElastiCache (private-data subnets, security-group limits), the EKS API (private endpoint), the internal ALB (`10.20.0.0/16` only, name resolved inside the VPC only), and no AWS credential outside GitHub OIDC (ADR-14).
+
+**What is not.** The viewer ALB is internet-facing and limited only by its security group (`DEV_VIEWER_CIDR`). The private subnets have unrestricted outbound HTTPS through one NAT. The in-VPC runners register with GitHub and poll it for jobs. ACM validates and renews a certificate over public DNS.
+
+**What the constraints rule out.**
+
+- No laptop access to AWS (ADR-14): every change is a workflow. That does not stop a network design, since Terraform and Helm change it, but it removes the usual ways to look inside a closed VPC (SSM port forwarding, a bastion session, Client VPN set up from a laptop).
+- Runners that must reach GitHub (ADR-15): `helm` and `kubectl` reach the private EKS API only from inside the VPC, and the runner needs outbound access to GitHub to receive the job.
+- A person needs a browser: with the public ALB gone there is no route to the UI.
+
+**Options.**
+
+- **A. Egress-restricted (chosen as the next step; not built, mechanism undecided).** Keep the runners and a NAT, replace open egress with an allowlist (AWS Network Firewall with a domain list, or a proxy): GitHub, the AWS endpoints, and the few package and image hosts the builds and add-ons need. CI keeps working and the workload stops being open to the internet. A cost question is open: Network Firewall bills per endpoint-hour and per GB, which is large next to the $350 budget alert, and a proxy instance is cheaper but is one more thing to run and patch.
+- **B. No internet path from the VPC (the limit; documented, not planned).** Remove the NAT and every internet route from the private subnets. Needs: endpoints for every AWS service the workload calls (the DESIGN.md list lacks Lambda, CloudWatch metrics, SES and ELB, so the real list must be checked against what is called); CodeBuild in the VPC replacing the self-hosted runners, started by a hosted runner through the AWS API with the chart and values passed through S3 and its logs read back from CloudWatch (this reverses ADR-15); an ECR pull-through cache for the load balancer controller, External Secrets and other third-party images, because ECR fetches from upstream itself and the VPC opens no connection out; application images still built on hosted runners and pushed to ECR; and a private route for the browser (Client VPN, SSM port forwarding, or a managed secure browser that needs no CLI but adds a per-user cost). It also removes the viewer ALB and the public domain's reason to exist.
+- **C. A true air gap.** Not possible on AWS with this CI: the management plane (Terraform, the deploy tooling) is reached over public AWS APIs, and GitHub Actions is itself a public service.
+
+**Why B is the limit and not the plan.** It changes ADR-15, the runners module, the endpoints and the way the owner sees dev, for a demo environment that is destroyed when idle; and its browser route has no good answer without a CLI. A gives most of the benefit (no open egress, nothing reachable but the one address) and leaves CI and ADR-15 intact. B would need its own ADR and the owner's agreement before any design work.
+
+**Open for A.** The mechanism (Network Firewall or a proxy), the allowlist itself (found by running with logging first, not guessed), and whether the application nodes lose NAT access once every call they make has an endpoint.
+
 ## Decided questions
 
 - [x] Cloud database is Amazon RDS for PostgreSQL 17, not Aurora (decided 1 Oct 2026). Dev is a single Single-AZ instance; RDS Proxy is optional and off by default with one node. DESIGN.md sections 2, 3, 5, 8, 10 and 13 updated.
@@ -527,7 +576,7 @@ The owner asked for an email for every sale, bid, listing and take-off, with the
 - [x] In-VPC runners: one ephemeral arm64 EC2 runner in an Auto Scaling group of one, registered with a fine-grained PAT held in Secrets Manager; jobs cannot reach the instance role (decided 2 Oct 2026; DESIGN.md section 13).
 - [x] Bootstrap: OIDC provider and `cloudbatch818-loria-retail-bootstrap` role created by hand; state bucket via `bootstrap-state-bucket.yml` (decided 30 Sep 2026).
 - [x] EKS access: self-hosted ephemeral runners in the VPC, private endpoint (decided 30 Sep 2026). Repo is public, so the runner restrictions in section 13 apply.
-- [x] No domain yet (30 Sep 2026): dev uses HTTP on the internal ALB; HTTPS/ACM is deferred until a domain exists.
+- [x] No domain yet (30 Sep 2026): dev uses HTTP on the internal ALB; HTTPS/ACM is deferred until a domain exists. **Superseded 4 Oct 2026:** the owner chose to register a domain in Route 53 and put HTTPS on both ALBs; built, not applied ("HTTPS and a domain as built").
 - [x] Branches (1 Oct 2026, changed 2 Oct 2026): `dev` is the default and the only branch developed on; `main` was deleted. `dev` blocks force pushes and deletion but needs no pull request. `stage` and `prod` take changes only by a reviewed pull request with a passing `ci`, for admins too. The `bootstrap` and `dev` Environments accept only the `dev` branch and require the owner as reviewer; `stage` and `prod` accept only their own branch.
 - [x] Names (1 to 2 Oct 2026): resources are prefixed `loria-`, IAM roles `cloudbatch818-loria-retail-`.
 - [x] One Terraform role for plan, apply and destroy, trusted by the `dev` Environment only; no PR plan (2 Oct 2026).

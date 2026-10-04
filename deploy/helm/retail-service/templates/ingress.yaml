@@ -11,6 +11,12 @@ spec:
   {{- with .Values.ingress.className }}
   ingressClassName: {{ . }}
   {{- end }}
+  {{- with .Values.ingress.tlsHosts }}
+  # No secretName: the ALB terminates TLS, and the AWS Load Balancer Controller finds the ACM
+  # certificate that covers these names. They add no host rule, so the ALB's own name still routes.
+  tls:
+    - hosts: {{- toYaml . | nindent 8 }}
+  {{- end }}
   rules:
     - {{- with .Values.ingress.host }}
       host: {{ . }}
