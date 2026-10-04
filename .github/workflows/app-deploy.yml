@@ -186,6 +186,14 @@ jobs:
           fi
           echo "E2E_GATEWAY_URL=http://${host}" >> "$GITHUB_ENV"
           echo "- Dev ALB: \`http://${host}\` (internal, reachable only inside the VPC)" >> "$GITHUB_STEP_SUMMARY"
+          # The browser address is the public ALB that app-expose installs, if it is installed.
+          public=$(kubectl --context "$EKS_CLUSTER" --namespace "$NAMESPACE" get ingress gateway-public \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+          if [ -n "$public" ]; then
+            echo "- Public storefront: \`http://${public}\` (open from the DEV_VIEWER_CIDR address)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- Public storefront: not installed (run App: expose to open it in a browser)" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Show cluster state on failure
         if: failure()
