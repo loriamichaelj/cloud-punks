@@ -1,6 +1,6 @@
 # Retail Microservices Platform — Design Doc
 
-Author: M.L. · Status: M0–M10 built (Phase 1 complete); Phase 2 built and running in dev on AWS (2 Oct 2026); Phase 3 built (2 Oct 2026, release v0.1.0); Phase 4 built and applied in dev (3 Oct 2026, release v0.1.5) except that the failure drills were skipped, so its exit criterion is not met. Change history and as-built notes: `docs/adr/README.md`.
+Author: M.L. · Status: Phases 1 to 4 are built and dev runs on AWS (release v0.1.5, 3 Oct 2026). One exit criterion is not met: Phase 4's failure drills were skipped. Change history, as-built notes and results: `docs/adr/README.md`.
 
 ## 1. Overview
 
@@ -27,9 +27,9 @@ We build a four-service retail order platform that runs end-to-end on localhost 
 | 1a — Local (Compose on OrbStack) | Services, data layer, events, tests | Day 1–2 | Acceptance test passes on `make up` |
 | 1b — UI (React) | `ui/` single-page app and nginx image, gateway `/` route, Playwright journeys (M8; section 15) | Day 2 (late) | Browser journeys pass on Compose via `make ui-e2e` |
 | 1c — Local Kubernetes (OrbStack) | Helm chart for every process including the UI, probes, HPA, ingress, rollback on the local cluster | Day 3 (morning) | Same test (API acceptance and UI journeys) passes via local ingress; `helm rollback` demonstrated |
-| 2 — Cloud infra, built through CI (built 2 Oct 2026) | Manual OIDC provider + `cloudbatch818-loria-retail-bootstrap` role; `bootstrap-state-bucket.yml`, `bootstrap-ci-roles.yml`; minimal `platform-create.yml`; Terraform, ECR, EKS, in-VPC runners; the 1b chart with dev values. No AWS access exists outside GitHub Actions (ADR-14) | Day 3 | Same test passes against the EKS ingress, run from a workflow. **Met:** `app-deploy.yml` runs the acceptance suite through the dev ALB (10 passed, none skipped; the dead-letter-queue count inside step 9 is not checked in the cloud) |
-| 3 — CI/CD (built 2 Oct 2026) | `pr.yml` with one required `ci` gate, Trivy image and config scans, Checkov, tflint, actionlint; protected `stage` and `prod` branches and Environments; `promote.yml`; `app-rollback.yml`; release `v0.1.0`. The deploy and destroy workflows already exist from Phase 2. No push trigger for the deploy (decided) | Day 4 | **Met in part:** a pull request is gated by `ci` (shown red, then green, on PR #1). Not demonstrated: `app-rollback.yml` has never run, and `promote.yml` has never run because stage and prod are not deployed |
-| 4 — Reliability (built 2 to 3 Oct 2026, P4.1 to P4.7 in section 13) | Dashboards, SLOs, alarms, failure drills, runbooks. Built: 19 CloudWatch alarms, Container Insights logs, Prometheus, Alertmanager and a view-only Grafana with the four SLIs, five runbooks. A second node. `drills.yml` (consumer-down, bus-down) is built; the other four drills are not | Day 5 | **Not met:** each drill in section 11 detected and recovered. The drills were skipped (owner's decision, 3 Oct 2026), so no alarm or alert has fired in dev and the path from a failure to an email is unproven. Met: the logs trace one order across the services in CloudWatch, Prometheus scrapes all eight processes, and the cloud acceptance suite passes 14 of 14 |
+| 2 — Cloud infra, built through CI | Manual OIDC provider + `cloudbatch818-loria-retail-bootstrap` role; `bootstrap-state-bucket.yml`, `bootstrap-ci-roles.yml`; `platform-create.yml`; Terraform, ECR, EKS, in-VPC runners; the 1c chart with dev values. No AWS access exists outside GitHub Actions (ADR-14) | Day 3 | Same test passes against the EKS ingress, run from a workflow. **Met** (2 Oct 2026): `app-deploy.yml` runs the acceptance suite through the dev ALB |
+| 3 — CI/CD | `pr.yml` with one required `ci` gate, Trivy image and config scans, Checkov, tflint, actionlint; protected `stage` and `prod` branches and Environments; `promote.yml`; `app-rollback.yml`. No push trigger for the deploy (decided) | Day 4 | **Met in part** (2 Oct 2026, release `v0.1.0`): a pull request is gated by `ci`. `app-rollback.yml` and `promote.yml` have never run (stage and prod are not deployed) |
+| 4 — Reliability (P4.1 to P4.7, section 13) | CloudWatch alarms, Container Insights logs, Prometheus, Alertmanager and a view-only Grafana with the four SLIs, runbooks, failure drills on EKS, a second node | Day 5 | **Not met** (3 Oct 2026): each drill in section 11 detected and recovered. The drills were skipped, so the path from a failure to an email is unproven. The rest is built and applied in dev |
 
 This document is detailed for Phase 1 and gives forward-compatible contracts for Phases 2–4 so nothing built locally has to be rewritten.
 
@@ -303,7 +303,7 @@ Cache is optional at runtime: a Valkey error logs a warning, increments `cache_e
 
 ## 6. Event design
 
-One custom EventBridge bus `retail-events`, one SQS queue per consumer service, one DLQ per queue, and a versioned envelope shared through `libs/common/events`.
+One custom EventBridge bus `retail-events`, one SQS queue per consumer service, one DLQ per queue, and a versioned envelope shared through `retail_common.events` (`libs/common`).
 
 ### Envelope
 
@@ -485,15 +485,16 @@ Use the `route` template (`/api/v1/orders/{order_id}`), never the raw path — r
 
 ## 9. Repository layout and tech stack
 
-One monorepo, `uv` workspaces, one Dockerfile per service built from the repo root so `libs/common` is included. Folders for Phases 2–4 are created now as empty placeholders with a README, so paths never move.
+One monorepo, `uv` workspaces, one Dockerfile per service built from the repo root so `libs/common` is included.
 
 ```text
 retail-platform/
 ├── CLAUDE.md                     # working rules (section 14); git-ignored, kept locally
 ├── docs/
 │   ├── DESIGN.md                 # this document
-│   ├── adr/                      # one file per ADR when decisions change
-│   └── runbooks/                 # Phase 4 (P4.6): five runbooks and an index
+│   ├── adr/                      # change history, as-built notes, decisions (README.md)
+│   ├── openapi/                  # generated OpenAPI snapshots (make openapi)
+│   └── runbooks/                 # five runbooks and an index of every alarm and alert
 ├── libs/common/                  # installable package: retail_common
 │   └── retail_common/
 │       ├── config.py             # BaseServiceSettings, AwsSettings
@@ -528,11 +529,11 @@ retail-platform/
 │   ├── seed/                     # catalog.py (data) + seed.py; shipped in the product image
 │   └── observability/ (prometheus.yml, grafana/)
 ├── tests/e2e/                    # acceptance (test_acceptance.py) + failure drills (test_drills.py)
-├── scripts/                      # export_openapi.py, dlq.py
+├── scripts/                      # export_openapi.py, dlq.py, db_init.py, k8s_compose.py, viewer_cidr.py, package_lambda.py (tests in scripts/tests)
 ├── README.md                     # run instructions
-├── deploy/helm/                  # retail-service chart, values/ (per release, per env), third-party/ (Traefik)
-├── infra/terraform/              # Phase 2 (placeholder)
-├── .github/workflows/            # Phases 2–4: bootstrap-state-bucket, bootstrap-ci-roles, platform-create, platform-destroy, addons-create, addons-destroy, alarms-create, alarms-destroy, app-prepare, app-database, app-seed, app-deploy, app-expose, app-destroy, app-rollback, cluster-capacity, drills, pr, promote
+├── deploy/helm/                  # retail-service, secret-store and monitoring charts, values/ (per release, per env), third-party/ (Traefik)
+├── infra/terraform/              # bootstrap/, modules/, envs/dev/{platform,cluster-addons,alb-alarms}; applied only from workflows (README.md)
+├── .github/workflows/            # bootstrap-*, platform-*, addons-*, alarms-*, app-*, cluster-capacity, drills, pr, promote (README.md)
 ├── Makefile
 ├── .env.example                  # committed; .env is git-ignored
 └── pyproject.toml                # uv workspace root, ruff, mypy, pytest config
@@ -586,7 +587,7 @@ The Dockerfile is production-shaped from day one: multi-stage, `uv sync --frozen
 | notification-consumer | notification | `consumer` | 9000 | Deployment |
 | ui | `ui` (nginx-unprivileged, static files) | — | 8005 | Deployment (2 replicas, PDB) |
 | gateway | `nginx:1.27-alpine` | — | 8080 | ALB via AWS Load Balancer Controller Ingress |
-| prometheus / grafana | official images | profile `observability` | 9090 / 3000 | kube-prometheus-stack or AMP/AMG |
+| prometheus / grafana | official images | profile `observability` | 9090 / 3000 | the `monitoring` chart: Prometheus, Alertmanager and a view-only Grafana (section 13, Phase 4) |
 
 Container ports 9000 on consumers are internal only (health + metrics).
 
@@ -647,7 +648,7 @@ Each service's integration suite runs the app in-process against the real Compos
 
 ### Acceptance test (steps 1–10)
 
-The same suite runs against three targets: Compose (`make e2e`), the local cluster (`make k8s-e2e`) and dev on EKS (the last step of `app-deploy.yml`, `E2E_CLOUD=1`). In the cloud the low-stock Lambda test reads the real CloudWatch log group (`E2E_LAMBDA_LOG_GROUP`), and the dead-letter-queue count inside step 9 is skipped until queue alarms exist.
+The same suite runs against three targets: Compose (`make e2e`), the local cluster (`make k8s-e2e`) and dev on EKS (the last step of `app-deploy.yml`, `E2E_CLOUD=1`). In the cloud the low-stock Lambda test reads the real CloudWatch log group (`E2E_LAMBDA_LOG_GROUP`), and the dead-letter-queue count inside step 9 is skipped (the deploy role may not read the queues).
 
 1. `GET /api/v1/products` returns seeded products; second call of `GET /api/v1/products/{sku}` is a cache hit (`cache_hits_total` increments).
 2. Record stock for SKU A (`GET /api/v1/inventory/A`).
@@ -660,7 +661,9 @@ The same suite runs against three targets: Compose (`make e2e`), the local clust
 9. All `/health/ready` return 200; all DLQs empty.
 10. Every log line for the order shares one `correlation_id` across all four services.
 
-### Failure drills (local now, EKS in Phase 4)
+### Failure drills
+
+Run locally by `make e2e` and the `make drill-*` targets. On EKS they were designed in Phase 4 but not run (section 13).
 
 | Drill | How | Expected detection | Expected recovery |
 | --- | --- | --- | --- |
@@ -695,11 +698,11 @@ Phase 1 is complete when M10 (local Kubernetes) is done. Only then start Phase 2
 
 ## 13. Phases 2–4: cloud, CI/CD, reliability
 
-These are contracts Phase 1 must not violate, not a full spec; each phase gets its own design pass before build. Items marked **verify** depend on current AWS versions or pricing. Phases 2, 3 and 4 are built (below); the remote repo deploys the dev environment only, and Phase 4's failure drills were not run.
+These are contracts Phase 1 must not violate, not a full spec. Items marked **verify** depend on current AWS versions or pricing. Phases 2, 3 and 4 are built; the repo deploys the dev environment only. What each phase turned out to be, what differs from this section and what went wrong: `docs/adr/README.md`.
 
 ### Phase 2 — Bootstrap, Terraform, ECR, EKS, Helm, all through CI (Day 3)
 
-**Status: built and running in dev (2 Oct 2026).** The exit criterion is met: `app-deploy.yml` deploys every release to the EKS cluster and runs the acceptance suite through the internal ALB from the in-VPC runner (10 passed, none skipped; the dead-letter-queue count inside step 9 is not checked in the cloud). Three stacks are applied only from workflows: `bootstrap` (the CI roles), `dev/platform` (141 resources: network, ECR, EKS, RDS, ElastiCache, DynamoDB, EventBridge and SQS, the low-stock Lambda, the runner, the workload roles) and `dev/cluster-addons` (12 resources). What changed against this section, what went wrong on the way, and what is still open: `docs/adr/README.md`, "Cloud (dev on AWS) as built". Not done in Phase 2: alarms and dashboards, `verify-full` database TLS, a Valkey AUTH token, HTTPS and a domain, pinned EKS add-on versions, and any run of the teardown workflows.
+**Status: built and running in dev.** The exit criterion is met. Four stacks are applied only from workflows: `bootstrap` (the CI roles), `dev/platform`, `dev/cluster-addons` and `dev/alb-alarms`. What exists, what changed against this section and what is still open: `docs/adr/README.md`, "Cloud (dev on AWS) as built".
 
 **AWS access model (ADR-14, ADR-15).** No AWS credential exists outside GitHub Actions. Every workflow assumes a role by ARN through OIDC (`aws-actions/configure-aws-credentials`, pinned by SHA, `permissions: id-token: write, contents: read`). Role ARNs are GitHub Actions *variables* per Environment (an ARN is not a secret). Claude Code can therefore write and statically check the cloud code (`terraform fmt/validate` with `init -backend=false`, tflint, checkov, `helm lint`, kubeconform) but can never run `plan`, `apply`, `aws` or `kubectl` against AWS; those happen only in workflows, so workflows must print diagnostics on failure (`terraform show`, `helm status`, `kubectl describe`/events).
 
@@ -714,7 +717,7 @@ Bring-up order:
 | Role | Trust `sub` | Permissions | Used by |
 | --- | --- | --- | --- |
 | `cloudbatch818-loria-retail-bootstrap` (manual) | `environment:bootstrap` | State bucket S3; IAM on `cloudbatch818-loria-*` | `bootstrap-state-bucket.yml`, `bootstrap-ci-roles.yml` |
-| `cloudbatch818-loria-retail-tf-<env>` | `environment:<env>` | One role for plan, apply and destroy. Broad service access (accepted least-privilege gap for this week, recorded here); IAM limited to `cloudbatch818-loria-retail-<env>-*` so it cannot edit the CI roles; state limited to `<env>/*`. There is no `pull_request` role: a PR run would use broad credentials without the environment's approval, so Terraform runs only in `infra-create.yml` and `infra-destroy.yml`, behind the reviewer | `platform-create.yml`, `platform-destroy.yml`, `addons-create.yml`, `addons-destroy.yml` |
+| `cloudbatch818-loria-retail-tf-<env>` | `environment:<env>` | One role for plan, apply and destroy. Broad service access (accepted least-privilege gap for this week, recorded here); IAM limited to `cloudbatch818-loria-retail-<env>-*` so it cannot edit the CI roles; state limited to `<env>/*`. There is no `pull_request` role: a PR run would use broad credentials without the environment's approval, so Terraform runs only in the `platform-*`, `addons-*` and `alarms-*` workflows, behind the reviewer | `platform-*`, `addons-*`, `alarms-*` workflows |
 | `cloudbatch818-loria-retail-db-<env>` | `environment:<env>` | Read the RDS master secret (and decrypt it through Secrets Manager); create and read secrets under `loria-retail-<env>/*`; describe the one RDS instance. Nothing else | `app-database.yml` (runner) |
 | `cloudbatch818-loria-retail-deploy-<env>` | `environment:<env>` | ECR push/pull, `eks:DescribeCluster`; EKS access entry with `AmazonEKSEditPolicy` scoped to namespace `retail` | `app-deploy.yml`, `app-rollback.yml`, `promote.yml`, drills (runners) |
 
@@ -722,12 +725,12 @@ Terraform references the OIDC provider with a `data` source (an account can hold
 
 **In-VPC runners (`modules/runners`).** Ephemeral EC2 runners (arm64, private-app subnets, one job each via `--ephemeral`), label `retail-vpc`, in a runner group limited to this repo. Their instance profile grants nothing beyond SSM; jobs get AWS access only through OIDC, never the instance role. The runner registration credential is a GitHub App key or fine-grained token held in Secrets Manager (a GitHub credential, not an AWS one). Mechanism (decided 2 Oct 2026): one arm64 EC2 instance in an Auto Scaling group of one. A systemd loop registers it with `--ephemeral`, runs one job, deregisters and repeats. The registration credential is a fine-grained PAT (Administration: read and write on this repository) that the loop reads from Secrets Manager as root; job processes run as another user, and iptables blocks that user's traffic to the instance metadata service, so jobs cannot borrow the instance role. Scale-to-zero (webhook-launched instances) and actions-runner-controller were rejected for now: the first adds API Gateway, Lambda and SQS, and ARC needs a first runner to install through the private API. **The repo is public, so:** self-hosted jobs run only for `push` to `dev` (the default branch), `workflow_dispatch`, tags, and approved environments — never `pull_request`; enable "Require approval for all outside collaborators"; fork PRs never reach these runners.
 
-**Terraform layout:** `infra/terraform/{bootstrap,modules/{network,eks,data,events,ecr,github-oidc,runners,observability},envs/{dev,prod}/{platform,cluster-addons}}`. Remote state in the bootstrap bucket with native locking (`use_lockfile = true`, Terraform ≥ 1.11, where S3 locking is GA); DynamoDB state locking is deprecated. Pin provider versions; one state per env and stack.
+**Terraform layout:** `infra/terraform/{bootstrap,modules/{network,eks,data,events,ecr,github-oidc,runners,monitoring,pod-identity-role},envs/dev/{platform,cluster-addons,alb-alarms}}`; there is no `prod` environment yet. Remote state in the bootstrap bucket with native locking (`use_lockfile = true`, Terraform ≥ 1.11, where S3 locking is GA); DynamoDB state locking is deprecated. Pin provider versions; one state per env and stack.
 
 | Area | Decision | Enterprise note |
 | --- | --- | --- |
 | Network | VPC across 3 AZs: public (ALB, NAT), private-app (nodes), private-data (RDS, ElastiCache; an RDS subnet group needs two AZs even for a Single-AZ instance) | Single NAT in dev, one per AZ in prod. Add VPC endpoints (S3 + DynamoDB gateway; ECR api/dkr, SQS, STS, Secrets Manager, EventBridge, Logs interface) — NAT data processing is the #1 surprise bill on EKS |
-| EKS | Managed node group, AL2023 AMIs, **two nodes** (one was decided on 1 Oct 2026; Phase 4 added a second on 2 Oct after `cluster-capacity.yml` measured 25 of 29 pods and 67% of CPU requested): 2 × m7g.large Graviton/arm64 (2 vCPU, 8 GiB; **verify** it fits the 9 workloads at their requests plus add-ons and the pod limit), matching Apple Silicon builds and cheaper per vCPU, access entries instead of `aws-auth` ConfigMap | One node means no node-level availability: a node replacement, node-group update or EKS upgrade takes the platform down for minutes, zone spread and PDBs protect nothing, and HPA maxima are bounded by the node (cap them at about 4). Accepted for dev. Kubernetes 1.36, the newest EKS version in standard support (until 2 Aug 2027); pin it in Terraform. EKS publishes no Amazon Linux 2 AMIs after 1.32, so AL2023 or Bottlerocket only. EKS Auto Mode is a valid simpler alternative with less learning value |
+| EKS | Managed node group, AL2023 AMIs, **two nodes**: 2 × m7g.large Graviton/arm64 (2 vCPU, 8 GiB; about 29 pods each), matching Apple Silicon builds and cheaper per vCPU, access entries instead of `aws-auth` ConfigMap | Two nodes give node-level availability, so zone spread, PDBs and HPA maxima (about 4) have room to work. Kubernetes 1.36; pin it in Terraform. AL2023 or Bottlerocket only (no Amazon Linux 2 AMIs after 1.32). Why two and not one, and the alternatives: `docs/adr/README.md`, "Cluster sizing notes" |
 | Add-ons | vpc-cni, coredns, kube-proxy, eks-pod-identity-agent, metrics-server; Helm: AWS Load Balancer Controller, External Secrets Operator | Install add-ons via Terraform `aws_eks_addon` / `helm_release`, versions pinned |
 | Workload IAM | EKS Pod Identity, one IAM role per ServiceAccount | Least privilege per process: relay = `events:PutEvents` on the bus only; each consumer = receive/delete on its own queue only |
 | RDS | RDS for PostgreSQL 17 (latest 17.x minor, pinned in Terraform; 18 is available but 17 matches local PostgreSQL 17, revisit after the week — **verify** current minors), dev a single `db.t4g` instance, Single-AZ; prod Multi-AZ; KMS CMK; 7-day backups; deletion protection; RDS-managed master secret. RDS Proxy is optional: with one node and about 15 pods at `pool_size 5 + max_overflow 5` the instance's `max_connections` is not at risk, so the default is to leave it out and add it with a second node group or HPA headroom | The application databases and roles are created by `scripts/db_init.py` (workflow `app-database.yml`, on the runner, as a dedicated `db` role); each password is generated there and stored in Secrets Manager, never in Terraform state or outputs |
@@ -744,24 +747,20 @@ Terraform references the OIDC provider with a `data` source (an account can hold
 | --- | --- | --- |
 | `bootstrap-state-bucket.yml`, `bootstrap-ci-roles.yml` | `workflow_dispatch`, environment `bootstrap` (two independent workflows, run in that order) | Phase 2 step 2: the state bucket (AWS CLI), then the `bootstrap/` Terraform stack that creates the `cloudbatch818-loria-*` roles. Hosted runner, `cloudbatch818-loria-retail-bootstrap` |
 | `pr.yml` | Pull request into `dev`, `stage` or `prod` (hosted runners, read-only token, no secrets, no AWS) | `detect` picks checks from the changed files; `code` (`make lint test`: ruff, mypy, unit tests, OpenAPI and UI checks, `helm lint` + kubeconform); `images` (builds the five images, Trivy fails on fixable HIGH/CRITICAL); `terraform` (`fmt -check`, `validate`, tflint, Checkov with inline reasoned skips); `config-scan` (Trivy over Dockerfiles, Helm, Terraform); `workflows` (actionlint); `ci`, the one required check, which fails if any job failed or was cancelled. No `terraform plan` on PRs (it runs in `platform-create.yml` behind the `dev` approval) and no LocalStack in CI |
-| `app-prepare.yml`, `app-deploy.yml` (replace `main.yml`) | `workflow_dispatch` only (decided: no push trigger) | Build once (hosted arm64) → push `sha-<sha>` to ECR → on `retail-vpc` runners: OIDC assume `cloudbatch818-loria-retail-deploy-dev` → `helm upgrade --install --rollback-on-failure --wait --timeout 10m` → e2e acceptance against dev |
+| `app-prepare.yml`, `app-deploy.yml` | `workflow_dispatch` only (decided: no push trigger) | Build once (hosted arm64) → push `sha-<sha>` to ECR → on `retail-vpc` runners: OIDC assume `cloudbatch818-loria-retail-deploy-dev` → `helm upgrade --install --rollback-on-failure --wait --timeout 10m` → e2e acceptance against dev |
 | `promote.yml` | `workflow_dispatch` from the `stage` or `prod` branch | The branch names the Environment. `check` (hosted): the image's commit is in the branch's history, the Environment has a deploy role and its Helm values; then the **same image digest** (never a rebuild) is deployed by `image.digest` on a `retail-vpc` runner → smoke test. **Built, not run:** stage and prod are not deployed |
 | `app-rollback.yml` | `workflow_dispatch`, runner, `dev` approval | `helm rollback` of one release (to the previous or a named revision) or all nine, `--wait`, then the storefront must answer. Does not undo migrations |
 | `platform-create.yml` | `workflow_dispatch` (action `plan` or `apply`; no PR plan) | Plan, then apply after a second approval: the `platform` stack on hosted runners |
 | `addons-create.yml` | `workflow_dispatch` (action `plan` or `apply`) | The same two approvals for the `cluster-addons` stack, on the `retail-vpc` runner (the cluster API is private) |
 | `addons-destroy.yml`, `platform-destroy.yml` | `workflow_dispatch`, environment-gated | Destroy an env in two steps, addons first (on the runner), then platform, which refuses to start while the addons state still has resources. Never touch `bootstrap`. Support the idle-cost rule in §14. Each is a saved `plan -destroy`, then a second approval to apply it |
 | `alarms-create.yml`, `alarms-destroy.yml` | `workflow_dispatch` (create: action `plan` or `apply`), hosted runner | The `dev/alb-alarms` stack: the ALB's 5xx-rate and p95 alarms (Phase 4, P4.1). Run after `app-deploy`, because the ALB is created by the load balancer controller; the same two approvals as the other stacks. Destroy first: `platform-destroy` refuses while the stack has resources |
-| `app-prepare.yml` | `workflow_dispatch`; `build` and `verify` run from `dev` only | `prepare` (the tag `sha-<sha>`; only `dev` publishes) → `test` (parallel legs: `code`, `terraform`, `config-scan`, `workflows` and an arm64 build plus Trivy scan per image: the checks `pr.yml` runs, all of them, hosted, no AWS) → `build` pushes `sha-<sha>` to ECR and lists the digests (`dev` approval) → `verify` on the runner, read-only: lists the ECR tags and digests, compares each running pod's pulled digest with ECR's digest for its tag (a difference fails), warns when the running tag is older than the code the images are built from, and prints the tag to paste into `app-deploy` (second `dev` approval) → `notify` |
-| `app-database.yml` | `workflow_dispatch`, runner | `scripts/db_init.py`: the two databases, the owner and app roles, and the four passwords in Secrets Manager, as the `db` role |
-| `app-seed.yml` | `workflow_dispatch`, runner | `local/seed/seed.py`: the catalog into `product_db` and the starting stock into DynamoDB |
-| `app-expose.yml` | `workflow_dispatch`, runner | Dev only: a second, internet-facing ALB reachable from one address held in the `DEV_VIEWER_CIDR` environment secret (checked by `scripts/viewer_cidr.py`); `remove` takes it away |
-| `app-destroy.yml` | `workflow_dispatch`, runner | Plan, optional `helm uninstall` of every release, then delete an image tag (or all) from the five repositories |
+| `cluster-capacity.yml`, `drills.yml`, `app-prepare.yml` (test, build, verify), `app-database.yml`, `app-seed.yml`, `app-expose.yml`, `app-destroy.yml` | `workflow_dispatch`, runner or hosted, `dev` approval | Operational workflows: what each does, its role and its place in the run order are in `.github/workflows/README.md`. `app-prepare` runs every `pr.yml` check, then pushes `sha-<sha>` to ECR and checks that what runs is what ECR holds, before `app-deploy` |
 
 Non-negotiables: each OIDC trust policy is pinned to an exact `sub` (`environment:<env>`; never a wildcard or `ref:*`); third-party actions pinned by commit SHA; branch protection: `stage` and `prod` accept only a pull request with one approving review (stale approvals dismissed, the last pusher cannot approve) and a passing, up-to-date `ci`, for admins too, with no force push or deletion; `dev` blocks force pushes and deletion only, so the owner pushes to it directly and the `dev` Environment gate is the control on what reaches AWS (the `stage` and `prod` Environments accept only their own branch and need a reviewer); no long-lived AWS keys in GitHub; self-hosted runners never serve `pull_request` or fork code (public repo). Rollback = `app-rollback.yml` (`helm rollback <release> <revision>`) or redeploy the previous digest; works only because migrations are expand/contract (section 5).
 
 ### Phase 4 — Observability and reliability (Day 5)
 
-**Status: built and applied in dev (2 to 3 Oct 2026), release v0.1.5, with one exit criterion not met.** What exists: the `monitoring` module (SNS topic with its own key, 17 CloudWatch alarms, a $350 budget alert), the `alb-alarms` stack (2 alarms), a second node, the CloudWatch Observability add-on with 7-day log groups and a saved trace query, the `monitoring` chart (Prometheus, Alertmanager, a view-only Grafana at `/grafana` on the viewer ALB, the four SLIs as headline panels, four alert rules unit-tested with promtool), `cluster-capacity.yml`, `drills.yml`, and five runbooks with an index and a test that keeps them in step. The cloud acceptance suite is 14 tests. **Not met:** "each drill in section 11 detected and recovered". The drills were skipped, so nothing has fired in dev; the failure-to-email path is configured, subscribed and unit-tested, never exercised; the runbooks are written from the design, not from a drill. What went wrong and what was learned on the way is in `docs/adr/README.md`, "Observability and reliability as built (Phase 4)". The scope and decisions follow.
+**Status: built and applied in dev (release v0.1.5), with one exit criterion not met.** The failure drills were skipped, so nothing has fired in dev: the path from a failure to an email (Alertmanager or a CloudWatch alarm, then SNS, then the inbox) is configured and confirmed subscribed but has never carried an alert, and the runbooks are written from the design and the code, not from a drill. What exists, what was proved and what was learned: `docs/adr/README.md`, "Observability and reliability as built (Phase 4)".
 
 | SLI | SLO (28-day) | Source |
 | --- | --- | --- |
@@ -770,26 +769,23 @@ Non-negotiables: each OIDC trust policy is pinned to an exact `sub` (`environmen
 | Create-order latency p95 | < 500 ms | same |
 | Order processing: orders reaching a terminal state within 30 s | 99% | `order_time_to_terminal_seconds` |
 
-Alarms (page vs ticket decided in the Phase 4 pass): SQS `ApproximateAgeOfOldestMessage` > 120 s; any DLQ `ApproximateNumberOfMessagesVisible` > 0; `outbox_oldest_unpublished_age_seconds` > 60; ALB 5xx rate and p95 `TargetResponseTime`; RDS CPU, `DatabaseConnections`, `FreeableMemory`, `FreeStorageSpace`; MaximumUsedTransactionIDs > 1 billion (wraparound risk); replica lag if a replica exists; pod restarts > 3 in 10 min; EventBridge rule `FailedInvocations` > 0. Logs via Fluent Bit (Container Insights) to CloudWatch; metrics via kube-prometheus-stack or Amazon Managed Service for Prometheus + Grafana.
+Alarms (page vs ticket decided in the Phase 4 pass): SQS `ApproximateAgeOfOldestMessage` > 120 s; any DLQ `ApproximateNumberOfMessagesVisible` > 0; `outbox_oldest_unpublished_age_seconds` > 60; ALB 5xx rate and p95 `TargetResponseTime`; RDS CPU, `DatabaseConnections`, `FreeableMemory`, `FreeStorageSpace`; MaximumUsedTransactionIDs > 1 billion (wraparound risk); replica lag if a replica exists; pod restarts > 3 in 10 min; EventBridge rule `FailedInvocations` > 0. Logs via Fluent Bit (Container Insights) to CloudWatch with 7-day retention; application metrics through the in-cluster Prometheus below.
 
-The failure drills in section 11 run on EKS as `workflow_dispatch` jobs on the `retail-vpc` runners using `cloudbatch818-loria-retail-deploy-<env>` (for example `kubectl scale deploy/inventory-consumer --replicas=0`); there is no laptop access to the cluster.
+The failure drills in section 11 are designed to run on EKS as `workflow_dispatch` jobs on the `retail-vpc` runners using `cloudbatch818-loria-retail-deploy-<env>` (for example `kubectl scale deploy/inventory-consumer --replicas=0`); there is no laptop access to the cluster.
 
-Runbooks to write, each tied to an alarm: failed deployment/rollback, unhealthy pods, database connectivity, stuck queue/DLQ redrive, outbox lag.
+Runbooks (`docs/runbooks/`), each tied to an alarm or alert: failed deployment and rollback, unhealthy pods, database connectivity, stuck queue and DLQ redrive, outbox lag. The index maps every alarm and alert to one, and `scripts/tests/test_runbooks.py` keeps them in step.
 
-**Scope as decided (2 Oct 2026); P4.1 and P4.2 built and applied in dev the same day; P4.3 built and applied in dev on 3 Oct 2026 (13 of 13 acceptance tests, including Prometheus scraping all eight processes and the Grafana check).** Seven milestones, one at a time, each ending with a summary: **P4.1** AWS-native alarms (each DLQ above 0, SQS oldest message, EventBridge `FailedInvocations`, Lambda errors, ALB 5xx and p95, RDS CPU, connections, memory, storage and transaction-ID wraparound) to an SNS topic with one email subscription (the address is a `dev` environment secret, never in the repo), plus an AWS Budgets alert at $350 a month with a forecast warning; **P4.2** logs through Container Insights and Fluent Bit with set retention, and a saved Logs Insights query that follows one `correlation_id`; **P4.3** app metrics and dashboards; **P4.4** pod-restart, outbox-age and `orders_stuck` alerts; **P4.5** `drills.yml`, the six drills as a choice, run on the `retail-vpc` runner; **P4.6** the five runbooks, each followed during a drill; **P4.7** close-out. Decisions:
+Decisions:
 
-- **Metrics and dashboards: one in-cluster Prometheus and one Grafana** (reusing `local/observability`), not kube-prometheus-stack (the node's pod limit makes it too heavy) and not Amazon Managed Prometheus and Grafana (they need IAM Identity Center and add a monthly cost). Grafana is viewed through the same one-address viewer ALB pattern as `app-expose.yml`. Prometheus alert rules show in its UI; notifications come from the CloudWatch alarms. This departs from the paragraph above, which names kube-prometheus-stack or AMP.
-- **P4.3 as built:** `deploy/helm/monitoring`, a small chart of plain manifests (not the community charts): one Prometheus that discovers the application's pods itself (kubernetes pod discovery in `retail`; label `service` is the release name, so the dashboard is the same locally and in AWS), one Grafana, both in `retail`, installed by `app-deploy.yml` as the last release. Prometheus keeps 2 days in an emptyDir. Grafana is view only (anonymous Viewer, no login form, no admin user, no plugin downloads) and is reached at `/grafana` on the one-address viewer ALB. The cluster-addons stack creates the Role that lets Prometheus list pods (the deploy role may not create RBAC). The dashboard (`dashboards/retail-platform.json`) gained the four SLIs as headline panels and is the single copy: local Compose mounts it from the chart.
-- **P4.4 notifications (decided 3 Oct 2026):** Prometheus alert rules go to an Alertmanager in the monitoring chart, which publishes to the SNS alarm topic. This replaces "rules show in the Prometheus UI only" above.
-- **P4.4 as built:** the monitoring chart gains Alertmanager (one replica, no gossip cluster) and `rules/retail.yml`, four alerts evaluated by Prometheus: `OutboxLag` (`outbox_oldest_unpublished_age_seconds` over 60 s for a minute), `OrdersStuck` (`orders_stuck` over 0 for two minutes), `PodRestartingRepeatedly` (more than 3 changes of `process_start_time_seconds` in 10 minutes, so no cluster metrics are needed) and `TargetDown` (`up` is 0 for two minutes). Alertmanager publishes to the SNS alarm topic with its own Pod Identity role (`sns:Publish` and the topic key), so these arrive with the CloudWatch alarms. The topic ARN is built by `app-deploy.yml`, not stored. `rules/retail_test.yml` unit-tests the rules with promtool (`make rules-test`, part of `make lint`; skipped with a message when Docker is not running). Each alert's annotation names its runbook in `docs/runbooks/`, written in P4.6.
-- **P4.6 as built (3 Oct 2026):** five runbooks in `docs/runbooks/` (outbox lag, stuck queue and dead letters, unhealthy pods, database connectivity, failed deployment and rollback) and an index mapping every CloudWatch alarm and Prometheus alert to one, so each alert points at a file that exists (`scripts/tests/test_runbooks.py`, in `make test`, fails if an alert names a missing runbook, an alarm or alert is missing from the index, or a runbook is not linked). They use only what a person has without cluster access: workflows (`cluster-capacity`, whose output gained a list of pods that are not Ready or have restarted and the recent warning events; `app-prepare`'s `verify`; `app-rollback`; `app-database`; `platform-create` plan), Grafana, CloudWatch and Logs Insights, and the SQS and RDS consoles. They are written from the design and the code and **have not been followed during a drill**. Known gaps, listed in the runbooks' README: no restart workflow, no database query tool, no dead-letter peek or redrive in the cloud beyond the SQS console.
-- **P4.5 decision (3 Oct 2026): the drills are skipped.** 5a was built and is kept (`drills.yml` with `consumer-down` and `bus-down`), but neither has been run in dev, and 5b (poison, duplicate) and 5c (cache-down, DB-down) are not built. So Phase 4's exit criterion, each drill in section 11 detected and recovered, is **not met**, and the path from a failure to an email (Prometheus, Alertmanager, SNS, inbox) has never been exercised. The 5a/5b/5c plan below stays as the design if they are picked up later.
-- **P4.5 in increments.** 5a (built): `drills.yml`, a dispatch workflow on the runner (deploy role, `dev` approval) that runs one drill from `tests/e2e/test_cloud_drills.py`, with `consumer-down` (scale the inventory consumer to 0; five orders; `orders_stuck` rises after five real minutes; the `OrdersStuck` alert fires; restore) and `bus-down` (the relay's `EVENT_BUS_NAME` overridden to a bus that does not exist; three orders still answer 202; the outbox piles up; `OutboxLag` fires; restore). The drills use real timings, not shortened ones, and assert through Prometheus (the deploy role cannot read alarms or queues); the run summary lists the emails to expect. A final always-run step removes the override and scales the consumer back if the runner was killed mid-drill. 5b: poison and duplicate (the deploy role gains `events:PutEvents` and access to the three DLQs). 5c: cache-down and DB-down (`CACHE_URL` and `DB_HOST` overridden on the API Deployments; recovery is a rollout, not the no-restart recovery of the local drill, and the JSON 503 with `Retry-After` is read from the pod directly because the ALB answers for an API with no ready pods).
-- **Drills change configuration, never AWS resources.** Consumer down scales the consumer to 0. Bus unavailable, cache down and DB down point the process at a dead bus, host or address with `helm --set`, and `helm rollback` undoes them. Poison and duplicate publish to the real bus, so the deploy role gains `events:PutEvents` on `loria-retail-events` (a `bootstrap-ci-roles` change).
+- **Alarms and notifications.** CloudWatch alarms (queues, dead letters, EventBridge rules, the Lambda, RDS, the ALB) and an AWS Budgets alert at $350 a month publish to one SNS topic with its own KMS key and one email subscription (the address is a `dev` environment secret, never in the repo). The ALB alarms are a separate stack because the ALB does not exist when the platform stack is planned.
+- **Metrics, dashboards and alerts: one in-cluster Prometheus, one Alertmanager and one Grafana**, as the small plain-manifest chart `deploy/helm/monitoring`, installed by `app-deploy.yml` as its last release. Not kube-prometheus-stack (the node's pod limit makes it too heavy) and not Amazon Managed Prometheus and Grafana (they need IAM Identity Center and add a monthly cost). Prometheus discovers the application's pods itself (label `service` is the release name, so the dashboard is the same locally and in AWS) and keeps 2 days in an emptyDir. Grafana is view only (anonymous Viewer, no login, no admin user, no plugin downloads) at `/grafana` on the one-address viewer ALB, and carries the four SLIs as headline panels.
+- **Four alert rules** in `deploy/helm/monitoring/rules/retail.yml`: `OutboxLag`, `OrdersStuck`, `PodRestartingRepeatedly`, `TargetDown`. Alertmanager publishes to the same SNS topic with its own Pod Identity role, so alerts and alarms arrive together. The rules are unit-tested with promtool (`make rules-test`, part of `make lint`), and each names its runbook.
+- **Drills change configuration, never AWS resources.** Consumer down scales the consumer to 0; bus down, cache down and DB down point the process at a dead bus, host or address with `helm --set`, and `helm rollback` undoes them; poison and duplicate publish to the real bus. They use real timings and assert through Prometheus, because the deploy role cannot read alarms or queues. `drills.yml` has `consumer-down` and `bus-down`; the other four are not built.
+- **Capacity.** Dev has two nodes (about $360 a month 24/7, over the $350 alert), so destroying dev when idle is the saving.
 - **SLOs are defined and their current values shown;** a 28-day result is not claimed.
-- **Cheap win:** once the DLQ alarms exist, the deploy role may read the DLQ counts so the check the cloud acceptance suite skips can run.
-- **Capacity (P4.2):** a second node, about $60 a month more, so dev runs about $360 a month 24/7 and the $350 budget alert warns while it does; destroying dev when idle is the saving. Chosen over one bigger node (a replacement and downtime) and one replica per service (no pod-kill drill).
-- **Out of scope:** HTTPS and a domain, a Valkey AUTH token, `verify-full` database TLS, Inspector enhanced scanning, and running the three teardown workflows, `app-rollback` and a promotion once (still open from earlier phases).
+- **Out of scope:** HTTPS and a domain, a Valkey AUTH token, `verify-full` database TLS, Inspector enhanced scanning, and a first run of the teardown workflows, `app-rollback` and a promotion (still open from earlier phases).
+
+The seven milestones (P4.1 to P4.7), the as-built notes for each and the drill plan for the four unbuilt drills: `docs/adr/README.md`, "Phase 4 scope and decisions".
 
 ## 14. Guardrails for Claude Code, open questions, risks
 
@@ -845,29 +841,22 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 
 ### Open questions
 
-- [ ] Demo-tools page (set stock and price through the unauthenticated admin endpoints): include it behind a build flag that is off in cloud builds (the default)? It makes the out-of-stock and `REJECTED` journeys demonstrable by hand.
-- [ ] API types in the UI: generated from committed OpenAPI snapshots with openapi-typescript (the default; drift fails the build) or hand-written types validated at runtime with zod?
-- [ ] Node: pin 24 LTS (Active LTS today); Node 26 becomes LTS on 28 Oct 2026 — revisit then.
-- [x] Visual design: decided 1 Oct 2026, a light colourful theme with product art; see `docs/adr/README.md`.
-- [ ] Later hosting: serve the static files from S3 + CloudFront instead of a container? Not before the cloud strategy pass.
+- [ ] Node: pinned to 24 LTS (Active LTS today); Node 26 becomes LTS on 28 Oct 2026, so revisit then.
+- [ ] Later hosting: serve the static UI files from S3 + CloudFront instead of a container? Not before the cloud strategy pass.
 - [ ] Should `reserved` stock ever be released or committed? This design never releases (no cancellation). Needed before adding cancellations in a later week.
-- [x] Pipeline, cloud and Terraform strategy: decided and built for dev (Phase 2); the choices are in `docs/adr/README.md`. Phases 3 and 4 are built for dev too.
-- [x] Budget ceiling: an AWS Budgets alert at $350 a month with a forecast warning (3 Oct 2026). The estimate for what runs 24/7 is now about $360 a month (the second node), so it warns until dev is destroyed when idle. The original question: Budget ceiling for the week's AWS spend (EKS control plane, NAT, RDS, ElastiCache run 24/7; one node and RDS instead of Aurora are decided). Decides single-NAT, instance sizes, and whether to destroy dev nightly. A rough list-price estimate for what is built (not measured) is about $300 a month, about $10 a day, in `docs/adr/README.md`.
-- [x] The low-stock Lambda in the cloud: built 2 Oct 2026 in the `events` module, packaged by `scripts/package_lambda.py` (no `archive` provider); the cloud acceptance suite checks it.
 - [ ] Database TLS: dev uses `DB_SSLMODE=require`. `verify-full` needs the RDS CA bundle in the images.
 - [ ] A Valkey AUTH token (it has TLS and a security-group limit now), pinned EKS add-on versions and a pinned PostgreSQL minor.
 - [ ] HTTPS and a domain (ACM certificate, Route 53). Until then dev is plain HTTP.
-- [x] Alarms and dashboards (Phase 4): built, including the dead-letter-queue alarms. Still open: the cloud acceptance suite still skips the dead-letter count (the deploy role may not read the queues), and no alarm has been seen to fire in dev.
-- [ ] The failure drills on EKS (section 11): skipped on 3 Oct 2026. `drills.yml` has `consumer-down` and `bus-down`; poison, duplicate, cache-down and DB-down are not built.
-- [x] Phase 3 (2 Oct 2026): `pr.yml`, Trivy, branch protection, stage and prod branches and Environments, `promote.yml`, `app-rollback.yml` and release `v0.1.0`. The deploy keeps `workflow_dispatch` only. Still open: run `app-rollback` once in dev; a promotion has never run; the owner cannot approve their own pull request into `stage` or `prod`, so a first promotion needs a second reviewer or a deliberate relaxation of that rule.
+- [ ] The failure drills on EKS (section 11): skipped on 3 Oct 2026. `drills.yml` has `consumer-down` and `bus-down`; poison, duplicate, cache-down and DB-down are not built. No alarm has been seen to fire in dev.
+- [ ] Teardown, rollback and promotion: `app-destroy`, `addons-destroy`, `platform-destroy`, `alarms-destroy`, the viewer's `remove`, `app-rollback` and `promote` have never run. A first promotion also needs a second reviewer, because the owner cannot approve their own pull request into `stage` or `prod`.
 
-Decided questions are recorded in `docs/adr/README.md`.
+Closed questions and their reasons (UI scope and sequencing, Python and LocalStack, environments, bootstrap, runners, names, roles, the budget, Phase 3 and Phase 4 decisions) are recorded in `docs/adr/README.md`, "Decided questions" and "Open questions that were closed".
 
 ### Risks
 
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
-| LocalStack behaviour differs from AWS (IAM not enforced, queue policies ignored) | Works locally, fails silently in cloud | Phase 2 re-runs the full e2e and drills against dev; alarm on `FailedInvocations`. **Phase 2 result:** the acceptance suite passes in dev; the drills have not been run there yet |
+| LocalStack behaviour differs from AWS (IAM not enforced, queue policies ignored) | Works locally, fails silently in cloud | The acceptance suite runs against dev after every deploy; alarm on `FailedInvocations`. The failure drills have not been run against dev |
 | Outbox relay implemented as "publish then mark" outside a lock | Duplicate or skipped events | Unit test for partial failure; `SKIP LOCKED`; idempotent consumers absorb duplicates |
 | Reservation logic conflates duplicate vs out-of-stock cancellations | Oversell or false rejects | Explicit `CancellationReasons` handling + unit tests (section 5) |
 | Scope creep from Day 1–2 into Day 3+ | No cloud deployment by Day 5 | Milestone gates; M10 is the hard stop for Phase 1 |
@@ -875,13 +864,13 @@ Decided questions are recorded in `docs/adr/README.md`.
 | npm supply-chain compromise | Malicious code in the build or the shipped bundle | Exact versions in the lockfile, `npm ci` only, a short approved dependency list, `npm audit` and Trivy in CI, no secrets anywhere near the build |
 | Playwright and Chromium on top of the stack on an 8 GB Mac | Memory pressure and Docker engine restarts (seen in M5) | Headless Chromium, one worker, run on a freshly started stack with other apps closed; CI runs it on hosted runners |
 | Wrong money or stale stock shown in the UI | Customers see wrong totals or buy what is not there | Integer minor-unit arithmetic with server totals authoritative; stock never cached (`staleTime: 0`, `gcTime: 0`); both covered by tests |
-| Idle AWS resources over nights/weekend | Unexpected bill | Tag everything `project=retail-week3`, AWS Budgets alert, destroy dev via `addons-destroy.yml` then `platform-destroy.yml` when idle |
+| Idle AWS resources over nights/weekend | Unexpected bill | Tag everything `Project=retail-platform` (default tags in each stack), the $350 AWS Budgets alert, destroy dev (`alarms-destroy`, `app-destroy`, `addons-destroy`, then `platform-destroy`) when idle |
 | Self-hosted runner on a public repo executes untrusted fork code | Code execution inside the VPC next to the cluster | Runners serve only push-to-`dev`/dispatch/tag/environment jobs, never `pull_request`; approval required for outside collaborators; ephemeral single-job runners; instance profile grants SSM only |
 | `cloudbatch818-loria-retail-bootstrap` can create IAM roles | Effectively admin if the trust is widened or the workflow is edited | Exact `sub` pin to `environment:bootstrap`, required reviewer, `workflow_dispatch` only, the `bootstrap` environment accepts only the `dev` branch (branch protection on `.github/` is not set up yet) |
 | No local way to run plan/apply/kubectl | Slow feedback; cloud errors surface only in CI | Static checks locally; workflows dump diagnostics on failure; small, frequent infra PRs |
 | Public viewer ALB (`app-expose.yml`) | Anyone at the allowed address reaches an app with no login and unauthenticated admin endpoints, over plain HTTP | Dev only; one address from an environment secret (masked, never in the repo); `scripts/viewer_cidr.py` refuses anything wider than a /24, private addresses and `0.0.0.0/0`; `remove` deletes it |
 | The alarm and alert path is untested | An outage could pass without an email: a wrong rule, a muted subscription or a broken Alertmanager role would not show until a real failure | Rules are unit-tested (`make rules-test`), the subscription is confirmed, a cloud test checks the rules are loaded and Alertmanager is ready, and the runbook index is tested against the alarms. Not covered: a failure that actually fires one. Run `drills.yml` (`bus-down`, then `consumer-down`) to close this |
-| One node holds every pod | Pods stay `Pending` if the node's pod limit (about 29) or CPU is reached, for example when an HPA scales up or a monitoring stack is added | Measured 2 Oct 2026 (`cluster-capacity.yml`): 25 of 29 pods, 1300m of 1930m CPU requested (67%), only 3% used. Phase 4 would not fit, so dev has two nodes (about 58 pods); run `cluster-capacity.yml` after a change that adds pods |
+| The nodes' pod limit and CPU | Pods stay `Pending` if the pod limit (about 29 per node) or CPU is reached, for example when an HPA scales up or another stack is added | Dev has two nodes (about 58 pods; the measurement that led to the second is in the ADR notes). Run `cluster-capacity.yml` after a change that adds pods |
 | Teardown workflows never run | `app-destroy`, `addons-destroy` and `platform-destroy` are untested end to end; a destroy could hang on an ALB or a security group | Order is fixed (app, addons, platform); `platform-destroy` refuses while the addons state has resources; run them once in dev before relying on them |
 
 ## 15. Frontend UI (React)
@@ -934,7 +923,7 @@ This list is the approved set. Anything else is a "new dependency" and needs ask
 - **Stock is never cached.** Inventory queries use `staleTime: 0` and `gcTime: 0`, refetch on mount and on focus, and are never written to storage. Catalog data may be cached for up to 60 s in memory only, never persisted, consistent with the server's 5-minute tolerance.
 - **Customer identity.** `cust-` plus 8 random hex characters, generated once and kept in `localStorage`; editable and validated against the API's pattern. It is a label, not a credential, and the UI says so.
 - **Storage.** The basket lives under `retail.basket.v1`. Every `localStorage` access is wrapped in try/catch (it can be blocked, full or corrupt) and falls back to an empty basket.
-- **Accessibility.** Semantic landmarks, labelled controls, keyboard operable, focus moved on route changes and errors, status changes announced through `aria-live="polite"`, AA contrast in light and dark, usable from 360 px wide.
+- **Accessibility.** Semantic landmarks, labelled controls, keyboard operable, focus moved on route changes and errors, status changes announced through `aria-live="polite"`, AA contrast, usable from 360 px wide.
 - **No external requests and no inline script or style.** Product pictures are local SVG files bundled with the app (`ui/src/assets/products`, matched by SKU; a product without one shows its category icon), fonts are system fonts, and React's escaping is the only HTML escaping: no `dangerouslySetInnerHTML`.
 
 ### 15.5 Build, serve, run

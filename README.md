@@ -50,6 +50,8 @@ LocalStack keeps its state in memory, so after any restart of it run `make seed`
 | `itest` | Integration tests against the running stack (pauses the real relay for the run) |
 | `e2e` | Acceptance steps 1 to 10 and every failure drill, through the gateway |
 | `ui-e2e` | Browser journeys (Playwright, headless Chromium) |
+| `ui-install`, `ui-dev`, `ui-types`, `ui-lint`, `ui-typecheck`, `ui-test`, `ui-build` | The UI's own steps (`npm ci`, Vite dev server on `:5173`, generated API types, lint, type check, tests, production build); `lint` and `test` already include them |
+| `lock`, `sync` | Refresh or install the uv environment |
 | `drills`, `drill-<name>` | The failure drills alone (below) |
 | `dlq-peek q=<queue>-dlq`, `dlq-redrive q=<queue>-dlq` | Inspect a dead-letter queue, or move its messages back to the source queue |
 | `obs-up`, `obs-down` | Prometheus and Grafana (Compose) |
@@ -83,6 +85,8 @@ Every process logs JSON with a `correlation_id` (send `X-Correlation-ID`, or one
 
 A stuck-order sweeper in the relay process counts orders `PENDING` for more than 5 minutes into the `orders_stuck` gauge (every 60 s) and logs them. It changes nothing; it is the alarm source for the stuck-queue runbook.
 
+On AWS the same metrics feed an in-cluster Prometheus, Alertmanager and a view-only Grafana (at `/grafana` on the address `app-expose` opens), logs go to CloudWatch through Container Insights, and CloudWatch alarms and Prometheus alerts arrive by email through one SNS topic. Every alarm and alert has a runbook: start at `docs/runbooks/README.md`.
+
 ## Layout
 
 ```text
@@ -93,12 +97,23 @@ ui/                React SPA (npm project outside the uv workspace)
 gateway/           nginx routing, mirrors the future ALB rules
 local/             Compose file, LocalStack bootstrap, PostgreSQL init, seed data, Prometheus and Grafana config
 tests/e2e/         acceptance steps and failure drills
-docs/              DESIGN.md, ADR notes, generated OpenAPI snapshots
-deploy/helm/        the retail-service chart, the secret-store chart, and the values per release (local and dev)
-infra/terraform/    the bootstrap, dev/platform and dev/cluster-addons stacks and their modules (applied only from workflows)
+docs/              DESIGN.md, adr/ (history and as-built notes), runbooks/, generated OpenAPI snapshots
+deploy/helm/        the retail-service, secret-store and monitoring charts, and the values per release (local and dev)
+infra/terraform/    the bootstrap, dev/platform, dev/cluster-addons and dev/alb-alarms stacks and their modules (applied only from workflows)
 scripts/            DLQ tools, OpenAPI export, db_init, the k8s_compose shim, viewer_cidr, package_lambda; their tests are in scripts/tests
-.github/workflows/  bootstrap-*, platform-*, addons-* and app-* workflows (see its README)
+.github/workflows/  bootstrap-*, platform-*, addons-*, alarms-* and app-* workflows, plus pr, promote, drills and cluster-capacity (see its README)
 ```
+
+## Documentation
+
+| Read | For |
+| --- | --- |
+| `docs/DESIGN.md` | The design: decisions, architecture, API and event contracts, data model, test strategy, the cloud phases, working rules |
+| `docs/adr/README.md` | Change history, what each phase actually built, deviations from the design, what went wrong, closed questions |
+| `docs/runbooks/README.md` | What to do when an alarm or alert fires; one runbook per failure |
+| `.github/workflows/README.md` | Every workflow, the run and teardown order, browser access to dev, pull requests, branches and releases |
+| `infra/terraform/README.md` | The stacks, the one-time manual setup, the alarms |
+| `docs/openapi/`, `ui/README.md` | The generated API contracts; the UI |
 
 ## Local Kubernetes (OrbStack)
 
@@ -117,7 +132,7 @@ Open <http://retail.k8s.orb.local/>. `make k8s-down` removes the releases and `m
 
 ## Running on AWS (dev)
 
-The dev environment runs in `us-east-1`: two EKS nodes, RDS for PostgreSQL, ElastiCache for Valkey, DynamoDB, EventBridge and SQS, behind an internal ALB. No AWS credential exists on any laptop (ADR-14). Every change is a workflow, started by hand, with an approval on the `bootstrap` or `dev` GitHub Environment. The acceptance suite (steps 1 to 10, including the low-stock Lambda, minus the dead-letter-queue count, plus a CloudWatch trace of one order and checks that Prometheus, Alertmanager and Grafana work: 14 tests) passes against it from `app-deploy`. `app-prepare` runs the checks, builds and pushes the images, and verifies that the pods run the images ECR holds.
+The dev environment runs in `us-east-1`: two EKS nodes, RDS for PostgreSQL, ElastiCache for Valkey, DynamoDB, EventBridge and SQS, behind an internal ALB. No AWS credential exists on any laptop (ADR-14). Every change is a workflow, started by hand, with an approval on the `bootstrap` or `dev` GitHub Environment. `app-prepare` runs the checks, builds and pushes the images, and verifies that the pods run the images ECR holds; `app-deploy` then runs the 14-test acceptance suite through the load balancer, and it passes.
 
 Bring-up, in order (details and the teardown order are in `.github/workflows/README.md`):
 
@@ -128,7 +143,9 @@ Bring-up, in order (details and the teardown order are in `.github/workflows/REA
 5. `alarms-create` (plan, then apply), once `app-deploy` has made the load balancer: the two ALB alarms.
 6. `app-expose` (optional): a browser view for one address, held in the `DEV_VIEWER_CIDR` environment secret. It also serves the Grafana dashboards at `/grafana`.
 
-Tear down in the reverse order: `alarms-destroy`, `app-destroy`, `addons-destroy`, `platform-destroy`. Dev costs roughly $360 a month while it runs (a list-price estimate, not measured; the budget alert is $350), so destroy it when idle. Those workflows have not been run yet.
+Tear down in the reverse order: `alarms-destroy`, `app-destroy`, `addons-destroy`, `platform-destroy`. Dev costs roughly $360 a month while it runs (a list-price estimate, not measured; the budget alert is $350), so destroy it when idle.
 
-Pull requests are checked by `pr.yml` (lint, tests, image and config scans, Terraform checks, one required `ci` gate); `app-rollback.yml` and `promote.yml` exist, but neither has run, and stage and prod are not deployed. Phase 4 (observability and reliability) is built: CloudWatch alarms and logs, Prometheus, Alertmanager and a view-only Grafana with the service level indicators, and five runbooks in `docs/runbooks/` (start at its README: every alarm and alert maps to one). `cluster-capacity` shows how full the cluster is and which pods are unhealthy; `drills` is built and has not been run. The failure drills were skipped, so no alarm has fired in dev and the path from a failure to an email is unproven. Not built yet: HTTPS and a domain. See DESIGN.md section 13 and its open questions; what was built, what differs from the design and what went wrong on the way are in `docs/adr/README.md`, "Cloud (dev on AWS) as built".
+Other workflows: `pr.yml` checks every pull request (lint, tests, image and config scans, Terraform checks, one required `ci` gate); `cluster-capacity` shows how full the cluster is and which pods are unhealthy; `app-rollback` and `promote` roll back and promote.
+
+**State.** Phases 2 to 4 are built and applied in dev (release `v0.1.5`). Never run: the failure drills (`drills.yml` is built), so no alarm has fired in dev and the path from a failure to an email is unproven; the three teardown workflows; `app-rollback` and `promote` (stage and prod are not deployed). Not built: HTTPS and a domain. The open questions are in DESIGN.md section 14; what was built, what differs from the design and what went wrong on the way are in `docs/adr/README.md`, "Cloud (dev on AWS) as built".
 
