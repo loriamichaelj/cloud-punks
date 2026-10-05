@@ -6,19 +6,24 @@ It runs end to end with Docker Compose (LocalStack stands in for AWS, so no acco
 
 ```mermaid
 flowchart LR
-  B["Browser"] --> GW["Gateway :8080"]
-  GW --> UI["UI (React)"]
-  GW --> P["product-service"]
-  GW --> I["inventory-service"]
-  GW --> O["order-service"]
-  GW --> N["notification-service"]
+  B["Browser"] --> GW["Gateway: nginx :8080 locally, ALB on AWS"]
+  GW -->|"/"| UI["UI (React)"]
+  GW -->|"/api/v1/products, categories"| P["product-service"]
+  GW -->|"/api/v1/inventory"| I["inventory-service"]
+  GW -->|"/api/v1/orders, listings, bids, activity"| O["order-service"]
+  GW -->|"/api/v1/notifications"| N["notification-service"]
+  O -. "price" .-> P
+  O -. "stock, owner" .-> I
   O -->|"outbox, relay"| BUS{{"EventBridge"}}
   I --> BUS
   BUS -->|"SQS"| I
   BUS -->|"SQS"| O
   BUS -->|"SQS"| N
   BUS --> L["Lambdas: low-stock alert, activity email"]
+  L --> SES["SES email"]
 ```
+
+*Dashed: synchronous REST. Everything after an order is accepted travels as events.*
 
 | Service | Owns | Store |
 | --- | --- | --- |
@@ -125,7 +130,7 @@ local/             Compose file, LocalStack bootstrap, PostgreSQL init, seed dat
 tests/e2e/         acceptance steps, market steps and failure drills
 docs/              DESIGN.md, adr/ (history), runbooks/, generated OpenAPI snapshots
 deploy/helm/       the retail-service, secret-store and monitoring charts, and the values per release
-infra/terraform/   bootstrap, dev/platform, dev/cluster-addons and dev/alb-alarms (applied only from workflows)
+infra/terraform/   bootstrap, dev/platform, dev/cluster-addons, dev/alb-alarms, dev/dns and dev/alb-dns (applied only from workflows)
 scripts/           the art generator, DLQ tools, OpenAPI export, db_init, packaging and k8s helpers (tests in scripts/tests)
 .github/workflows/ every workflow (see its README)
 ```
@@ -147,6 +152,6 @@ The processes can run in OrbStack's Kubernetes cluster while PostgreSQL, Valkey 
 
 ## Running on AWS Dev Environment
 
-Dev runs in `us-east-1`: two EKS nodes, RDS for PostgreSQL, ElastiCache for Valkey, DynamoDB, EventBridge and SQS, behind an internal ALB. No AWS credential exists on any laptop: every change is a workflow, started by hand, with an approval on the `bootstrap` or `dev` GitHub Environment. The one-time manual setup is in `infra/terraform/README.md`; the run order, the teardown order, resetting the market and opening the app in a browser are in `.github/workflows/README.md`.
+Dev runs in `us-east-1`: two EKS nodes, RDS for PostgreSQL, ElastiCache for Valkey, DynamoDB, EventBridge and SQS, behind an internal ALB, plus an optional internet-facing viewer ALB open to one address. With a domain set (`DEV_DOMAIN`), both ALBs serve HTTPS with an ACM certificate under names in Route 53: `https://dev.<domain>` for the viewer, `https://internal.dev.<domain>` inside the VPC (`docs/runbooks/https-and-domain.md`). No AWS credential exists on any laptop: every change is a workflow, started by hand, with an approval on the `bootstrap` or `dev` GitHub Environment. The one-time manual setup is in `infra/terraform/README.md`; the run order, the teardown order, resetting the market and opening the app in a browser are in `.github/workflows/README.md`.
 
-The short version: `bootstrap-*`, `platform-create`, `addons-create`, `app-database`, `app-prepare`, `app-deploy`, `app-seed`. `app-deploy` runs the acceptance suite through the load balancer. Dev costs roughly $360 a month while it runs (a list-price estimate; the budget alert is $350), so destroy it when idle.
+The short version: `bootstrap-*`, `platform-create`, `addons-create`, `app-database`, `app-prepare`, `app-deploy`, `app-seed`; for a browser view `app-expose`; for HTTPS `dns-create` before `app-deploy` and `alb-dns-create` after it. `app-deploy` runs the acceptance suite through the load balancer. Dev costs roughly $360 a month while it runs (a list-price estimate; the budget alert is $350), so destroy it when idle.

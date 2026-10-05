@@ -82,7 +82,7 @@ Every sale, bid and listing on a CloudPunk emails the address in the `dev` envir
 3. Click the link in the "Amazon Web Services – Email Address Verification Request" email AWS sends to that address. Nothing is delivered until then. Once.
 4. `app-prepare`, then `app-deploy`: order-service starts writing the `MarketActivity` events.
 
-The sender is the same address (there is no domain of our own), so mark the first email "not spam" if it lands there. Without `ALARM_EMAIL` none of it is created.
+The sender is the same address (the SES identity is the address, not the dev domain), so mark the first email "not spam" if it lands there. Without `ALARM_EMAIL` none of it is created.
 
 ## Pull requests, branches and releases
 

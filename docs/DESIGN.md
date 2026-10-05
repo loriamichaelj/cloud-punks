@@ -27,7 +27,7 @@ An order platform with event driven microservices, and on top of it, a marketpla
 | --- | --- |
 | Local | Docker Compose on OrbStack: the four services, the UI and the gateway, with PostgreSQL, Valkey and LocalStack standing in for the cloud stores (`make up`, `make seed`) |
 | Local Kubernetes | One Helm chart for every process, Traefik ingress, probes, HPA, PDBs and rollback on OrbStack Kubernetes (`make k8s-deploy`) |
-| Cloud (dev) | Terraform stacks applied only from GitHub Actions: network, ECR, EKS with two nodes, RDS, ElastiCache, DynamoDB, EventBridge and SQS, the in-VPC runner. The same chart with dev values, behind an internal ALB, with HTTPS and a domain when one is set (section 13) |
+| Cloud (dev) | Terraform stacks applied only from GitHub Actions: network, ECR, EKS with two nodes, RDS, ElastiCache, DynamoDB, EventBridge and SQS, the in-VPC runner; an ACM certificate and Route 53 names when a domain is set. The same chart with dev values, behind an internal ALB and an optional viewer ALB open to one address, both on HTTPS when the domain is set (section 13) |
 | CI/CD | `pr.yml` with one required `ci` gate; the `app-*` workflows build, deploy, seed, reset, expose, roll back and destroy; `promote.yml` for stage and prod |
 | Reliability | CloudWatch alarms and a budget alert, Container Insights logs, Prometheus, Alertmanager and a view-only Grafana, a runbook for every alarm |
 | Marketplace | The 100 CloudPunks, ownership, listings, bids, activity, the marketplace UI and an email for every market event (section 16) |
@@ -73,10 +73,10 @@ The customer path is synchronous only up to order acceptance; everything after `
 
 ```mermaid
 flowchart TB
-  client["API client (curl, e2e tests)"] -->|HTTP| gw["Gateway: nginx locally, ALB on EKS"]
-  browser["Browser"] -->|HTTP| gw
+  client["API client (curl, e2e tests)"] -->|"HTTP(S)"| gw["Gateway: nginx locally, ALB on EKS (HTTPS ends here)"]
+  browser["Browser"] -->|"HTTP(S)"| gw
   gw -->|"/ (SPA)"| UIS["UI: static React app, nginx"]
-  gw -->|/api/v1/products| P
+  gw -->|"/api/v1/products, categories"| P
   gw -->|/api/v1/inventory| I
   gw -->|"/api/v1/orders, listings, bids, activity"| O
   gw -->|/api/v1/notifications| N
@@ -105,7 +105,7 @@ flowchart TB
   BUS --> M["Lambda market-activity-email"] --> SES["SES email"]
 ```
 
-*Orders enter through REST and settle through events. Dashed = synchronous REST; solid into the bus = events published; bus to queue to service = SQS delivery; the two Lambdas are invoked by the bus directly.*
+*Orders enter through REST and settle through events. Dashed = synchronous REST; solid into the bus = events published; bus to queue to service = SQS delivery; the two Lambdas are invoked by the bus directly. On EKS the gateway is HTTPS when a domain is set; the hops behind it stay plain HTTP inside the VPC.*
 
 Order is the only service with both sync dependencies (Product for price, Inventory for the pre-check and, for the market, who owns a CloudPunk) and an outbox; Notification only listens. Product has no events. In the marketplace the reservation is also the transfer of ownership, and accepting a bid is an ordinary order with a seller (section 16.5).
 
@@ -115,6 +115,7 @@ Order is the only service with both sync dependencies (Product for price, Invent
 | --- | --- | --- | --- |
 | Compute | Docker Compose containers, or OrbStack Kubernetes | EKS Deployments on managed node groups | Nothing in the image; Helm values |
 | Ingress | nginx gateway on :8080; Traefik on OrbStack Kubernetes | ALB via AWS Load Balancer Controller | Same path rules in Ingress (`/api/v1/*` to the services, everything else to `ui`) |
+| TLS and names | Plain HTTP on `localhost` and `retail.k8s.orb.local` | ACM certificate on both ALBs, Route 53 names (public and private zone), when `DEV_DOMAIN` is set | Helm values overlay and the `dns`/`alb-dns` stacks; no code change |
 | UI | `ui` container (nginx serving static files) behind the gateway | EKS Deployment behind the ALB's default rule, image from ECR | Helm values only |
 | Relational | PostgreSQL 17 container | RDS for PostgreSQL 17 (dev Single-AZ, prod Multi-AZ) | `DB_HOST`, secret source |
 | Key-value | LocalStack DynamoDB | DynamoDB on-demand | `AWS_ENDPOINT_URL` unset |
@@ -133,7 +134,7 @@ All services expose JSON over HTTP under `/api/v1`, plus `/health/live`, `/healt
 | --- | --- | --- | --- | --- | --- |
 | product-service | Catalog (the 100 CloudPunks), categories (their five types), mint prices | 8001 | PostgreSQL `product_db`, Valkey | — | — |
 | inventory-service | Stock levels, reservations, who owns each CloudPunk | 8002 | DynamoDB `inventory`, `inventory_reservations` | InventoryReserved, InventoryFailed | OrderCreated |
-| order-service | Orders, order items, status; listings (up for bid), bids, the activity feed | 8003 | PostgreSQL `order_db` (incl. outbox) | OrderCreated, OrderStatusUpdated | InventoryReserved, InventoryFailed |
+| order-service | Orders, order items, status; listings (up for bid), bids, the activity feed | 8003 | PostgreSQL `order_db` (incl. outbox) | OrderCreated, OrderStatusUpdated, MarketActivity | InventoryReserved, InventoryFailed |
 | notification-service | Customer notifications (simulated) | 8004 | DynamoDB `notifications` | — | InventoryReserved, InventoryFailed, OrderStatusUpdated |
 | ui | The React single-page app (static files, section 15) | 8005 | — | — | — |
 | gateway (nginx) | Path routing, stands in for ALB | 8080 | — | — | — |
@@ -452,7 +453,7 @@ Every service implements the same config, health, logging, metrics and resilienc
 | `LOG_LEVEL` | `INFO` | ConfigMap |
 | `AWS_REGION` | `us-east-1` | ConfigMap |
 | `AWS_ENDPOINT_URL` | `http://localstack:4566` | **Unset** in cloud |
-| `DB_HOST` / `DB_PORT` / `DB_NAME` | `postgres` / `5432` / `order_db` | ConfigMap (RDS instance endpoint, or RDS Proxy if kept) |
+| `DB_HOST` / `DB_PORT` / `DB_NAME` | `postgres` / `5432` / `order_db` | ConfigMap (the RDS instance endpoint) |
 | `DB_USER` / `DB_PASSWORD` | from `.env` (`order_app`; migrate job uses `order_owner`) | Secrets Manager → Kubernetes Secret (External Secrets Operator) |
 | `DB_SSLMODE` | `disable` | `require` in dev (RDS enforces TLS; `require` encrypts but does not check the certificate). `verify-full` needs the RDS CA bundle in the images: an open gap (section 14) |
 | `CACHE_URL` | `redis://valkey:6379/0` | ConfigMap (`rediss://` with TLS) |
@@ -498,7 +499,7 @@ Use the `route` template (`/api/v1/orders/{order_id}`), never the raw path — r
 ### Resilience
 
 - Outbound HTTP: `httpx2` with connect 1 s / read 2 s timeouts; retry only GETs plus the read-only `POST /inventory/availability` (the single allowed POST retry), max 2 retries, exponential backoff with jitter (`tenacity`). Never retry any other POST.
-- DB pool: SQLAlchemy with psycopg 3, `pool_size=5, max_overflow=5, pool_pre_ping=True, pool_recycle=1800`. Each PostgreSQL connection is a backend process, so keep `replicas × (pool_size + max_overflow)` well under the instance `max_connections`; in cloud put RDS Proxy in front so HPA scale-out cannot exhaust connections.
+- DB pool: SQLAlchemy with psycopg 3, `pool_size=5, max_overflow=5, pool_pre_ping=True, pool_recycle=1800`. Each PostgreSQL connection is a backend process, so keep `replicas × (pool_size + max_overflow)` well under the instance `max_connections`. Dev has no RDS Proxy (section 13); it is the answer if HPA headroom ever outgrows the instance.
 - Set `statement_timeout = 5s` and `idle_in_transaction_session_timeout = 30s` on the `<svc>_app` roles. A stuck transaction holding the outbox lock is the failure you want killed, not waited on.
 - Stuck-order sweeper (order-service, runs in the relay process every 60 s): orders `PENDING` longer than 5 min are logged and counted in `orders_stuck` gauge (`SWEEP_INTERVAL_S`, default 60). No auto-reject; this is the alarm source for the stuck-queue runbook.
 - Graceful shutdown: on SIGTERM, stop accepting HTTP, finish in-flight requests, consumers stop polling and finish the current batch within 25 s (Kubernetes `terminationGracePeriodSeconds: 30`).
@@ -508,20 +509,25 @@ Use the `route` template (`/api/v1/orders/{order_id}`), never the raw path — r
 One monorepo, `uv` workspaces, one Dockerfile per service built from the repo root so `libs/common` is included.
 
 ```text
-retail-platform/
+cloud-punks/                      # the repository (GitHub loriamichaelj/cloud-punks)
 ├── CLAUDE.md                     # working rules for the coding agent; git-ignored, kept locally
 ├── docs/
 │   ├── DESIGN.md                 # this document
 │   ├── adr/                      # change history, as-built notes, decisions (README.md)
+│   ├── images/                   # the README's screenshots
 │   ├── openapi/                  # generated OpenAPI snapshots (make openapi)
-│   └── runbooks/                 # runbooks and an index of every alarm and alert
+│   └── runbooks/                 # a runbook per alarm, an index of every alarm and alert, the local and HTTPS procedures
 ├── libs/common/                  # installable package: retail_common
 │   └── retail_common/
 │       ├── config.py             # BaseServiceSettings, AwsSettings
 │       ├── service.py            # create_service_app(): wires logging, correlation, metrics, errors, health
 │       ├── logging.py            # structlog setup, correlation-id middleware
 │       ├── metrics.py            # Prometheus middleware + shared metrics
+│       ├── queue_metrics.py      # queue_messages{queue, state}, read at scrape time
 │       ├── health.py             # live/ready router with pluggable checks
+│       ├── side_server.py        # health and metrics on :9000 for the consumers and the relay
+│       ├── consumer_runtime.py   # the process shell every SQS consumer shares (signals, shutdown)
+│       ├── database.py           # PostgreSQL settings and engine construction
 │       ├── http_client.py        # httpx2 client w/ timeouts, retries, header propagation
 │       ├── events/
 │       │   ├── envelope.py       # Envelope model, ULID ids
@@ -537,7 +543,7 @@ retail-platform/
 │   │   ├── Dockerfile
 │   │   └── pyproject.toml
 │   ├── inventory-service/        # app/ + consumer entrypoint
-│   ├── order-service/            # app/ + relay entrypoint + migrations/
+│   ├── order-service/            # app/ (+ consumer/, relay/, clients/, events.py) + migrations/
 │   └── notification-service/     # consumer + small read API
 ├── functions/                    # low-stock-alert, market-activity-email: Lambda handlers + tests
 ├── nft-collection/               # the 100 CloudPunk SVGs, generated by scripts/cloudpunks (section 16.3)
@@ -547,14 +553,14 @@ retail-platform/
 │   ├── docker-compose.yml
 │   ├── localstack/init/ready.d/10-bootstrap.sh
 │   ├── postgres/init/01-databases.sh
-│   ├── seed/                     # catalog.py + cloudpunks.json (generated) + seed.py; shipped in the product image
+│   ├── seed/                     # catalog.py + cloudpunks.json (generated) + seed.py + reset.py; shipped in the product image
 │   └── observability/ (prometheus.yml, grafana/)
-├── tests/e2e/                    # acceptance (test_acceptance.py) + failure drills (test_drills.py)
-├── scripts/                      # cloudpunks/ (the art generator), export_openapi.py, dlq.py, db_init.py, k8s_compose.py, viewer_cidr.py, package_lambda.py (tests in scripts/tests)
+├── tests/e2e/                    # acceptance (test_acceptance.py), failure drills (test_drills.py), pod kills (test_k8s_resilience.py), the cloud drills (test_cloud_drills.py)
+├── scripts/                      # cloudpunks/ (the art generator), export_openapi.py, dlq.py, db_init.py, k8s_compose.py, viewer_cidr.py, dev_domain.py, package_lambda.py (tests in scripts/tests)
 ├── README.md                     # run instructions
-├── deploy/helm/                  # retail-service, secret-store and monitoring charts, values/ (per release, per env), third-party/ (Traefik)
-├── infra/terraform/              # bootstrap/, modules/, envs/dev/{platform,cluster-addons,alb-alarms}; applied only from workflows (README.md)
-├── .github/workflows/            # bootstrap-*, platform-*, addons-*, alarms-*, app-*, cluster-capacity, drills, pr, promote (README.md)
+├── deploy/helm/                  # retail-service, secret-store and monitoring charts, values/ (per release, per env, plus the HTTPS overlays), third-party/ (Traefik)
+├── infra/terraform/              # bootstrap/, modules/, envs/dev/{platform,cluster-addons,alb-alarms,dns,alb-dns}; applied only from workflows (README.md)
+├── .github/workflows/            # bootstrap-*, platform-*, addons-*, alarms-*, dns-*, alb-dns-*, app-*, cluster-capacity, drills, pr, promote (README.md)
 ├── Makefile
 ├── .env.example                  # committed; .env is git-ignored
 └── pyproject.toml                # uv workspace root, ruff, mypy, pytest config
@@ -593,21 +599,21 @@ The Dockerfile is production-shaped: multi-stage, `uv sync --frozen --no-dev`, n
 
 | Compose service | Image | Command | Port | Becomes on EKS |
 | --- | --- | --- | --- | --- |
-| postgres | `postgres:17` | — | 5432 | RDS for PostgreSQL 17 (RDS Proxy optional) |
+| postgres | `postgres:17` | — | 5432 | RDS for PostgreSQL 17 |
 | valkey | `valkey/valkey:9.0` | — | 6379 | ElastiCache for Valkey |
 | localstack | `localstack/localstack` at a pinned CalVer tag (2026.03.0 or later), auth token required | — | 4566 | EventBridge, SQS, DynamoDB, Lambda |
 | product-migrate / order-migrate | service image | `migrate` | — | Helm pre-install/pre-upgrade Job |
 | seed | product image | `seed` | — | `app-seed.yml` on the runner (dev only): the same `local/seed/seed.py`, run from the checkout, as the `db` role |
 | product-service | product | `api` | 8001 | Deployment + HPA |
 | inventory-service | inventory | `api` | 8002 | Deployment + HPA |
-| inventory-consumer | inventory | `consumer` | 9000 | Deployment (scale on queue depth, KEDA later) |
+| inventory-consumer | inventory | `consumer` | 9000 | Deployment, 1 replica |
 | order-service | order | `api` | 8003 | Deployment + HPA |
-| order-relay | order | `relay` | 9000 | Deployment, 1–2 replicas |
-| order-consumer | order | `consumer` | 9000 | Deployment |
-| notification-service | notification | `api` | 8004 | Deployment |
-| notification-consumer | notification | `consumer` | 9000 | Deployment |
+| order-relay | order | `relay` | 9000 | Deployment, 1 replica (`SKIP LOCKED` allows more) |
+| order-consumer | order | `consumer` | 9000 | Deployment, 1 replica |
+| notification-service | notification | `api` | 8004 | Deployment + HPA |
+| notification-consumer | notification | `consumer` | 9000 | Deployment, 1 replica |
 | ui | `ui` (nginx-unprivileged, static files) | — | 8005 | Deployment (2 replicas, PDB) |
-| gateway | `nginx:1.27-alpine` | — | 8080 | ALB via AWS Load Balancer Controller Ingress |
+| gateway | `nginx:1.27-alpine` | — | 8080 | ALB via AWS Load Balancer Controller Ingress (release `gateway`; the viewer ALB is `gateway-public`) |
 | prometheus / grafana | official images | profile `observability` | 9090 / 3000 | the `monitoring` chart: Prometheus, Alertmanager and a view-only Grafana (section 13) |
 
 Container ports 9000 on consumers are internal only (health + metrics).
@@ -713,18 +719,23 @@ The repo deploys the dev environment only; `stage` and `prod` exist as branches 
 flowchart TB
   gh["GitHub Actions: OIDC roles, no stored AWS keys"] -->|"Terraform, ECR push"| cloud
   gh -->|"deploy and e2e jobs"| runner
+  viewer["Browser at the one allowed address"] -->|"HTTPS dev.#lt;domain#gt;"| pub
   subgraph cloud["AWS dev, us-east-1"]
-    subgraph vpc["VPC, 3 AZs"]
-      alb["Internal ALB: the gateway"]
-      pub["Viewer ALB: one address, optional"]
+    r53["Route 53: public zone (registered by hand), private zone internal.dev"]
+    acm["ACM certificate: dev and internal.dev"]
+    subgraph vpc["VPC, 3 AZs, one NAT, VPC endpoints"]
+      pub["Viewer ALB: internet-facing, one address, optional"]
+      alb["Internal ALB: the gateway, 10.20.0.0/16 only"]
       runner["In-VPC runner"]
-      subgraph eks["EKS, two nodes"]
+      subgraph eks["EKS 1.36, two m7g.large nodes, private endpoint"]
         apps["UI, product, inventory, order, notification: APIs, consumers, relay"]
         mon["Prometheus, Alertmanager, Grafana"]
       end
       rds[("RDS PostgreSQL 17")]
       cache[("ElastiCache Valkey")]
     end
+    ecr["ECR: one repository per image"]
+    sm["Secrets Manager: database passwords"]
     ddb[("DynamoDB: inventory, reservations, notifications")]
     bus{{"EventBridge bus and SQS queues with DLQs"}}
     fn["Lambda: low-stock-alert, market-activity-email"]
@@ -733,8 +744,16 @@ flowchart TB
     cw["CloudWatch: alarms, Container Insights logs"]
   end
   runner -->|"helm, kubectl"| eks
+  runner -->|"e2e, HTTPS check internal.dev"| alb
+  r53 -. "alias records" .-> pub
+  r53 -. "alias records" .-> alb
+  acm -. "443 listener" .-> pub
+  acm -. "443 listener" .-> alb
   alb --> apps
   pub --> apps
+  pub -->|"/grafana"| mon
+  ecr -->|"images"| eks
+  sm -->|"External Secrets"| apps
   apps --> rds
   apps --> cache
   apps --> ddb
@@ -748,7 +767,7 @@ flowchart TB
   ses --> mail
 ```
 
-*Everything is reached through workflows. The viewer ALB and the activity emails are optional; the emails need the address in the `dev` secret `ALARM_EMAIL`.*
+*Everything is reached through workflows. Optional: the viewer ALB (`app-expose`), HTTPS and the names (`DEV_DOMAIN`; without it both ALBs serve HTTP on their own AWS names), and the activity emails (the address in the `dev` secret `ALARM_EMAIL`). TLS ends at the ALBs.*
 
 **AWS access model (ADR-14, ADR-15).** No AWS credential exists outside GitHub Actions. Every workflow assumes a role by ARN through OIDC (`aws-actions/configure-aws-credentials`, pinned by SHA, `permissions: id-token: write, contents: read`). Role ARNs are GitHub Actions *variables* per Environment (an ARN is not a secret). Claude Code can therefore write and statically check the cloud code (`terraform fmt/validate` with `init -backend=false`, tflint, checkov, `helm lint`, kubeconform) but can never run `plan`, `apply`, `aws` or `kubectl` against AWS; those happen only in workflows, so workflows must print diagnostics on failure (`terraform show`, `helm status`, `kubectl describe`/events).
 
@@ -773,17 +792,17 @@ Terraform references the OIDC provider with a `data` source (an account can hold
 
 | Area | Decision | Enterprise note |
 | --- | --- | --- |
-| Network | VPC across 3 AZs: public (ALB, NAT), private-app (nodes), private-data (RDS, ElastiCache; an RDS subnet group needs two AZs even for a Single-AZ instance) | Single NAT in dev, one per AZ in prod. Add VPC endpoints (S3 + DynamoDB gateway; ECR api/dkr, SQS, STS, Secrets Manager, EventBridge, Logs interface) — NAT data processing is the #1 surprise bill on EKS |
+| Network | VPC across 3 AZs: public (ALB, NAT), private-app (nodes), private-data (RDS, ElastiCache; an RDS subnet group needs two AZs even for a Single-AZ instance) | Single NAT in dev, one per AZ in prod. VPC endpoints: S3 and DynamoDB gateway endpoints, and interface endpoints for ECR api/dkr, SQS, STS, Secrets Manager, EventBridge and Logs (in one AZ in dev) — NAT data processing is the #1 surprise bill on EKS |
 | EKS | Managed node group, AL2023 AMIs, **two nodes**: 2 × m7g.large Graviton/arm64 (2 vCPU, 8 GiB; about 29 pods each), matching Apple Silicon builds and cheaper per vCPU, access entries instead of `aws-auth` ConfigMap | Two nodes give node-level availability, so zone spread, PDBs and HPA maxima (about 4) have room to work. Kubernetes 1.36; pin it in Terraform. AL2023 or Bottlerocket only (no Amazon Linux 2 AMIs after 1.32). Why two and not one, and the alternatives: `docs/adr/README.md`, "Cluster sizing notes" |
 | Add-ons | vpc-cni, coredns, kube-proxy, eks-pod-identity-agent, metrics-server; Helm: AWS Load Balancer Controller, External Secrets Operator | Installed with Terraform `aws_eks_addon` / `helm_release`; the Helm charts are pinned, the EKS add-ons take EKS's default version (section 14) |
 | Workload IAM | EKS Pod Identity, one IAM role per ServiceAccount | Least privilege per process: relay = `events:PutEvents` on the bus only; each consumer = receive/delete on its own queue only |
-| RDS | RDS for PostgreSQL 17 (major 17 to match local PostgreSQL 17, the minor is AWS's choice), dev a single `db.t4g` instance, Single-AZ; prod Multi-AZ; KMS CMK; 7-day backups; deletion protection in prod (off in dev so it can be destroyed); RDS-managed master secret. RDS Proxy is optional: with one node and about 15 pods at `pool_size 5 + max_overflow 5` the instance's `max_connections` is not at risk, so the default is to leave it out and add it with a second node group or HPA headroom | The application databases and roles are created by `scripts/db_init.py` (workflow `app-database.yml`, on the runner, as a dedicated `db` role); each password is generated there and stored in Secrets Manager, never in Terraform state or outputs |
+| RDS | RDS for PostgreSQL 17 (major 17 to match local PostgreSQL 17, the minor is AWS's choice), dev a single `db.t4g.small` instance, Single-AZ; prod Multi-AZ; KMS CMK; 7-day backups; deletion protection in prod (off in dev so it can be destroyed); RDS-managed master secret. No RDS Proxy: the pods that hold connections (the product and order APIs at up to 4 replicas each, the relay and the order consumer) at `pool_size 5 + max_overflow 5` stay well under the instance's `max_connections`; add it if HPA headroom grows | The application databases and roles are created by `scripts/db_init.py` (workflow `app-database.yml`, on the runner, as a dedicated `db` role); each password is generated there and stored in Secrets Manager, never in Terraform state or outputs |
 | ElastiCache | Valkey 9.0, TLS in transit and a security-group limit (no AUTH token, section 14), prod 1 replica Multi-AZ | ElastiCache Serverless is simpler but has a minimum hourly cost |
 | DynamoDB | On-demand, PITR on, SSE with KMS, TTL on `ttl` | — |
 | Events | Same names as bootstrap script, prefixed `loria-` in cloud (bus, queues, rules, Lambda; the table names come from config); SQS SSE; queue policies scoped by `aws:SourceArn`; EventBridge archive | — |
 | ECR | One repo per service (including `ui`), tag immutability, scan on push (basic scan; Inspector enhanced is a gap, section 14), lifecycle keep 30 | Tags `sha-<git sha>`; deploy by digest in prod |
 
-**Helm:** one chart installed once per process, the same for every environment with a values file each, `deploy/helm/retail-service` + `values-<service>-<env>.yaml`. The chart renders, per process: Deployment (rolling, `maxUnavailable: 0`, `maxSurge: 25%`), ServiceAccount, Service (APIs only), PodDisruptionBudget (`minAvailable: 1`), HPA (APIs: CPU 70%, min 2, max 4; the cluster has two nodes, so a scale-up has room), zone `topologySpreadConstraints`, probes on `/health/live` and `/health/ready`, `securityContext` (`runAsNonRoot`, `readOnlyRootFilesystem`, drop ALL, plus an `emptyDir` mounted at `/tmp`), ExternalSecret, and the migration Job as a `pre-install,pre-upgrade` hook. The UI is one more release of the same chart (`values-ui-<env>.yaml`: port 8005, probes on `/healthz`, a writable `emptyDir` for nginx's temp and cache paths). One shared Ingress (ALB, `scheme: internal` so e2e runs from the in-VPC runners, HTTPS via ACM, `group.name: retail`) mirrors `gateway/nginx.conf` paths, with `/` as the default rule to `ui`. Both ALBs also serve HTTPS when the `dev` environment variable `DEV_DOMAIN` is set ("Network and names" below); without it dev serves HTTP, as it did before it had a domain. Because no laptop has AWS access (ADR-14), a person who wants a browser view of dev runs `app-expose.yml`, which adds a second, internet-facing ALB (release `gateway-public`) allowed from one address held in the `DEV_VIEWER_CIDR` environment secret; the internal ALB and the e2e test are unchanged. Once it exists, `app-deploy` refreshes its routes on every deploy (keeping its stored address), so both ALBs carry the same paths. Dev only.
+**Helm:** one chart installed once per process, the same for every environment with a values file each, `deploy/helm/retail-service` + `values-<service>-<env>.yaml`. The chart renders, per process: Deployment (rolling, `maxUnavailable: 0`, `maxSurge: 25%`), ServiceAccount, Service (APIs and the UI), PodDisruptionBudget (`minAvailable: 1`; the APIs and the UI), HPA (the four APIs: CPU 70%, min 2, max 4; the cluster has two nodes, so a scale-up has room; the consumers and the relay run one replica each), zone `topologySpreadConstraints`, probes on `/health/live` and `/health/ready`, `securityContext` (`runAsNonRoot`, `readOnlyRootFilesystem`, drop ALL, plus an `emptyDir` mounted at `/tmp`), ExternalSecret, and the migration Job as a `pre-install,pre-upgrade` hook. The UI is one more release of the same chart (`values-ui-<env>.yaml`: port 8005, probes on `/healthz`, a writable `emptyDir` for nginx's temp and cache paths). One shared Ingress (ALB, `scheme: internal` so e2e runs from the in-VPC runners, HTTPS via ACM, `group.name: retail`) mirrors `gateway/nginx.conf` paths, with `/` as the default rule to `ui`. Both ALBs also serve HTTPS when the `dev` environment variable `DEV_DOMAIN` is set, through the overlays `values-ingress-https-dev.yaml` and `values-ingress-public-https-dev.yaml` and the chart's `ingress.tlsHosts` ("Network and names" above); without it dev serves HTTP, as it did before it had a domain. Because no laptop has AWS access (ADR-14), a person who wants a browser view of dev runs `app-expose.yml`, which adds a second, internet-facing ALB (release `gateway-public`) allowed from one address held in the `DEV_VIEWER_CIDR` environment secret; the internal ALB and the e2e test are unchanged. Once it exists, `app-deploy` refreshes its routes on every deploy (keeping its stored address), so both ALBs carry the same paths. Dev only.
 
 ### CI/CD (GitHub Actions)
 
@@ -820,7 +839,7 @@ Runbooks (`docs/runbooks/`), each tied to an alarm or alert: failed deployment a
 
 Decisions:
 
-- **Alarms and notifications.** CloudWatch alarms (queues, dead letters, EventBridge rules, the Lambda, RDS, the ALB) and an AWS Budgets alert at $350 a month publish to one SNS topic with its own KMS key and one email subscription (the address is a `dev` environment secret, never in the repo). The ALB alarms are a separate stack because the ALB does not exist when the platform stack is planned.
+- **Alarms and notifications.** CloudWatch alarms (queues, dead letters, EventBridge rules, the low-stock Lambda, RDS, the ALB; 19 in all with the two ALB alarms) and an AWS Budgets alert at $350 a month publish to one SNS topic with its own KMS key and one email subscription (the address is a `dev` environment secret, never in the repo). The ALB alarms are a separate stack because the ALB does not exist when the platform stack is planned.
 - **Metrics, dashboards and alerts: one in-cluster Prometheus, one Alertmanager and one Grafana**, as the small plain-manifest chart `deploy/helm/monitoring`, installed by `app-deploy.yml` as its last release. Not kube-prometheus-stack (the node's pod limit makes it too heavy) and not Amazon Managed Prometheus and Grafana (they need IAM Identity Center and add a monthly cost). Prometheus discovers the application's pods itself (label `service` is the release name, so the dashboard is the same locally and in AWS) and keeps 2 days in an emptyDir. Grafana is view only (anonymous Viewer, no login, no admin user, no plugin downloads) at `/grafana` on the one-address viewer ALB, and carries the four SLIs as headline panels.
 - **Four alert rules** in `deploy/helm/monitoring/rules/retail.yml`: `OutboxLag`, `OrdersStuck`, `PodRestartingRepeatedly`, `TargetDown`. Alertmanager publishes to the same SNS topic with its own Pod Identity role, so alerts and alarms arrive together. The rules are unit-tested with promtool (`make rules-test`, part of `make lint`), and each names its runbook.
 - **Drills change configuration, never AWS resources.** Consumer down scales the consumer to 0; bus down, cache down and DB down point the process at a dead bus, host or address with `helm --set`, and `helm rollback` undoes them; poison and duplicate publish to the real bus. They use real timings and assert through Prometheus, because the deploy role cannot read alarms or queues. `drills.yml` has `consumer-down` and `bus-down`; the other four are not built.
@@ -842,6 +861,8 @@ The working rules for the coding agent are in `CLAUDE.md` (kept locally, not com
 **Not built**
 
 - Egress allowlisting: private subnets reach the whole internet through the NAT. A VPC with no internet path is the limit of the design and is not planned (section 13, "Network isolation").
+- Alarms on the `market-activity-email` Lambda: its errors, its dead-letter queue and its rule's `FailedInvocations` are not in the monitoring module, so an email that fails reaches no one (the low-stock Lambda has all three).
+- HSTS on the HTTPS listeners, and TLS beyond the ALBs (the hop to the pods and the calls between services are plain HTTP inside the VPC).
 - Database `verify-full` TLS (needs the RDS CA bundle in the images), a Valkey AUTH token, pinned EKS add-on and PostgreSQL minor versions, Inspector enhanced scanning (ECR uses basic scan on push).
 - Releasing or committing `reserved` stock: this design never releases it, because there are no cancellations. It is needed before adding them.
 - Serving the static UI from S3 and CloudFront instead of a container.
@@ -925,9 +946,9 @@ ui/
 ├── tsconfig.json, vite.config.ts, eslint config, index.html
 ├── Dockerfile, nginx.conf
 ├── src/
-│   ├── main.tsx, App.tsx
+│   ├── main.tsx, App.tsx, config.ts, state.tsx
 │   ├── routes/        # Collection (items, activity), Item, Account, Order, Demo, NotFound
-│   ├── components/    # Layout, PunkCard, PunkImage, StatePill, ActivityTable, Who, ErrorPanel, ...
+│   ├── components/    # Layout, CustomerMenu, PunkCard, PunkImage, StatePill, ActivityTable, Who, ErrorPanel, Price, Pagination, Loading
 │   ├── api/           # client.ts (fetch wrapper, headers, error mapping), endpoints, hooks, generated/ (types)
 │   ├── lib/           # money, collection, idempotency, polling, storage, correlation, customer, time
 │   ├── assets/        # cloudpunks/ (the 100 SVGs, copied by make ui-art), cloudpunkArt.ts
@@ -1103,6 +1124,6 @@ The owner gets an email for every sale, bid and listing: the CloudPunk's picture
 - **Event.** order-service writes `MarketActivity` to the outbox in the same transaction as the change, and only when something changed (a replay or a refusal writes nothing): `LISTED` when an owner puts one up, `UNLISTED` when they take it off, `BID_PLACED` and `BID_WITHDRAWN`, and `SALE` when an order confirms (one per line, from the order consumer's transition, with `counterparty` the seller or null for CloudPunks, and `causation_id` the inventory event). The repositories take the event factory when they are built (`app/events.py`), because some facts (a withdrawn bid's amount, a sale's lines) are only known inside the transaction. Bids closed by a sale or a take-off are not reported.
 - **Routing.** One rule, `to-market-activity-email`, matches `MarketActivity` on SKUs starting `CP-` (the cloud suite's `E2E-` items are left out) and invokes the Lambda asynchronously. No queue receives it.
 - **Lambda.** `functions/market-activity-email`: standard library plus the runtime's boto3. It draws the CloudPunk from its SVG (packaged under `art/` from `nft-collection/` by `scripts/package_lambda.py`) as a 240 x 240 PNG on the colour of its state after the activity (purple up for bid, blue-grey owned), because mail clients show an inline PNG and not an SVG, and sends one HTML email with a plain-text part through SES `SendRawEmail`. Subjects: "CloudPunk #0023 is up for bid", "… was taken off the market", "New bid on … : 12.50 ETH", "Bid withdrawn on …", "… sold for 30.00 ETH". Customer ids are escaped; the address is never logged. A malformed event, an unknown kind or a SKU without art is dropped; an SES error is raised, so the invoke retries and then dead-letters. At least once: a retry after a send that reached SES repeats the email.
-- **AWS.** `infra/terraform/modules/events/market_email.tf`, all conditional on the address: the SES email identity for `ALARM_EMAIL` (sender and recipient, so the SES sandbox is enough; AWS emails a verification link once, and nothing is delivered until it is clicked), the function, its log group, its DLQ, a role that may write its logs, send to its DLQ and `ses:SendRawEmail` as that identity only, the rule and the permission. The platform apply role gains `ses:*` (bootstrap). With no domain of our own the sender is the owner's address, so the first emails may land in spam.
-- **Local.** LocalStack runs SES and the same function and rule; it keeps the mail instead of delivering it (`curl localhost:4566/_aws/ses`). The function's `STOREFRONT_URL` adds a link to the CloudPunk's page (local: `http://localhost:8080`; in the cloud the viewer address is not known to Terraform, so there is no link).
+- **AWS.** `infra/terraform/modules/events/market_email.tf`, all conditional on the address: the SES email identity for `ALARM_EMAIL` (sender and recipient, so the SES sandbox is enough; AWS emails a verification link once, and nothing is delivered until it is clicked), the function, its log group, its DLQ, a role that may write its logs, send to its DLQ and `ses:SendRawEmail` as that identity only, the rule and the permission. The platform apply role gains `ses:*` (bootstrap). The sender is the owner's address (the SES identity is that address, not the dev domain), so the first emails may land in spam.
+- **Local.** LocalStack runs SES and the same function and rule; it keeps the mail instead of delivering it (`curl localhost:4566/_aws/ses`). The function's `STOREFRONT_URL` adds a link to the CloudPunk's page (local: `http://localhost:8080`; in the cloud Terraform sets none, even with the dev domain, so there is no link).
 - **Tests.** Schema tests (libs/common), the event builder (unit), each change writing exactly one event and replays none, a resale and a purchase from CloudPunks writing their `SALE` and a rejection none (integration, against PostgreSQL), the picture, the message for each kind, escaping and the handler with a fake SES (`functions/market-activity-email/tests`), and the package (both zips, reproducible, the handler finding its art inside).

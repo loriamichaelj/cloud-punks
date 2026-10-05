@@ -59,3 +59,7 @@ No laptop has AWS or cluster access (ADR-14), so these runbooks use only:
 There is no workflow to restart a Deployment, to read a database, or to peek and redrive a dead-letter queue in
 the cloud (the `make dlq-*` tools are for the local stack). The runbooks use the console for the queues and
 `app-rollback` where a restart would help, and say so where it matters.
+
+The `market-activity-email` Lambda has no alarm: a failed email lands in its dead-letter queue
+(`loria-market-activity-email-dlq`) silently. Check that queue in the SQS console, and the log group
+`/aws/lambda/loria-market-activity-email` in CloudWatch, when an expected email does not arrive.
