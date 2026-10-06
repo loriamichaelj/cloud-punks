@@ -80,4 +80,5 @@ The ALB alarms (5xx rate, p95 `TargetResponseTime`) are the `alb-alarms` stack. 
 - Interface endpoints (about $7.30 per endpoint per AZ per month) sit in one AZ in dev. Set `interface_endpoint_services = []` to drop them and send that traffic through the NAT.
 - Valkey has TLS, encryption at rest and a security-group limit, but no AUTH token: generating one hands the secret to Terraform and into state.
 - TLS ends at the ALB: the hop to the pods and the calls between services are plain HTTP inside the VPC. The internal ALB also keeps port 80 (the deploy's readiness check and the acceptance suite reach it by its own name). HSTS is not set.
-- None of the three teardown workflows has been run yet.
+- `platform-destroy` checks Terraform state only, and ECR repositories are not force-deleted. Run `app-destroy` with `tag` = `all` and `uninstall_releases` first (order and rebuild: `docs/runbooks/rebuild.md`), or it stops on a repository that still holds images, or on a VPC that still holds an ALB.
+- After a rebuild the cache endpoint is new and `deploy/helm/values/values-common-dev.yaml` carries the old one (`CACHE_URL`); the runner's token secret is recreated empty.

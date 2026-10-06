@@ -45,12 +45,12 @@ Every workflow is independent: none calls another, each has its own concurrency 
 
 Once the app is up, `app-reset.yml` empties the market (orders, listings, bids, activity) and makes every CloudPunk red again; `app-seed` cannot, by design. Run it while nobody is buying.
 
-Tearing down, in this order:
+Tearing down, in this order (the whole procedure, with what survives and the rebuild, is `docs/runbooks/rebuild.md`):
 
-1. `alarms-destroy.yml`, `alb-dns-destroy.yml`, then `dns-destroy.yml` (if they were created): remove the ALB alarms, the alias records, then the certificate and the private zone (the records live in that zone, so they go first). First, because `platform-destroy` refuses while any of them has resources. The domain and its public zone are never touched.
-2. `app-destroy.yml`: removes the app (the image tag you name, or all, and with `uninstall_releases` every Helm release in `retail`, including `gateway-public`). Needs the deploy role's `ecr:BatchDeleteImage`, which `bootstrap-ci-roles` grants.
-3. `addons-destroy.yml`: removes the add-ons while the cluster still runs, so the load balancer controller can delete the ALBs it created.
-4. `platform-destroy.yml`: removes the platform stack. It refuses to start while the addons or alarms stacks still have resources. The bucket and the CI roles stay.
+1. `app-destroy.yml` with `tag` = `all` and `uninstall_releases` on: removes every Helm release in `retail`, including `gateway-public`, so the load balancer controller deletes both ALBs while it still runs, then every image in the five ECR repositories. Both inputs matter: the certificate is attached to the ALB listeners and cannot be deleted before they are gone, and the repositories are not force-deleted, so `platform-destroy` stops on one that still holds images. Needs the deploy role's `ecr:BatchDeleteImage`, which `bootstrap-ci-roles` grants.
+2. `alb-dns-destroy.yml`, `dns-destroy.yml`, then `alarms-destroy.yml` (the ones that were created): the alias records, then the certificate and the private zone (the records live in that zone, so they go first), then the ALB alarms. They go before `platform-destroy`, which refuses while any of them has resources. The domain and its public zone are never touched.
+3. `addons-destroy.yml`: removes the add-ons while the cluster still runs.
+4. `platform-destroy.yml`: removes the platform stack. It refuses to start while the addons, alarms or DNS stacks still have resources; it reads Terraform state only, so it cannot see an ALB or an image. The bucket and the CI roles stay.
 
 `platform-create`, `platform-destroy`, `addons-create`, `addons-destroy`, `alarms-create`, `alarms-destroy`, `dns-create`, `dns-destroy`, `alb-dns-create` and `alb-dns-destroy` share the group `platform-dev`, so none of them overlap. `app-prepare`, `app-database`, `app-seed`, `app-reset`, `app-deploy`, `app-expose` and `app-destroy` share `app-dev`.
 
@@ -71,7 +71,7 @@ With `DEV_DOMAIN` set and the DNS stacks applied, the address in the run summary
 
 `scripts/viewer_cidr.py` refuses anything wider than a `/24`, any private address, and `0.0.0.0/0`. Without a domain the ALB is plain HTTP, there is no login, and the API's admin endpoints are unauthenticated, which is why it is limited to one address and meant for dev only. The "demo tools" page of the UI is not in the cloud build (`VITE_DEMO_TOOLS` is off outside local), so stock and prices cannot be set from the browser.
 
-**Not yet exercised:** the three teardown workflows (`app-destroy`, `addons-destroy`, `platform-destroy`) and the `remove` action of `app-expose` have never been run. Run them once in dev before relying on them.
+**Not yet exercised:** the `remove` action of `app-expose` has never been run (`app-destroy` with `uninstall_releases` removes the viewer ALB too). The six destroy workflows have each run once in dev, in the order above.
 
 ## Market activity emails
 

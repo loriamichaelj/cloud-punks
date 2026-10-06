@@ -10,16 +10,26 @@ One file per ADR when a decision in DESIGN.md section 2 changes. Until then this
 
 Procedures (clean start, failure drills, the local cluster, and what to do when an alarm fires) are runbooks: `docs/runbooks/README.md`.
 
-## Current state (4 Oct 2026)
+## Current state (6 Oct 2026)
 
+- **Dev is destroyed.** It was torn down on 6 Oct 2026 and has not been rebuilt; what is gone, what stays and the way back are in `docs/runbooks/rebuild.md`. Everything below that says "in dev" describes what was built and ran before then.
 - **Built:** the local stack, the local Kubernetes cluster, dev on AWS (release `v1.0.0`, with the CloudPunks market deployed), the PR checks and deploy workflows, alarms, dashboards and runbooks, and the market activity emails (live in dev).
-- **Never run:** the failure drills on EKS (so no alarm has fired and the path to an email is unproven), the teardown workflows, `app-rollback` and `promote` (stage and prod are not deployed).
+- **Never run:** the failure drills on EKS (so no alarm has fired and the path to an email is unproven), the viewer's `remove`, `app-rollback` and `promote` (stage and prod are not deployed), and a rebuild after a teardown.
 - **Built and applied in dev (4 Oct 2026):** HTTPS and a domain (Phase 5: the `dns` and `alb-dns` stacks, four workflows, the HTTPS values). The viewer ALB answers on its name over HTTPS and the internal ALB's HTTPS is checked from the runner on every deploy.
 - **Not built:** egress allowlisting (the NAT is open).
 
 The full list is in DESIGN.md section 14.
 
 ## Change history (was the DESIGN.md status line)
+
+**Dev torn down, the destroy workflows run for the first time (6 Oct 2026).** The owner ran the six destroy workflows one at a time, approving each, and watched them to the end; every stage succeeded: `app-destroy` (13 releases, 90 images, both ALBs), `alb-dns-destroy` (2 resources), `dns-destroy` (5), `alarms-destroy` (2), `addons-destroy` (14) and `platform-destroy` (184, about 11 minutes). The run showed:
+
+- **The order in the workflows README was wrong.** It put `dns-destroy` first, but the certificate is attached to the ALB listeners and ACM will not delete one in use. The order that ran is `app-destroy` (with `tag` = `all` and `uninstall_releases`), the three small stacks, `addons-destroy`, `platform-destroy`; the README now says so. The old order was not tried, so the failure is expected from ACM's rule, not observed.
+- **`platform-destroy` is guarded by state only.** It refuses while four stacks hold resources, but cannot see an ALB or an image, and the ECR repositories have no `force_delete`. `app-destroy` with both inputs is what keeps it from stopping on either. Neither was changed; adding `force_delete`, an ALB check or a post-teardown sweep each needs the owner's agreement.
+- **A rebuild is not just the create workflows.** `CACHE_URL` and `DB_HOST` are written into the dev values files; the cache endpoint changes with the cluster and the database host should not. The runner's token secret is deleted with the platform stack (`recovery_window_in_days = 0`) and recreated empty, so the token goes in again. The SES identity and the SNS subscription need their emails clicked again. The four app-role secrets survive and `app-database` reuses them.
+- **Not checked:** anything outside Terraform state (leftover ALBs, network interfaces, log groups, KMS keys in their deletion window). The rebuild itself has not run.
+
+Decided with the owner: the rebuild is a runbook, `docs/runbooks/rebuild.md`, written from this run and the code.
 
 **v1.0.0 re-cut (4 Oct 2026).** The release `v1.0.0` was moved from `4f11b10` to the `dev` commit that carries HTTPS and the domain, the runner and rename fixes and these docs, and its notes were rewritten; the version stays `v1.0.0`. Tag and release history otherwise: `v0.1.0`, `v0.1.5`, `v1.0.0`.
 
@@ -315,7 +325,7 @@ What a pass shows: a low-stock reservation reaches the Lambda and its record lan
 
 ### Still open
 
-The list is in DESIGN.md's open questions: TLS verification, a Valkey token, pinned versions, HTTPS and a domain, and the Phase 4 drills (see "Observability and reliability as built"). Also: the three teardown workflows (`app-destroy`, `addons-destroy`, `platform-destroy`) and the viewer's `remove` action have never been run, `app-rollback` and `promote` have never been run, and the failure drills have not been run against dev.
+The list is in DESIGN.md's open questions: TLS verification, a Valkey token, pinned versions, HTTPS and a domain, and the Phase 4 drills (see "Observability and reliability as built"). Also: the viewer's `remove` action, `app-rollback` and `promote` have never been run, and the failure drills have not been run against dev. (The teardown workflows ran on 6 Oct 2026; see the change history.)
 
 ### Rough run-rate
 
@@ -549,7 +559,7 @@ Built from the plan the owner approved after the network review: a domain regist
 - **HSTS.** The responses carry no `Strict-Transport-Security` header. It is optional, and not added.
 - **A certificate is recreated with every `dns` apply after a destroy,** since the private zone belongs to a VPC that `platform-destroy` removes. ACM issues in minutes; the certificate and zone cost nothing while destroyed.
 - **Certificate Transparency logs publish the two host names.**
-- **The new workflows' teardown** (`alb-dns-destroy`, `dns-destroy`) has never been run, like the older destroy workflows.
+- **The new workflows' teardown** (`alb-dns-destroy`, `dns-destroy`) had not been run when this was written; they ran on 6 Oct 2026, after `app-destroy` (see the change history).
 - **TLS ends at the ALB;** the hop to the pods and the calls between services are plain HTTP inside the VPC.
 
 **A repository rename breaks three things, found while applying (4 Oct 2026).** The repo was renamed from `retail-platform` to `cloud-punks` between the last deploy and this phase.
@@ -749,7 +759,8 @@ Source of truth: docs/DESIGN.md. If code and doc disagree, stop and ask; do not 
 - [ ] A Valkey AUTH token (it has TLS and a security-group limit now), pinned EKS add-on versions and a pinned PostgreSQL minor.
 - [x] HTTPS and a domain (ACM certificate, Route 53): done 4 Oct 2026 ("HTTPS and a domain as built"). Dev serves HTTPS on both ALBs once `DEV_DOMAIN` is set.
 - [ ] The failure drills on EKS (section 11): skipped on 3 Oct 2026. `drills.yml` has `consumer-down` and `bus-down`; poison, duplicate, cache-down and DB-down are not built. No alarm has been seen to fire in dev.
-- [ ] Teardown, rollback and promotion: `app-destroy`, `addons-destroy`, `platform-destroy`, `alarms-destroy`, the viewer's `remove`, `app-rollback` and `promote` have never run. A first promotion also needs a second reviewer, because the owner cannot approve their own pull request into `stage` or `prod`.
+- [x] Teardown (6 Oct 2026): the six destroy workflows ran once in dev and succeeded (see the change history). Open after it: a rebuild, and a sweep for what a destroy leaves outside Terraform state.
+- [ ] Rollback and promotion: the viewer's `remove`, `app-rollback` and `promote` have never run. A first promotion also needs a second reviewer, because the owner cannot approve their own pull request into `stage` or `prod`.
 
 Closed questions and their reasons (UI scope and sequencing, Python and LocalStack, environments, bootstrap, runners, names, roles, the budget, Phase 3 and Phase 4 decisions) are recorded in `docs/adr/README.md`, "Decided questions" and "Open questions that were closed".
 
@@ -772,7 +783,7 @@ Closed questions and their reasons (UI scope and sequencing, Python and LocalSta
 | Public viewer ALB (`app-expose.yml`) | Anyone at the allowed address reaches an app with no login and unauthenticated admin endpoints (over HTTPS once `DEV_DOMAIN` is set, plain HTTP before) | Dev only; one address from an environment secret (masked, never in the repo); `scripts/viewer_cidr.py` refuses anything wider than a /24, private addresses and `0.0.0.0/0`; `remove` deletes it |
 | The alarm and alert path is untested | An outage could pass without an email: a wrong rule, a muted subscription or a broken Alertmanager role would not show until a real failure | Rules are unit-tested (`make rules-test`), the subscription is confirmed, a cloud test checks the rules are loaded and Alertmanager is ready, and the runbook index is tested against the alarms. Not covered: a failure that actually fires one. Run `drills.yml` (`bus-down`, then `consumer-down`) to close this |
 | The nodes' pod limit and CPU | Pods stay `Pending` if the pod limit (about 29 per node) or CPU is reached, for example when an HPA scales up or another stack is added | Dev has two nodes (about 58 pods; the measurement that led to the second is in the ADR notes). Run `cluster-capacity.yml` after a change that adds pods |
-| Teardown workflows never run | `app-destroy`, `addons-destroy` and `platform-destroy` are untested end to end; a destroy could hang on an ALB or a security group | Order is fixed (app, addons, platform); `platform-destroy` refuses while the addons state has resources; run them once in dev before relying on them |
+| A destroy hangs or leaves something behind | `platform-destroy` checks Terraform state only; an ALB, a security group or an image that Terraform does not hold stops it or survives it, and nothing outside state was checked after the first teardown | Run the order in `docs/runbooks/rebuild.md` (`app-destroy` with `tag` = `all` and `uninstall_releases` first); the runbook lists what to look for in the console afterwards |
 
 ### CloudPunks status and milestones (N1 to N7)
 

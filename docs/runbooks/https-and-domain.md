@@ -6,7 +6,7 @@ step is the Route 53 console, the rest are workflows.
 
 **Status: applied in dev on 4 Oct 2026 and checked** (the public name over HTTPS, and the internal name from the
 runner). The order below is the one that worked; what the run showed is in `docs/adr/README.md`, "HTTPS and a domain
-as built". The destroy workflows have not been run.
+as built". The destroy workflows ran on 6 Oct 2026 (`rebuild.md`).
 
 ## What you end up with
 
@@ -40,8 +40,9 @@ ALB a new DNS name, and the record keeps pointing at the old one until the stack
 
 ## Take it down
 
-`alb-dns-destroy`, then `dns-destroy`, then the usual order (`.github/workflows/README.md`). `platform-destroy`
-refuses while either stack has resources. The domain and its zone are never touched; the yearly registration
+`app-destroy` first (the certificate is attached to the ALB listeners and cannot be deleted while they exist),
+then `alb-dns-destroy`, then `dns-destroy`, then the rest (`rebuild.md`). `platform-destroy` refuses while either
+stack has resources. The domain and its zone are never touched; the yearly registration
 fee continues until you let it lapse in the console.
 
 ## When it does not work

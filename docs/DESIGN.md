@@ -845,7 +845,7 @@ Decisions:
 - **Drills change configuration, never AWS resources.** Consumer down scales the consumer to 0; bus down, cache down and DB down point the process at a dead bus, host or address with `helm --set`, and `helm rollback` undoes them; poison and duplicate publish to the real bus. They use real timings and assert through Prometheus, because the deploy role cannot read alarms or queues. `drills.yml` has `consumer-down` and `bus-down`; the other four are not built.
 - **Capacity.** Dev has two nodes (about $360 a month 24/7, over the $350 alert), so destroying dev when idle is the saving.
 - **SLOs are defined and their current values shown;** a 28-day result is not claimed.
-- **Out of scope:** a Valkey AUTH token, `verify-full` database TLS, Inspector enhanced scanning, and a first run of the teardown workflows, `app-rollback` and a promotion.
+- **Out of scope:** a Valkey AUTH token, `verify-full` database TLS, Inspector enhanced scanning, and a first run of `app-rollback` and a promotion.
 
 What was built, what it proved and what it did not: `docs/adr/README.md`, "Observability and reliability as built".
 
@@ -856,7 +856,7 @@ The working rules for the coding agent are in `CLAUDE.md` (kept locally, not com
 **Never run**
 
 - The failure drills on EKS. `drills.yml` has `consumer-down` and `bus-down`; poison, duplicate, cache-down and DB-down are not built. No alarm or alert has fired in dev, so the path from a failure to an email (CloudWatch alarm or Alertmanager, then SNS, then the inbox) is configured and subscribed but unproven, and the runbooks are written from the design and the code, not from a drill.
-- `app-destroy`, `addons-destroy`, `platform-destroy`, `alarms-destroy`, `alb-dns-destroy`, `dns-destroy`, the viewer's `remove`, `app-rollback` and `promote`. A first promotion also needs a second reviewer, because the owner cannot approve their own pull request into `stage` or `prod`.
+- The viewer's `remove`, `app-rollback` and `promote`. A first promotion also needs a second reviewer, because the owner cannot approve their own pull request into `stage` or `prod`.
 
 **Not built**
 
